@@ -107,8 +107,8 @@ def get_config(
 
     # optimization config
     config.optimization = ml_collections.ConfigDict()
-    config.optimization.bs = 512
-    config.optimization.diag_fraction = 1.0
+    config.optimization.bs = 32768
+    config.optimization.diag_fraction = 0.75
     config.optimization.learning_rate = 3e-4
     config.optimization.clip = 1.0
     config.optimization.total_steps = 20_000
@@ -127,6 +127,8 @@ def get_config(
     config.logging.multi_step_line_plot_bs = 500
     config.logging.multi_step_line_steps = [1, 2, 5, 10, 25]
     config.logging.euler_line_steps = [5, 10, 25, 100]
+    config.logging.scalar_freq = 100
+    config.logging.progress_freq = 100
     config.logging.visual_freq = 1000
     config.logging.save_freq = 500
     config.logging.wandb_project = "self-distill-flow-maps"
@@ -171,7 +173,7 @@ def get_config(
     config.constraints.enabled = True
     config.constraints.type = "box_path"
     config.constraints.box_path_mode = "loss_points"
-    config.constraints.constraint_mode = "flow_matching"  # {"flow_map", "flow_matching"}
+    config.constraints.constraint_mode = "flow_map"  # {"flow_map", "flow_matching"}
     config.constraints.euler_steps = 25
     config.constraints.constraint_reference_diag_fraction = 0.75
     config.constraints.weight = 5.0
