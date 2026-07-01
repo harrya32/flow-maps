@@ -12,7 +12,6 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import optax
-import tensorflow as tf
 from flax import struct
 from flax.serialization import from_bytes
 from flax.training import train_state
@@ -35,7 +34,7 @@ class StaticArgs(NamedTuple):
     get_loss_fn_args: Callable
     train_step: Callable
     update_ema_params: Callable
-    ds: tf.data.Dataset
+    ds: Any
     interp: interpolant.Interpolant
     sample_rho0: Callable
     inception_fn: Callable = None  # For FID computation

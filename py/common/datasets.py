@@ -764,6 +764,65 @@ def np_to_tfds(cfg: config_dict.ConfigDict, x1s) -> tf.data.Dataset:
     )
 
 
+class DeviceBatchDataset:
+    """CPU iterator for plots plus device-resident random batches for training."""
+
+    def __init__(self, cpu_iterator, data: Dict[str, np.ndarray]):
+        self.cpu_iterator = cpu_iterator
+        self.x1_pool = jnp.asarray(data["x1"], dtype=jnp.float32)
+        self.x0_pool = (
+            jnp.asarray(data["x0"], dtype=jnp.float32) if "x0" in data else None
+        )
+        self.label_pool = (
+            jnp.asarray(data["label"]) if "label" in data else None
+        )
+        self.n = int(self.x1_pool.shape[0])
+
+        if self.x0_pool is None:
+
+            @functools.partial(jax.jit, static_argnums=(0,))
+            def sample_batch(bs: int, key: jnp.ndarray):
+                idx = jax.random.randint(key, shape=(bs,), minval=0, maxval=self.n)
+                return {"x1": self.x1_pool[idx]}
+
+        elif self.label_pool is None:
+
+            @functools.partial(jax.jit, static_argnums=(0,))
+            def sample_batch(bs: int, key: jnp.ndarray):
+                idx = jax.random.randint(key, shape=(bs,), minval=0, maxval=self.n)
+                return {
+                    "x0": self.x0_pool[idx],
+                    "x1": self.x1_pool[idx],
+                }
+
+        else:
+
+            @functools.partial(jax.jit, static_argnums=(0,))
+            def sample_batch(bs: int, key: jnp.ndarray):
+                idx = jax.random.randint(key, shape=(bs,), minval=0, maxval=self.n)
+                return {
+                    "x0": self.x0_pool[idx],
+                    "x1": self.x1_pool[idx],
+                    "label": self.label_pool[idx],
+                }
+
+        self.sample_device_batch = sample_batch
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.cpu_iterator)
+
+
+def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, np.ndarray]):
+    """Create a paired dataset with an optional device-side training sampler."""
+    cpu_iterator = np_to_tfds(cfg, paired)
+    if bool(getattr(cfg.problem, "device_batching", True)):
+        return DeviceBatchDataset(cpu_iterator, paired)
+    return cpu_iterator
+
+
 def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
     """Set up the target density for the system."""
     if cfg.problem.target == "checker":
@@ -806,7 +865,7 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         rescale_value = float(
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
         )
-        ds = np_to_tfds(cfg, paired)
+        ds = paired_np_to_dataset(cfg, paired)
     elif cfg.problem.target == "triangle_gaussian":
         assert cfg.problem.d == 2, "Triangle Gaussian target only implemented for d=2."
 
@@ -820,7 +879,7 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         rescale_value = float(
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
         )
-        ds = np_to_tfds(cfg, paired)
+        ds = paired_np_to_dataset(cfg, paired)
     elif cfg.problem.target == "fork_gaussian":
         assert cfg.problem.d == 2, "Fork Gaussian target only implemented for d=2."
 
@@ -834,7 +893,7 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         rescale_value = float(
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
         )
-        ds = np_to_tfds(cfg, paired)
+        ds = paired_np_to_dataset(cfg, paired)
     elif cfg.problem.target == "box_avoiding_bezier":
         assert cfg.problem.d == 2, "Box-avoiding Bezier target only implemented for d=2."
 
@@ -854,7 +913,7 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         rescale_value = float(
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
         )
-        ds = np_to_tfds(cfg, paired)
+        ds = paired_np_to_dataset(cfg, paired)
     elif cfg.problem.target == "schiebinger":
         split_data = load_schiebinger_splits(cfg, subsample_endpoints=True)
         x0s = split_data["x0_train"]

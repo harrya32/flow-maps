@@ -216,7 +216,12 @@ def get_batch(
         "afhq" in cfg.problem.target
     )
 
-    batch = next(statics.ds)
+    if hasattr(statics.ds, "sample_device_batch"):
+        prng_key, batch_key = jax.random.split(prng_key)
+        batch = statics.ds.sample_device_batch(cfg.optimization.bs, batch_key)
+    else:
+        batch = next(statics.ds)
+
     x0batch = None
     if is_image_dataset:
         x1batch = batch["image"]
