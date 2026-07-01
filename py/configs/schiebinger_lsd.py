@@ -1,11 +1,3 @@
-"""
-Nicholas M. Boffi
-10/5/25
-
-Lagrangian self-distillation on Schiebinger reprogramming data
-using a low-dimensional (PCA) flow-map model.
-"""
-
 import os
 
 import ml_collections
@@ -43,7 +35,7 @@ def get_config(
     # problem config
     config.problem = ml_collections.ConfigDict()
     config.problem.n = 0  # populated after Schiebinger endpoint extraction
-    config.problem.d = 5  # PCA dimension
+    config.problem.d = 2  # PCA dimension
     config.problem.image_dims = None
     config.problem.num_classes = None
     config.problem.target = "schiebinger"
@@ -56,7 +48,7 @@ def get_config(
     config.problem.schiebinger_filename = "reprogramming_schiebinger.h5ad"
     config.problem.subset_to_serum = True
     config.problem.embedding_key = "X_pca"
-    config.problem.n_pcs = 5
+    config.problem.n_pcs = 2
     config.problem.time_key = "day"
     config.problem.whiten_pca = False
     config.problem.pca_random_state = 0
@@ -64,11 +56,11 @@ def get_config(
 
     # optimization config (kept close to checker low-dimensional defaults)
     config.optimization = ml_collections.ConfigDict()
-    config.optimization.bs = 100_000
+    config.optimization.bs = 2048
     config.optimization.diag_fraction = 0.75
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 10.0
-    config.optimization.total_steps = 250_000
+    config.optimization.total_steps = 100_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
@@ -77,11 +69,11 @@ def get_config(
 
     # logging config
     config.logging = ml_collections.ConfigDict()
-    config.logging.plot_bs = 25_000
-    config.logging.visual_freq = 5_000
+    config.logging.plot_bs = 5000
+    config.logging.visual_freq = 1_000
     config.logging.save_freq = 10_000
     config.logging.wandb_project = "self-distill-flow-maps"
-    config.logging.wandb_name = "schiebinger_pca5_lsd"
+    config.logging.wandb_name = "schiebinger_pca2_lsd"
     config.logging.wandb_entity = os.getenv("WANDB_ENTITY", "your-username")
     config.logging.output_folder = output_folder
     config.logging.output_name = config.logging.wandb_name
@@ -93,7 +85,7 @@ def get_config(
     config.logging.fid_batch_size = None
     config.logging.fid_n_steps_flow = None
     config.logging.fid_ema_factor = None
-    config.logging.visual_ema_factor = 0.9999
+    config.logging.visual_ema_factor = None
 
     # network config (paper checker-style MLP)
     config.network = ml_collections.ConfigDict()
