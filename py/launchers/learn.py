@@ -59,7 +59,13 @@ def train_loop(
     """Carry out the training loop."""
 
     pbar = tqdm(range(cfg.optimization.total_steps))
-    for _ in pbar:
+    scalar_freq = max(1, int(getattr(cfg.logging, "scalar_freq", 1)))
+    progress_freq = max(1, int(getattr(cfg.logging, "progress_freq", scalar_freq)))
+    visual_freq = int(getattr(cfg.logging, "visual_freq", 0))
+    save_freq = int(getattr(cfg.logging, "save_freq", 0))
+    fid_freq = int(getattr(cfg.logging, "fid_freq", 0))
+
+    for step_idx in pbar:
         # construct loss function arguments
         start_time = time.time()
         loss_fn_args, prng_key = statics.get_loss_fn_args(
@@ -75,19 +81,27 @@ def train_loop(
         # compute update to EMA params
         train_state = statics.update_ema_params(train_state)
 
-        # log to wandb
-        prng_key = logging.log_metrics(
-            cfg,
-            statics,
-            train_state,
-            grads,
-            loss_value,
-            loss_fn_args,
-            prng_key,
-            end_time - start_time,
-        )
+        step_num = step_idx + 1
+        should_log_scalars = (step_num % scalar_freq) == 0
+        should_visualize = visual_freq > 0 and (step_num % visual_freq) == 0
+        should_save = save_freq > 0 and (step_num % save_freq) == 0
+        should_fid = fid_freq > 0 and (step_num % fid_freq) == 0
 
-        pbar.set_postfix(loss=loss_value)
+        if should_log_scalars or should_visualize or should_save or should_fid:
+            prng_key = logging.log_metrics(
+                cfg,
+                statics,
+                train_state,
+                grads,
+                loss_value,
+                loss_fn_args,
+                prng_key,
+                end_time - start_time,
+            )
+
+        if (step_num % progress_freq) == 0:
+            loss_for_progress = dist_utils.safe_index(cfg, jnp.array(loss_value))
+            pbar.set_postfix(loss=float(jax.device_get(loss_for_progress)))
 
         # guard against sigterm/sigint
         logging.register_signal_handlers(cfg, train_state)
