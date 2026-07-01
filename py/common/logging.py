@@ -20,6 +20,7 @@ import wandb
 from flax.serialization import to_bytes
 from jax.flatten_util import ravel_pytree
 from matplotlib.collections import LineCollection
+from matplotlib.patches import Rectangle
 from matplotlib import pyplot as plt
 from ml_collections import config_dict
 
@@ -54,6 +55,277 @@ def finite_lowd_limits(
     xlim = [mins[0] - pads[0], maxs[0] + pads[0]]
     ylim = [mins[1] - pads[1], maxs[1] + pads[1]]
     return xlim, ylim
+
+
+def extract_x1_from_batch(batch):
+    """Extract target samples from either plain or paired low-dimensional batches."""
+    if isinstance(batch, dict) and "x1" in batch:
+        return batch["x1"]
+    return batch
+
+
+def _forbidden_box_bounds(cfg: config_dict.ConfigDict):
+    """Return configured forbidden-box bounds as (xmin, xmax, ymin, ymax)."""
+    box_cfg = getattr(getattr(cfg, "logging", None), "forbidden_box", None)
+    if box_cfg is None:
+        box_cfg = getattr(getattr(cfg, "problem", None), "forbidden_box", None)
+    if box_cfg is None or not bool(getattr(box_cfg, "enabled", True)):
+        return None
+
+    xlim = getattr(box_cfg, "xlim", None)
+    ylim = getattr(box_cfg, "ylim", None)
+    if xlim is None:
+        xlim = getattr(box_cfg, "x", None)
+    if ylim is None:
+        ylim = getattr(box_cfg, "y", None)
+    if xlim is None or ylim is None:
+        return None
+
+    xmin, xmax = [float(value) for value in xlim]
+    ymin, ymax = [float(value) for value in ylim]
+    return xmin, xmax, ymin, ymax
+
+
+def _points_in_forbidden_box(points: jnp.ndarray, bounds) -> jnp.ndarray:
+    xmin, xmax, ymin, ymax = bounds
+    return (
+        (points[:, 0] >= xmin)
+        & (points[:, 0] <= xmax)
+        & (points[:, 1] >= ymin)
+        & (points[:, 1] <= ymax)
+    )
+
+
+def _np_points_in_forbidden_box(points: np.ndarray, bounds) -> np.ndarray:
+    xmin, xmax, ymin, ymax = bounds
+    return (
+        (points[:, 0] >= xmin)
+        & (points[:, 0] <= xmax)
+        & (points[:, 1] >= ymin)
+        & (points[:, 1] <= ymax)
+    )
+
+
+def _constraint_box_bounds(cfg: config_dict.ConfigDict):
+    constraint_cfg = getattr(cfg, "constraints", None)
+    if constraint_cfg is not None:
+        xlim = getattr(constraint_cfg, "xlim", None)
+        ylim = getattr(constraint_cfg, "ylim", None)
+        if xlim is None:
+            xlim = getattr(constraint_cfg, "box_xlim", None)
+        if ylim is None:
+            ylim = getattr(constraint_cfg, "box_ylim", None)
+        if xlim is not None and ylim is not None:
+            xmin, xmax = [float(value) for value in xlim]
+            ymin, ymax = [float(value) for value in ylim]
+            return xmin, xmax, ymin, ymax
+
+    return _forbidden_box_bounds(cfg)
+
+
+def _box_signed_distance(points: jnp.ndarray, bounds) -> jnp.ndarray:
+    xmin, xmax, ymin, ymax = bounds
+    center = jnp.asarray([(xmin + xmax) / 2.0, (ymin + ymax) / 2.0], dtype=points.dtype)
+    half_size = jnp.asarray(
+        [(xmax - xmin) / 2.0, (ymax - ymin) / 2.0], dtype=points.dtype
+    )
+    q = jnp.abs(points - center) - half_size
+    outside_q = jnp.maximum(q, 0.0)
+    eps = jnp.asarray(1e-12, dtype=points.dtype)
+    outside = jnp.sqrt(jnp.sum(outside_q * outside_q, axis=-1) + eps) - jnp.sqrt(eps)
+    inside = jnp.minimum(jnp.maximum(q[..., 0], q[..., 1]), 0.0)
+    return outside + inside
+
+
+def _draw_forbidden_box(ax, cfg: config_dict.ConfigDict, *, label: bool = False) -> None:
+    bounds = _forbidden_box_bounds(cfg)
+    if bounds is None:
+        return
+
+    xmin, xmax, ymin, ymax = bounds
+    ax.add_patch(
+        Rectangle(
+            (xmin, ymin),
+            xmax - xmin,
+            ymax - ymin,
+            facecolor="none",
+            edgecolor="crimson",
+            linewidth=1.4,
+            linestyle="--",
+            alpha=0.95,
+            zorder=20,
+            label="forbidden B" if label else None,
+        )
+    )
+
+
+def _flow_map_batch(
+    apply_fn,
+    params: Dict,
+    s: float,
+    t: float,
+    xs: jnp.ndarray,
+    labels: jnp.ndarray,
+) -> jnp.ndarray:
+    """Evaluate X_{s,t} on a batch of low-dimensional points."""
+    return jax.vmap(
+        lambda x, lbl: apply_fn(
+            params,
+            s,
+            t,
+            x,
+            label=lbl,
+            train=False,
+            calc_weight=False,
+            return_X_and_phi=False,
+        )
+    )(xs, labels)
+
+
+def _one_step_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    times: np.ndarray,
+) -> np.ndarray:
+    """Evaluate the direct 1-step path t -> X_{0,t}(x0)."""
+    paths = np.zeros((x0s.shape[0], len(times), x0s.shape[-1]), dtype=np.float32)
+    paths[:, 0, :] = np.asarray(x0s)
+    for idx, tt in enumerate(times[1:], start=1):
+        xt = _flow_map_batch(apply_fn, params, 0.0, float(tt), x0s, labels)
+        paths[:, idx, :] = np.asarray(xt)
+    return paths
+
+
+def _multi_step_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    n_steps: int,
+) -> np.ndarray:
+    """Track every node in an N-step flow-map rollout."""
+    return np.asarray(
+        flow_map.batch_sample_trajectory(apply_fn, params, x0s, n_steps, labels),
+        dtype=np.float32,
+    )
+
+
+def _vector_field_batch(
+    apply_fn,
+    params: Dict,
+    t: float,
+    xs: jnp.ndarray,
+    labels: jnp.ndarray,
+) -> jnp.ndarray:
+    """Evaluate the instantaneous vector field b_t on a batch of points."""
+    return jax.vmap(
+        lambda x, lbl: apply_fn(
+            params,
+            t,
+            x,
+            label=lbl,
+            train=False,
+            calc_weight=False,
+            method="calc_b",
+        )
+    )(xs, labels)
+
+
+def _euler_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    n_steps: int,
+) -> np.ndarray:
+    """Track every node in an Euler rollout of dx/dt = b_t(x)."""
+    ts = jnp.linspace(0.0, 1.0, n_steps + 1)
+
+    def step(x, idx):
+        t0 = ts[idx]
+        dt = ts[idx + 1] - ts[idx]
+        x_next = x + dt * _vector_field_batch(apply_fn, params, t0, x, labels)
+        return x_next, x_next
+
+    _, states = jax.lax.scan(step, x0s, jnp.arange(n_steps))
+    paths = jnp.concatenate([x0s[None, ...], states], axis=0)
+    return np.asarray(jnp.swapaxes(paths, 0, 1), dtype=np.float32)
+
+
+def _trajectory_segments(paths: np.ndarray) -> np.ndarray:
+    """Convert paths with shape (N, T, 2) to LineCollection segments."""
+    segments = np.stack([paths[:, :-1, :], paths[:, 1:, :]], axis=2)
+    return segments.reshape((-1, 2, paths.shape[-1]))
+
+
+def _draw_trajectory_paths(
+    ax,
+    paths: np.ndarray,
+    x0s: np.ndarray,
+    x1s: np.ndarray,
+    *,
+    title: str,
+    xlim: list,
+    ylim: list,
+    fontsize: float,
+    cfg: config_dict.ConfigDict = None,
+) -> None:
+    """Draw trajectory lines with dots at all evaluated path nodes."""
+    path_points = paths.reshape((-1, paths.shape[-1]))
+    ax.scatter(
+        x0s[:, 0], x0s[:, 1], s=0.2, alpha=0.2, marker="o", c="gray", label="base"
+    )
+    ax.scatter(
+        x1s[:, 0], x1s[:, 1], s=0.2, alpha=0.2, marker="o", c="C0", label="target"
+    )
+    ax.add_collection(
+        LineCollection(
+            _trajectory_segments(paths),
+            colors="black",
+            linewidths=0.25,
+            alpha=0.2,
+        )
+    )
+    ax.scatter(
+        path_points[:, 0],
+        path_points[:, 1],
+        s=2.0,
+        alpha=0.25,
+        marker="o",
+        c="black",
+        linewidths=0,
+        label="trajectory",
+    )
+    ax.set_title(title, fontsize=fontsize)
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_aspect("equal")
+    ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
+    ax.tick_params(axis="both", labelsize=fontsize)
+    if cfg is not None:
+        _draw_forbidden_box(ax, cfg, label=True)
+
+
+def _rollout_forbidden_box_metrics(
+    cfg: config_dict.ConfigDict, rollout_paths: list, rollout_name: str
+) -> Dict[str, float]:
+    """Measure box occupancy on the exact nodes plotted for rollout paths."""
+    bounds = _forbidden_box_bounds(cfg)
+    if bounds is None:
+        return {}
+
+    metrics = {}
+    for step, paths in rollout_paths:
+        path_points = np.asarray(paths).reshape((-1, paths.shape[-1]))
+        inside = _np_points_in_forbidden_box(path_points, bounds)
+        total = int(inside.size)
+        pct = 100.0 * int(np.sum(inside)) / max(total, 1)
+        prefix = f"forbidden_box/{rollout_name}_{step}"
+        metrics[f"{prefix}_point_pct"] = pct
+
+    return metrics
 
 
 def get_params_for_sampling(
@@ -370,6 +642,82 @@ def _kde_log_density(
     return jsp.special.logsumexp(log_kernels, axis=1) - log_norm
 
 
+def _rbf_kernel_mixture(
+    x: jnp.ndarray, y: jnp.ndarray, bandwidths: jnp.ndarray
+) -> jnp.ndarray:
+    diffs = x[:, None, :] - y[None, :, :]
+    sqdist = jnp.sum(diffs * diffs, axis=-1)
+
+    bws = jnp.maximum(jnp.asarray(bandwidths, dtype=x.dtype), 1e-6)
+    scales = 2.0 * (bws[:, None, None] ** 2)
+    kernels = jnp.exp(-sqdist[None, :, :] / scales)
+    return jnp.mean(kernels, axis=0)
+
+
+def _weighted_kernel_mean(
+    kernel: jnp.ndarray,
+    x_weights: jnp.ndarray,
+    y_weights: jnp.ndarray,
+    eps: float,
+) -> jnp.ndarray:
+    weights = x_weights[:, None] * y_weights[None, :]
+    denom = jnp.maximum(jnp.sum(x_weights) * jnp.sum(y_weights), eps)
+    return jnp.sum(kernel * weights) / denom
+
+
+def _weighted_mmd(
+    x: jnp.ndarray,
+    y: jnp.ndarray,
+    x_weights: jnp.ndarray,
+    y_weights: jnp.ndarray,
+    bandwidths: jnp.ndarray,
+    eps: float,
+) -> jnp.ndarray:
+    k_xx = _rbf_kernel_mixture(x, x, bandwidths)
+    k_yy = _rbf_kernel_mixture(y, y, bandwidths)
+    k_xy = _rbf_kernel_mixture(x, y, bandwidths)
+
+    mmd2 = (
+        _weighted_kernel_mean(k_xx, x_weights, x_weights, eps)
+        + _weighted_kernel_mean(k_yy, y_weights, y_weights, eps)
+        - 2.0 * _weighted_kernel_mean(k_xy, x_weights, y_weights, eps)
+    )
+    return jnp.maximum(mmd2, 0.0)
+
+
+def _endpoint_matching_mmd(
+    cfg: config_dict.ConfigDict,
+    x0: jnp.ndarray,
+    x1_hat: jnp.ndarray,
+    x1: jnp.ndarray,
+) -> jnp.ndarray:
+    endpoint_cfg = cfg.training.endpoint_matching
+    bandwidths = jnp.asarray(
+        getattr(endpoint_cfg, "bandwidths", [0.25, 0.5, 1.0, 2.0, 4.0]),
+        dtype=x1.dtype,
+    )
+    eps = float(getattr(endpoint_cfg, "eps", 1e-6))
+    all_weights = jnp.ones((x0.shape[0],), dtype=x1.dtype)
+
+    if not bool(getattr(endpoint_cfg, "branch_conditional", False)):
+        return _weighted_mmd(x1_hat, x1, all_weights, all_weights, bandwidths, eps)
+
+    branch_axis = int(getattr(endpoint_cfg, "branch_axis", 1))
+    branch_threshold = float(getattr(endpoint_cfg, "branch_threshold", 0.0))
+    branch_weights = (x0[:, branch_axis] >= branch_threshold).astype(x1.dtype)
+
+    loss = 0.0
+    normalizer = 0.0
+    min_branch_mass = float(getattr(endpoint_cfg, "min_branch_mass", 1.0))
+    for weights in [branch_weights, 1.0 - branch_weights]:
+        branch_present = (jnp.sum(weights) >= min_branch_mass).astype(x1.dtype)
+        branch_mmd = _weighted_mmd(x1_hat, x1, weights, weights, bandwidths, eps)
+        loss += branch_present * branch_mmd
+        normalizer += branch_present
+
+    return loss / jnp.maximum(normalizer, 1.0)
+
+
 def _path_positions(
     params: Dict,
     apply_fn,
@@ -405,10 +753,48 @@ def _path_positions(
         )(x0, label, tau)
 
 
+def _map_between_positions(
+    params: Dict,
+    apply_fn,
+    s: jnp.ndarray,
+    t: jnp.ndarray,
+    x: jnp.ndarray,
+    label: jnp.ndarray,
+) -> jnp.ndarray:
+    """Compute X_{s_i,t_i}(x_i) for each sample i."""
+    if label is None:
+        return jax.vmap(
+            lambda ss, tt, xi: apply_fn(
+                params,
+                ss,
+                tt,
+                xi,
+                label=None,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(s, t, x)
+    else:
+        return jax.vmap(
+            lambda ss, tt, xi, lbl: apply_fn(
+                params,
+                ss,
+                tt,
+                xi,
+                label=lbl,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(s, t, x, label)
+
+
 def compute_constraint_metrics(
     cfg: config_dict.ConfigDict,
     train_state: state_utils.EMATrainState,
     loss_fn_args: Tuple,
+    statics: state_utils.StaticArgs = None,
 ) -> Dict[str, float]:
     """Compute configured trajectory-constraint errors for logging."""
     if not hasattr(cfg, "constraints") or not cfg.constraints.enabled:
@@ -420,7 +806,7 @@ def compute_constraint_metrics(
         x0batch,
         x1batch,
         label_batch,
-        _,
+        sbatch,
         tbatch,
         _,
         _,
@@ -430,6 +816,7 @@ def compute_constraint_metrics(
     ) = dist_utils.unreplicate_loss_fn_args(cfg, data_args)
     x0batch = jnp.squeeze(x0batch)
     x1batch = jnp.squeeze(x1batch)
+    sbatch = jnp.squeeze(sbatch)
     tbatch = jnp.squeeze(tbatch)
     constraint_scale = jnp.mean(jnp.squeeze(constraint_scale_batch))
     stage2_scale = jnp.mean(jnp.squeeze(stage2_scale_batch))
@@ -438,10 +825,10 @@ def compute_constraint_metrics(
     if label_batch is not None:
         label_batch = jnp.squeeze(label_batch)
 
-    params = dist_utils.safe_unreplicate(cfg, train_state.params)
     ctype = cfg.constraints.type
 
     if ctype == "mid_moment":
+        params = dist_utils.safe_unreplicate(cfg, train_state.params)
         t_star = float(cfg.constraints.time)
         tau = jnp.full((x0batch.shape[0],), t_star, dtype=x0batch.dtype)
         x_tstar = _path_positions(params, train_state.apply_fn, x0batch, label_batch, tau)
@@ -470,6 +857,7 @@ def compute_constraint_metrics(
         }
 
     if ctype == "kde_path":
+        params = dist_utils.safe_unreplicate(cfg, train_state.params)
         tau = jnp.clip(tbatch, 0.0, 1.0)
         x_tau = _path_positions(params, train_state.apply_fn, x0batch, label_batch, tau)
         x_tau = _maybe_clip_constraint_state(x_tau, cfg)
@@ -504,7 +892,118 @@ def compute_constraint_metrics(
             "stage/two_stage_scale": stage2_scale,
         }
 
+    if ctype == "box_path":
+        return {}
+
     return {}
+
+
+def compute_endpoint_matching_metrics(
+    cfg: config_dict.ConfigDict,
+    train_state: state_utils.EMATrainState,
+    loss_fn_args: Tuple,
+) -> Dict[str, float]:
+    """Compute endpoint distribution matching errors for X_{0,1}(x0)."""
+    endpoint_cfg = getattr(cfg.training, "endpoint_matching", None)
+    if endpoint_cfg is None or not getattr(endpoint_cfg, "enabled", False):
+        return {}
+
+    data_args = loss_fn_args[1:]
+    (
+        x0batch,
+        x1batch,
+        label_batch,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = dist_utils.unreplicate_loss_fn_args(cfg, data_args)
+    x0batch = jnp.squeeze(x0batch)
+    x1batch = jnp.squeeze(x1batch)
+    if label_batch is not None:
+        label_batch = jnp.squeeze(label_batch)
+
+    params = dist_utils.safe_unreplicate(cfg, train_state.params)
+    tau = jnp.ones((x0batch.shape[0],), dtype=x0batch.dtype)
+    x1_hat = _path_positions(
+        params,
+        train_state.apply_fn,
+        x0batch,
+        label_batch,
+        tau,
+    )
+    endpoint_mmd = _endpoint_matching_mmd(cfg, x0batch, x1_hat, x1batch)
+    endpoint_weight = float(getattr(endpoint_cfg, "weight", 1.0))
+
+    return {
+        "endpoint_matching/mmd": endpoint_mmd,
+        "endpoint_matching/weighted": endpoint_weight * endpoint_mmd,
+    }
+
+
+def compute_forbidden_box_metrics(
+    cfg: config_dict.ConfigDict,
+    statics: state_utils.StaticArgs,
+    train_state: state_utils.EMATrainState,
+    loss_fn_args: Tuple,
+) -> Dict[str, float]:
+    """Log learned and analytical path rates inside a configured box."""
+    bounds = _forbidden_box_bounds(cfg)
+    if bounds is None:
+        return {}
+
+    data_args = loss_fn_args[1:]
+    (
+        x0batch,
+        x1batch,
+        label_batch,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = dist_utils.unreplicate_loss_fn_args(cfg, data_args)
+    x0batch = jnp.squeeze(x0batch)
+    x1batch = jnp.squeeze(x1batch)
+    if label_batch is not None:
+        label_batch = jnp.squeeze(label_batch)
+
+    box_cfg = getattr(cfg.logging, "forbidden_box", None)
+    params = dist_utils.safe_unreplicate(cfg, train_state.params)
+
+    metrics = {}
+    times = getattr(box_cfg, "times", None)
+    if times is not None:
+        learned_any = jnp.zeros((x0batch.shape[0],), dtype=bool)
+        interp_any = jnp.zeros((x0batch.shape[0],), dtype=bool)
+        for time_value in times:
+            tau_i = jnp.full((x0batch.shape[0],), float(time_value), dtype=x0batch.dtype)
+            learned_i = _path_positions(
+                params,
+                train_state.apply_fn,
+                x0batch,
+                label_batch,
+                tau_i,
+            )
+            interp_i = statics.interp.batch_calc_It(tau_i, x0batch, x1batch, label_batch)
+            learned_any = learned_any | _points_in_forbidden_box(learned_i, bounds)
+            interp_any = interp_any | _points_in_forbidden_box(interp_i, bounds)
+
+        learned_any_f = learned_any.astype(jnp.float32)
+        interp_any_f = interp_any.astype(jnp.float32)
+        metrics.update(
+            {
+                "forbidden_box/learned_path_rate": jnp.mean(learned_any_f),
+                "forbidden_box/interpolant_path_rate": jnp.mean(interp_any_f),
+            }
+        )
+
+    return metrics
 
 
 def log_metrics(
@@ -534,9 +1033,31 @@ def log_metrics(
 
     # Log constraint errors if configured.
     try:
-        metrics.update(compute_constraint_metrics(cfg, train_state, loss_fn_args))
+        metrics.update(
+            compute_constraint_metrics(cfg, train_state, loss_fn_args, statics=statics)
+        )
     except Exception as e:
         print(f"Warning: Constraint metric computation failed: {e}")
+
+    # Log endpoint distribution matching errors if configured.
+    try:
+        metrics.update(
+            compute_endpoint_matching_metrics(cfg, train_state, loss_fn_args)
+        )
+    except Exception as e:
+        print(f"Warning: Endpoint matching metric computation failed: {e}")
+
+    # Log forbidden-box diagnostics if configured. These metrics evaluate the
+    # learned flow map at several path times, so keep them off the per-step path.
+    try:
+        box_cfg = getattr(cfg.logging, "forbidden_box", None)
+        box_freq = int(getattr(box_cfg, "freq", getattr(cfg.logging, "visual_freq", 1)))
+        if box_freq > 0 and (int(step) % box_freq) == 0:
+            metrics.update(
+                compute_forbidden_box_metrics(cfg, statics, train_state, loss_fn_args)
+            )
+    except Exception as e:
+        print(f"Warning: Forbidden-box metric computation failed: {e}")
 
     # Log stage-2 schedule scale when present.
     try:
@@ -624,7 +1145,7 @@ def make_lowd_plot(
     titles = ["base and target"] + [rf"${step}$-step" for step in steps]
 
     ## extract target samples
-    plot_x1s = next(statics.ds)[: cfg.logging.plot_bs]
+    plot_x1s = extract_x1_from_batch(next(statics.ds))[: cfg.logging.plot_bs]
 
     ## draw multi-step samples from the model
     x0s = statics.sample_rho0(cfg.logging.plot_bs, prng_key)
@@ -639,9 +1160,79 @@ def make_lowd_plot(
             -jnp.ones(cfg.logging.plot_bs),
         )
 
+    # Track full direct and multi-step trajectories for a subset of particles.
+    line_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "line_plot_bs", 1000))
+    n_line_times = max(2, int(getattr(cfg.logging, "line_plot_n_times", 20)))
+    line_times = np.linspace(0.0, 1.0, n_line_times)
+    x0_line = x0s[:line_bs]
+    x1_line = plot_x1s[:line_bs]
+    labels_line = -jnp.ones(line_bs)
+    one_step_line_paths = _one_step_paths(
+        train_state.apply_fn,
+        params_for_visual,
+        x0_line,
+        labels_line,
+        line_times,
+    )
+
+    multi_step_counts = getattr(cfg.logging, "multi_step_line_steps", steps)
+    if isinstance(multi_step_counts, int):
+        multi_step_counts = [multi_step_counts]
+    multi_step_counts = [max(1, int(step)) for step in multi_step_counts]
+    multi_line_bs = min(
+        line_bs,
+        int(getattr(cfg.logging, "multi_step_line_plot_bs", min(line_bs, 500))),
+    )
+    x0_multi_line = x0s[:multi_line_bs]
+    x1_multi_line = plot_x1s[:multi_line_bs]
+    labels_multi_line = -jnp.ones(multi_line_bs)
+    multi_step_line_paths = [
+        (
+            step,
+            _multi_step_paths(
+                train_state.apply_fn,
+                params_for_visual,
+                x0_multi_line,
+                labels_multi_line,
+                step,
+            ),
+        )
+        for step in multi_step_counts
+    ]
+    euler_step_counts = getattr(cfg.logging, "euler_line_steps", [5, 10, 25, 100])
+    if isinstance(euler_step_counts, int):
+        euler_step_counts = [euler_step_counts]
+    euler_step_counts = [max(1, int(step)) for step in euler_step_counts]
+    euler_line_paths = [
+        (
+            step,
+            _euler_paths(
+                train_state.apply_fn,
+                params_for_visual,
+                x0_multi_line,
+                labels_multi_line,
+                step,
+            ),
+        )
+        for step in euler_step_counts
+    ]
+
     # determine plotting limits from observed and generated samples
     all_points = np.concatenate(
-        [np.asarray(x0s), np.asarray(plot_x1s), np.asarray(xhats).reshape((-1, cfg.problem.d))],
+        [
+            np.asarray(x0s),
+            np.asarray(plot_x1s),
+            np.asarray(xhats).reshape((-1, cfg.problem.d)),
+            one_step_line_paths.reshape((-1, cfg.problem.d)),
+            *[
+                paths.reshape((-1, cfg.problem.d))
+                for _, paths in multi_step_line_paths
+            ],
+            *[
+                paths.reshape((-1, cfg.problem.d))
+                for _, paths in euler_line_paths
+            ],
+        ],
         axis=0,
     )
     xlim, ylim = finite_lowd_limits(all_points)
@@ -689,6 +1280,7 @@ def make_lowd_plot(
                 marker="o",
                 c="black",
             )
+        _draw_forbidden_box(ax, cfg)
 
     wandb.log({"samples": wandb.Image(fig)})
 
@@ -733,56 +1325,93 @@ def make_lowd_plot(
         ax.set_aspect("equal")
         ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
         ax.tick_params(axis="both", labelsize=fontsize)
+        _draw_forbidden_box(ax, cfg)
 
     wandb.log({"trajectory_times": wandb.Image(traj_fig)})
 
-    # Visualize full trajectory lines for a subset of particles.
-    line_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "line_plot_bs", 1000))
-    n_line_times = max(2, int(getattr(cfg.logging, "line_plot_n_times", 20)))
-    line_times = np.linspace(0.0, 1.0, n_line_times)
-    x0_line = x0s[:line_bs]
-    labels_line = -jnp.ones(line_bs)
-
-    line_paths = np.zeros((line_bs, n_line_times, cfg.problem.d))
-    line_paths[:, 0, :] = np.asarray(x0_line)
-    for idx, tt in enumerate(line_times[1:], start=1):
-        xt = jax.vmap(
-            lambda x, lbl: train_state.apply_fn(
-                params_for_visual,
-                0.0,
-                float(tt),
-                x,
-                label=lbl,
-                train=False,
-                calc_weight=False,
-                return_X_and_phi=False,
-            )
-        )(x0_line, labels_line)
-        line_paths[:, idx, :] = np.asarray(xt)
-
-    # Build line segments for efficient rendering.
-    line_segments = np.stack([line_paths[:, :-1, :], line_paths[:, 1:, :]], axis=2)
-    line_segments = line_segments.reshape((-1, 2, cfg.problem.d))
-
     line_fig, line_ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
-    line_ax.scatter(
-        x0s[:, 0], x0s[:, 1], s=0.2, alpha=0.25, marker="o", c="gray", label="base"
+    _draw_trajectory_paths(
+        line_ax,
+        one_step_line_paths,
+        np.asarray(x0_line),
+        np.asarray(x1_line),
+        title=f"1-step trajectory X_{{0,t}}(x), {n_line_times} times",
+        xlim=xlim,
+        ylim=ylim,
+        fontsize=fontsize,
+        cfg=cfg,
     )
-    line_ax.scatter(
-        plot_x1s[:, 0], plot_x1s[:, 1], s=0.2, alpha=0.25, marker="o", c="C0", label="target"
-    )
-    line_ax.add_collection(
-        LineCollection(line_segments, colors="black", linewidths=0.25, alpha=0.2)
-    )
-    line_ax.set_title(f"{line_bs} trajectories, {n_line_times} times", fontsize=fontsize)
-    line_ax.set_xlim(xlim)
-    line_ax.set_ylim(ylim)
-    line_ax.set_aspect("equal")
-    line_ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
-    line_ax.tick_params(axis="both", labelsize=fontsize)
     line_ax.legend(loc="upper right", fontsize=10, markerscale=6, frameon=True)
+    wandb.log({"trajectory_1step_lines": wandb.Image(line_fig)})
 
-    wandb.log({"trajectory_lines": wandb.Image(line_fig)})
+    multi_fig, multi_axs = plt.subplots(
+        nrows=1,
+        ncols=len(multi_step_line_paths),
+        figsize=(fw * len(multi_step_line_paths), fh),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+        squeeze=False,
+    )
+    for ax, (step, paths) in zip(multi_axs.ravel(), multi_step_line_paths):
+        _draw_trajectory_paths(
+            ax,
+            paths,
+            np.asarray(x0_multi_line),
+            np.asarray(x1_multi_line),
+            title=f"{step}-step rollout",
+            xlim=xlim,
+            ylim=ylim,
+            fontsize=fontsize,
+            cfg=cfg,
+        )
+    multi_axs.ravel()[0].legend(
+        loc="upper right", fontsize=10, markerscale=6, frameon=True
+    )
+
+    multistep_box_metrics = _rollout_forbidden_box_metrics(
+        cfg, multi_step_line_paths, "multistep"
+    )
+    wandb.log(
+        {
+            "trajectory_multistep_lines": wandb.Image(multi_fig),
+            **multistep_box_metrics,
+        }
+    )
+
+    euler_fig, euler_axs = plt.subplots(
+        nrows=1,
+        ncols=len(euler_line_paths),
+        figsize=(fw * len(euler_line_paths), fh),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+        squeeze=False,
+    )
+    for ax, (step, paths) in zip(euler_axs.ravel(), euler_line_paths):
+        _draw_trajectory_paths(
+            ax,
+            paths,
+            np.asarray(x0_multi_line),
+            np.asarray(x1_multi_line),
+            title=f"{step}-step Euler",
+            xlim=xlim,
+            ylim=ylim,
+            fontsize=fontsize,
+            cfg=cfg,
+        )
+    euler_axs.ravel()[0].legend(
+        loc="upper right", fontsize=10, markerscale=6, frameon=True
+    )
+    euler_box_metrics = _rollout_forbidden_box_metrics(
+        cfg, euler_line_paths, "euler"
+    )
+    wandb.log(
+        {
+            "trajectory_euler_lines": wandb.Image(euler_fig),
+            **euler_box_metrics,
+        }
+    )
     return prng_key
 
 
@@ -883,13 +1512,15 @@ def make_loss_fn_args_plot(
     """Make a plot of the loss function arguments."""
     # unpack the full loss arguments
     data_args = loss_fn_args[1:]
-    (x0batch, x1batch, _, sbatch, tbatch, _, _, _, _, _) = (
+    (x0batch, x1batch, label_batch, sbatch, tbatch, _, _, _, _, _) = (
         dist_utils.unreplicate_loss_fn_args(cfg, data_args)
     )
 
     # remove pmap reshaping
     x0batch = jnp.squeeze(x0batch)
     x1batch = jnp.squeeze(x1batch)
+    if label_batch is not None:
+        label_batch = jnp.squeeze(label_batch)
     sbatch = jnp.squeeze(sbatch)
     tbatch = jnp.squeeze(tbatch)
 
@@ -900,7 +1531,7 @@ def make_loss_fn_args_plot(
     fontsize = 12.5
 
     # compute xts
-    xtbatch = statics.interp.batch_calc_It(tbatch, x0batch, x1batch)
+    xtbatch = statics.interp.batch_calc_It(tbatch, x0batch, x1batch, label_batch)
     lowd_problem = is_lowd_problem(cfg)
 
     ## set up plot array
@@ -955,6 +1586,8 @@ def make_loss_fn_args_plot(
                 ax.scatter(xtbatch[:, 0], xtbatch[:, 1], s=0.1, alpha=0.5, marker="o")
             elif jj == 3:
                 ax.scatter(sbatch, tbatch, s=0.1, alpha=0.5, marker="o")
+            if jj < 3:
+                _draw_forbidden_box(ax, cfg)
         else:
             ax.scatter(sbatch, tbatch, s=0.1, alpha=0.5, marker="o")
 

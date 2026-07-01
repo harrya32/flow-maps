@@ -44,6 +44,34 @@ def has_two_stage(cfg: config_dict.ConfigDict) -> bool:
     )
 
 
+def has_endpoint_matching(cfg: config_dict.ConfigDict) -> bool:
+    return hasattr(cfg.training, "endpoint_matching") and getattr(
+        cfg.training.endpoint_matching, "enabled", False
+    )
+
+
+def uses_box_loss_points(cfg: config_dict.ConfigDict) -> bool:
+    return (
+        has_constraint(cfg)
+        and getattr(cfg.constraints, "type", None) == "box_path"
+        and getattr(cfg.constraints, "box_path_mode", "x0_t") == "loss_points"
+    )
+
+
+def uses_flow_map_box_loss_points(cfg: config_dict.ConfigDict) -> bool:
+    return uses_box_loss_points(cfg) and _box_constraint_mode(cfg) == "flow_map"
+
+
+def _box_constraint_mode(cfg: config_dict.ConfigDict) -> str:
+    """Select how box path constraints are evaluated at off-diagonal points."""
+    mode = getattr(cfg.constraints, "constraint_mode", "flow_map")
+    if mode not in ("flow_map", "flow_matching"):
+        raise ValueError(
+            "constraints.constraint_mode must be 'flow_map' or 'flow_matching'"
+        )
+    return mode
+
+
 def _covariance(x: jnp.ndarray) -> jnp.ndarray:
     """Compute sample covariance matrix for a batch of vectors."""
     x_centered = x - jnp.mean(x, axis=0, keepdims=True)
@@ -72,6 +100,58 @@ def _maybe_clip(x: jnp.ndarray, x_clip: float, clip_mode: str = "hard") -> jnp.n
         else:
             raise ValueError(f"Unknown clip_mode: {clip_mode}")
     return x
+
+
+def _box_bounds_from_cfg(
+    cfg: config_dict.ConfigDict,
+) -> Tuple[float, float, float, float]:
+    """Read axis-aligned forbidden-box bounds from the constraint config."""
+    constraint_cfg = cfg.constraints
+    xlim = getattr(constraint_cfg, "xlim", None)
+    ylim = getattr(constraint_cfg, "ylim", None)
+    if xlim is None:
+        xlim = getattr(constraint_cfg, "box_xlim", None)
+    if ylim is None:
+        ylim = getattr(constraint_cfg, "box_ylim", None)
+    if xlim is None or ylim is None:
+        raise ValueError(
+            "box_path constraints require constraints.xlim and constraints.ylim"
+        )
+
+    xmin, xmax = [float(value) for value in xlim]
+    ymin, ymax = [float(value) for value in ylim]
+    return xmin, xmax, ymin, ymax
+
+
+def _box_signed_distance(
+    x: jnp.ndarray, bounds: Tuple[float, float, float, float]
+) -> jnp.ndarray:
+    """Signed distance to an axis-aligned box, positive outside and negative inside."""
+    xmin, xmax, ymin, ymax = bounds
+    center = jnp.asarray([(xmin + xmax) / 2.0, (ymin + ymax) / 2.0], dtype=x.dtype)
+    half_size = jnp.asarray(
+        [(xmax - xmin) / 2.0, (ymax - ymin) / 2.0], dtype=x.dtype
+    )
+    q = jnp.abs(x - center) - half_size
+    outside_q = jnp.maximum(q, 0.0)
+    eps = jnp.asarray(1e-12, dtype=x.dtype)
+    outside = jnp.sqrt(jnp.sum(outside_q * outside_q, axis=-1) + eps) - jnp.sqrt(eps)
+    inside = jnp.minimum(jnp.maximum(q[..., 0], q[..., 1]), 0.0)
+    return outside + inside
+
+
+def _box_path_penalty(x: jnp.ndarray, cfg: config_dict.ConfigDict) -> jnp.ndarray:
+    bounds = _box_bounds_from_cfg(cfg)
+    signed_distance = _box_signed_distance(x, bounds)
+    margin = float(getattr(cfg.constraints, "margin", 0.0))
+    penalties = jax.nn.relu(margin - signed_distance) ** 2
+
+    penalty_clip = float(getattr(cfg.constraints, "box_penalty_clip", 0.0))
+    if penalty_clip > 0:
+        penalties = jnp.minimum(penalties, penalty_clip)
+
+    lambda_box = float(getattr(cfg.constraints, "lambda_box", 1.0))
+    return cfg.constraints.weight * lambda_box * jnp.mean(penalties)
 
 
 def _select_kde_observations(
@@ -122,6 +202,39 @@ def _rbf_kernel_mixture(
     scales = 2.0 * (bws[:, None, None] ** 2)
     kernels = jnp.exp(-sqdist[None, :, :] / scales)
     return jnp.mean(kernels, axis=0)
+
+
+def _weighted_kernel_mean(
+    kernel: jnp.ndarray,
+    x_weights: jnp.ndarray,
+    y_weights: jnp.ndarray,
+    eps: float,
+) -> jnp.ndarray:
+    """Weighted average of a kernel matrix with safe empty-mask handling."""
+    weights = x_weights[:, None] * y_weights[None, :]
+    denom = jnp.maximum(jnp.sum(x_weights) * jnp.sum(y_weights), eps)
+    return jnp.sum(kernel * weights) / denom
+
+
+def _weighted_mmd(
+    x: jnp.ndarray,
+    y: jnp.ndarray,
+    x_weights: jnp.ndarray,
+    y_weights: jnp.ndarray,
+    bandwidths: jnp.ndarray,
+    eps: float,
+) -> jnp.ndarray:
+    """Biased weighted MMD^2 between two batches."""
+    k_xx = _rbf_kernel_mixture(x, x, bandwidths)
+    k_yy = _rbf_kernel_mixture(y, y, bandwidths)
+    k_xy = _rbf_kernel_mixture(x, y, bandwidths)
+
+    mmd2 = (
+        _weighted_kernel_mean(k_xx, x_weights, x_weights, eps)
+        + _weighted_kernel_mean(k_yy, y_weights, y_weights, eps)
+        - 2.0 * _weighted_kernel_mean(k_xy, x_weights, y_weights, eps)
+    )
+    return jnp.maximum(mmd2, 0.0)
 
 
 def _path_positions(
@@ -250,6 +363,173 @@ def kde_path_constraint(
     return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
 
 
+def box_path_constraint(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    t: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> float:
+    """Penalize learned one-shot path samples that enter a forbidden box."""
+    tau = jnp.clip(t, 0.0, 1.0)
+    x_tau = _path_positions(params, x0, label, tau, X=X)
+    x_tau = _maybe_clip_constraint_state(x_tau, cfg)
+
+    loss = _box_path_penalty(x_tau, cfg)
+    return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
+
+
+def _euler_flow_matching_endpoint(
+    params: Parameters,
+    x_s: jnp.ndarray,
+    label: jnp.ndarray,
+    s: float,
+    t: float,
+    rng: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    """Integrate dx/dt=b_t(x) from s to t with differentiable Euler steps."""
+    n_steps = int(getattr(cfg.constraints, "euler_steps", 25))
+    if n_steps < 1:
+        raise ValueError("constraints.euler_steps must be >= 1")
+
+    dt = (t - s) / float(n_steps)
+
+    def step(x, idx):
+        tau = s + dt * idx.astype(x.dtype)
+        b_tau = X.apply(
+            params,
+            tau,
+            x,
+            label,
+            train=False,
+            method="calc_b",
+            rngs=rng,
+        )
+        x_next = x + dt * b_tau
+        return x_next, None
+
+    x_t, _ = jax.lax.scan(step, x_s, jnp.arange(n_steps))
+    return x_t
+
+
+def _sample_constraint_times(
+    key: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Sample upper-triangle times with the same law as off-diagonal flow maps."""
+    times = jax.random.uniform(
+        key,
+        shape=(2,),
+        minval=cfg.training.tmin,
+        maxval=cfg.training.tmax,
+    )
+    return jnp.minimum(times[0], times[1]), jnp.maximum(times[0], times[1])
+
+
+def _flow_matching_constraint_batch_size(
+    cfg: config_dict.ConfigDict,
+    total_bs: int,
+) -> int:
+    """Match the off-diagonal constraint batch size from a reference flow-map run."""
+    constraint_bs = int(getattr(cfg.constraints, "constraint_batch_size", 0))
+    if constraint_bs > 0:
+        return min(total_bs, constraint_bs)
+
+    reference_diag_fraction = getattr(
+        cfg.constraints, "constraint_reference_diag_fraction", None
+    )
+    if reference_diag_fraction is not None:
+        diag_bs = max(1, int(total_bs * float(reference_diag_fraction)))
+        return max(1, total_bs - diag_bs)
+
+    constraint_fraction = float(
+        getattr(cfg.constraints, "constraint_batch_fraction", 1.0)
+    )
+    return max(1, min(total_bs, int(total_bs * constraint_fraction)))
+
+
+def _box_loss_point_constraint(
+    params: Parameters,
+    x_s: jnp.ndarray,
+    x_st: jnp.ndarray,
+    label: jnp.ndarray,
+    s: float,
+    t: float,
+    rng: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> float:
+    """Evaluate the configured off-diagonal box constraint at one sample."""
+    mode = _box_constraint_mode(cfg)
+    if mode == "flow_map":
+        x_box = x_st
+    elif mode == "flow_matching":
+        x_box = _euler_flow_matching_endpoint(
+            params,
+            x_s,
+            label,
+            s,
+            t,
+            rng,
+            X=X,
+            cfg=cfg,
+        )
+    else:
+        raise ValueError(f"Unknown constraints.constraint_mode: {mode}")
+
+    return _box_path_penalty(x_box, cfg)
+
+
+def flow_matching_box_path_constraint(
+    params: Parameters,
+    x0: jnp.ndarray,
+    x1: jnp.ndarray,
+    label: jnp.ndarray,
+    dropout_keys: jnp.ndarray,
+    *,
+    interp: interpolant.Interpolant,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> float:
+    """Penalize Euler/BPTT flow-matching rollouts over sampled (s,t) pairs."""
+    constraint_bs = _flow_matching_constraint_batch_size(cfg, x0.shape[0])
+    x0 = x0[:constraint_bs]
+    x1 = x1[:constraint_bs]
+    if label is not None:
+        label = label[:constraint_bs]
+    dropout_keys = dropout_keys[:constraint_bs]
+
+    @mean_reduce
+    @functools.partial(jax.vmap, in_axes=(None, 0, 0, 0, 0))
+    def batch_constraint(params, x0_i, x1_i, label_i, key_i):
+        s_i, t_i = _sample_constraint_times(key_i, cfg)
+        x_s = interp.calc_It(s_i, x0_i, x1_i, label_i)
+        x_t = _euler_flow_matching_endpoint(
+            params,
+            x_s,
+            label_i,
+            s_i,
+            t_i,
+            {"dropout": key_i},
+            X=X,
+            cfg=cfg,
+        )
+        return _box_path_penalty(x_t, cfg)
+
+    return jnp.nan_to_num(
+        batch_constraint(params, x0, x1, label, dropout_keys),
+        nan=0.0,
+        posinf=1e6,
+        neginf=1e6,
+    )
+
+
 def endpoint_mmd_constraint(
     params: Parameters,
     x0: jnp.ndarray,
@@ -298,6 +578,61 @@ def endpoint_mmd_constraint(
     return jnp.nan_to_num(mmd2, nan=0.0, posinf=1e6, neginf=1e6)
 
 
+def endpoint_matching_loss(
+    params: Parameters,
+    x0: jnp.ndarray,
+    x1: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> float:
+    """Endpoint distribution matching for the direct map X_{0,1}(x0)."""
+    endpoint_cfg = cfg.training.endpoint_matching
+    tau = jnp.ones((x0.shape[0],), dtype=x0.dtype)
+    x1_hat = _path_positions(params, x0, label, tau, X=X)
+
+    x_clip = float(getattr(endpoint_cfg, "x_clip", 0.0))
+    clip_mode = getattr(endpoint_cfg, "clip_mode", "hard")
+    x1_hat = _maybe_clip(x1_hat, x_clip, clip_mode=clip_mode)
+    x1 = _maybe_clip(x1, x_clip, clip_mode=clip_mode)
+
+    if bool(getattr(endpoint_cfg, "normalize", False)):
+        eps = float(getattr(endpoint_cfg, "normalize_eps", 1e-3))
+        center = jnp.mean(x1, axis=0, keepdims=True)
+        scale = jnp.maximum(jnp.std(x1, axis=0, keepdims=True), eps)
+        x1_hat = (x1_hat - center) / scale
+        x1 = (x1 - center) / scale
+
+    bandwidths = jnp.asarray(
+        getattr(endpoint_cfg, "bandwidths", [0.25, 0.5, 1.0, 2.0, 4.0]),
+        dtype=x1.dtype,
+    )
+    eps = float(getattr(endpoint_cfg, "eps", 1e-6))
+    all_weights = jnp.ones((x0.shape[0],), dtype=x1.dtype)
+
+    if not bool(getattr(endpoint_cfg, "branch_conditional", False)):
+        loss = _weighted_mmd(x1_hat, x1, all_weights, all_weights, bandwidths, eps)
+        return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
+
+    branch_axis = int(getattr(endpoint_cfg, "branch_axis", 1))
+    branch_threshold = float(getattr(endpoint_cfg, "branch_threshold", 0.0))
+    branch_weights = (x0[:, branch_axis] >= branch_threshold).astype(x1.dtype)
+    branch_weight_list = [branch_weights, 1.0 - branch_weights]
+
+    loss = 0.0
+    normalizer = 0.0
+    min_branch_mass = float(getattr(endpoint_cfg, "min_branch_mass", 1.0))
+    for weights in branch_weight_list:
+        branch_present = (jnp.sum(weights) >= min_branch_mass).astype(x1.dtype)
+        branch_mmd = _weighted_mmd(x1_hat, x1, weights, weights, bandwidths, eps)
+        loss += branch_present * branch_mmd
+        normalizer += branch_present
+
+    loss = loss / jnp.maximum(normalizer, 1.0)
+    return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
+
+
 def diagonal_term(
     params: Parameters,
     x0: jnp.ndarray,
@@ -312,8 +647,8 @@ def diagonal_term(
     """Compute the diagonal (interpolant) term of the loss."""
 
     # compute interpolant and the target
-    It = interp.calc_It(t, x0, x1)
-    It_dot = interp.calc_It_dot(t, x0, x1)
+    It = interp.calc_It(t, x0, x1, label)
+    It_dot = interp.calc_It_dot(t, x0, x1, label)
 
     # compute the weighted loss
     bt = X.apply(params, t, It, label, train=True, method="calc_b", rngs=rng)
@@ -342,7 +677,7 @@ def psd_term(
     stopgrad_type: str,
 ) -> float:
     """Compute the PSD (Progressive Self-Distillation) term of the loss."""
-    Is = interp.calc_It(s, x0, x1)
+    Is = interp.calc_It(s, x0, x1, label)
 
     # compute the full jump
     X_st, phi_st = X.apply(
@@ -429,14 +764,34 @@ def lsd_term(
     interp: interpolant.Interpolant,
     X: flow_map.FlowMap,
     stopgrad_type: str,
+    cfg: config_dict.ConfigDict,
+    constraint_scale: jnp.ndarray,
+    constraint_weight_factor: jnp.ndarray,
 ) -> float:
     """Compute the LSD term of the loss."""
-    Is = interp.calc_It(s, x0, x1)
+    Is = interp.calc_It(s, x0, x1, label)
 
     # Compute the distillation loss
     Xst_Is, dt_Xst = X.apply(
         params, s, t, Is, label, train=False, method="partial_t", rngs=rng
     )
+    box_loss = 0.0
+    if uses_flow_map_box_loss_points(cfg):
+        box_loss = (
+            constraint_scale
+            * constraint_weight_factor
+            * _box_loss_point_constraint(
+                params,
+                Is,
+                Xst_Is,
+                label,
+                s,
+                t,
+                rng,
+                X=X,
+                cfg=cfg,
+            )
+        )
 
     if stopgrad_type == "convex":
         Xst_Is = jax.lax.stop_gradient(Xst_Is)
@@ -467,7 +822,7 @@ def lsd_term(
     weight_st = X.apply(params, s, t, method="calc_weight")
     error = b_eval - dt_Xst
     lsd_loss = jnp.sum(error**2)
-    return jnp.exp(-weight_st) * lsd_loss + weight_st
+    return jnp.exp(-weight_st) * lsd_loss + weight_st + box_loss
 
 
 def esd_term(
@@ -485,7 +840,7 @@ def esd_term(
     stopgrad_type: str,
 ) -> float:
     """Compute the ESD term of the loss."""
-    Is = interp.calc_It(s, x0, x1)
+    Is = interp.calc_It(s, x0, x1, label)
 
     # compute the derivative with respect to the first time
     _, ds_Xst = X.apply(
@@ -590,9 +945,22 @@ def setup_loss(
 
     # Pure off-diagonal loss
     @mean_reduce
-    @functools.partial(jax.vmap, in_axes=(None, None, 0, 0, 0, 0, 0, 0, 0, 0))
+    @functools.partial(
+        jax.vmap, in_axes=(None, None, 0, 0, 0, 0, 0, 0, 0, 0, None, None)
+    )
     def offdiagonal_only_loss(
-        params, teacher_params, x0, x1, label, s, t, u, h, dropout_keys
+        params,
+        teacher_params,
+        x0,
+        x1,
+        label,
+        s,
+        t,
+        u,
+        h,
+        dropout_keys,
+        constraint_scale,
+        constraint_weight_factor,
     ):
         rng = {"dropout": dropout_keys}
 
@@ -626,6 +994,9 @@ def setup_loss(
                 interp=interp,
                 X=net,
                 stopgrad_type=cfg.training.stopgrad_type,
+                cfg=cfg,
+                constraint_scale=constraint_scale,
+                constraint_weight_factor=constraint_weight_factor,
             )
         elif cfg.training.loss_type == "esd":
             return esd_term(
@@ -662,6 +1033,9 @@ def setup_loss(
         total_bs = x0.shape[0]
         diag_bs, offdiag_bs = loss_args._get_diag_offdiag_bs(cfg, total_bs)
         stage2_scale = jnp.mean(stage2_scale_batch)
+        constraint_scale = jnp.mean(constraint_scale_batch)
+        if has_constraint(cfg) and bool(getattr(cfg.constraints, "stage2_only", False)):
+            constraint_scale = constraint_scale * stage2_scale
 
         if has_two_stage(cfg):
             two_stage_cfg = cfg.training.two_stage
@@ -688,6 +1062,16 @@ def setup_loss(
 
         weighted_base_loss = 0.0
         base_normalizer = 0.0
+        expected_base_normalizer = jnp.maximum(
+            diag_weight * diag_bs + offdiag_weight * offdiag_bs,
+            1.0,
+        )
+        loss_points_box_factor = 0.0
+        if offdiag_bs > 0 and uses_flow_map_box_loss_points(cfg):
+            loss_points_box_factor = expected_base_normalizer / jnp.maximum(
+                offdiag_weight * offdiag_bs,
+                1e-6,
+            )
 
         # Compute diagonal loss on first portion
         if diag_bs > 0:
@@ -720,6 +1104,8 @@ def setup_loss(
                 u_offdiag,
                 h_offdiag,
                 dropout_keys[diag_bs:],
+                constraint_scale,
+                loss_points_box_factor,
             )
             weighted_base_loss += offdiag_weight * offdiag_loss * offdiag_bs
             base_normalizer += offdiag_weight * offdiag_bs
@@ -747,11 +1133,21 @@ def setup_loss(
                     )
                 )
 
+        # Optional endpoint distribution matching for X_{0,1}(x0) -> x1.
+        if has_endpoint_matching(cfg):
+            endpoint_cfg = cfg.training.endpoint_matching
+            endpoint_weight = float(getattr(endpoint_cfg, "weight", 1.0))
+            total_loss += endpoint_weight * endpoint_matching_loss(
+                params,
+                x0,
+                x1,
+                label,
+                X=net,
+                cfg=cfg,
+            )
+
         # Optional trajectory constraint terms
         if has_constraint(cfg):
-            constraint_scale = jnp.mean(constraint_scale_batch)
-            if bool(getattr(cfg.constraints, "stage2_only", False)):
-                constraint_scale = constraint_scale * stage2_scale
             if cfg.constraints.type == "mid_moment":
                 total_loss += constraint_scale * mid_moment_constraint(
                     params,
@@ -770,6 +1166,38 @@ def setup_loss(
                     X=net,
                     cfg=cfg,
                 )
+            elif cfg.constraints.type == "box_path":
+                constraint_mode = _box_constraint_mode(cfg)
+                box_path_mode = getattr(cfg.constraints, "box_path_mode", "x0_t")
+                if constraint_mode == "flow_matching":
+                    total_loss += constraint_scale * flow_matching_box_path_constraint(
+                        params,
+                        x0,
+                        x1,
+                        label,
+                        dropout_keys,
+                        interp=interp,
+                        X=net,
+                        cfg=cfg,
+                    )
+                elif box_path_mode == "x0_t":
+                    total_loss += constraint_scale * box_path_constraint(
+                        params,
+                        x0,
+                        label,
+                        t,
+                        X=net,
+                        cfg=cfg,
+                    )
+                elif box_path_mode == "loss_points":
+                    if cfg.training.loss_type != "lsd":
+                        raise ValueError(
+                            "constraints.box_path_mode='loss_points' requires LSD loss"
+                        )
+                else:
+                    raise ValueError(
+                        f"Unknown constraints.box_path_mode: {box_path_mode}"
+                    )
             else:
                 raise ValueError(f"Unknown constraint type: {cfg.constraints.type}")
 

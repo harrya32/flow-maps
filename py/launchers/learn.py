@@ -123,8 +123,10 @@ def setup_state(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray) -> Tuple[
     # define dataset
     cfg, ds, prng_key = datasets.setup_target(cfg, prng_key)
     ex_input = next(ds)
-    if isinstance(ex_input, dict):  # handle image datasets
+    if isinstance(ex_input, dict) and "image" in ex_input:  # handle image datasets
         ex_input = ex_input["image"][0]
+    elif isinstance(ex_input, dict) and "x1" in ex_input:  # paired low-d datasets
+        ex_input = ex_input["x1"][0]
     else:
         ex_input = ex_input[0]
     interp = interpolant.setup_interpolant(cfg)

@@ -110,6 +110,7 @@ python py/launchers/learn.py \
 python py/launchers/learn.py --cfg_path configs.celeba64 --slurm_id 0
 python py/launchers/learn.py --cfg_path configs.afhq64 --slurm_id 0
 python py/launchers/learn.py --cfg_path configs.checker --slurm_id 0
+python py/launchers/learn.py --cfg_path configs.four_gaussians --slurm_id 0
 python py/launchers/learn.py \
     --cfg_path configs.schiebinger_lsd \
     --slurm_id 0 \
@@ -153,6 +154,8 @@ Experiments on the following datasets can be run with the included code:
 - **CIFAR-10**: Auto-downloaded via TensorFlow Datasets.
 - **CelebA-64**: Auto-downloaded via TensorFlow Datasets; pre-processed via cropping in included code.
 - **Checker**: Generated on-the-fly.
+- **Four Gaussians**: Generated on-the-fly with paired interpolant endpoints
+  constrained to A -> D and C -> B.
 - **AFHQ-64**: You'll need to manually download this via [HuggingFace](https://huggingface.co/datasets/huggan/AFHQv2) and crop to 64x64.
 - **Schiebinger (reprogramming)**: Expects a local `.h5ad` file (`reprogramming_schiebinger.h5ad` by default) and supports serum subsetting + PCA embedding in code.
 

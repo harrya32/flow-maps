@@ -211,6 +211,197 @@ def sample_facing_moons(
     return jnp.asarray(samples)
 
 
+def sample_four_gaussian_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for the four-Gaussian transport toy.
+
+    Source components are A=(-3, 3) and C=(-3, -3). Target components are
+    B=(3, 3) and D=(3, -3). The coupling is deliberately crossed:
+    A -> D and C -> B.
+    """
+
+    label_key, x0_key, x1_key = jax.random.split(key, num=3)
+    pair_labels = jax.random.bernoulli(label_key, p=0.5, shape=(n_samples,))
+    pair_labels_i = pair_labels.astype(jnp.int32)
+
+    source_means = jnp.asarray(
+        [[-3.0, 3.0], [-3.0, -3.0]], dtype=jnp.float32
+    )
+    target_means = jnp.asarray(
+        [[3.0, -3.0], [3.0, 3.0]], dtype=jnp.float32
+    )
+
+    x0s = source_means[pair_labels_i] + std * jax.random.normal(
+        x0_key, shape=(n_samples, 2)
+    )
+    x1s = target_means[pair_labels_i] + std * jax.random.normal(
+        x1_key, shape=(n_samples, 2)
+    )
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+        "pair_label": np.asarray(pair_labels_i, dtype=np.int32),
+    }
+
+
+def sample_triangle_gaussian_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for the triangular Gaussian process.
+
+    Endpoints are coupled independently: x0 ~ N((0, 0), std^2 I) and
+    x1 ~ N((3, 0), std^2 I). Under the custom triangle interpolant,
+    p_t remains Gaussian with covariance ((1 - t)^2 + t^2) std^2 I.
+    """
+
+    x0_key, x1_key = jax.random.split(key)
+    endpoint_shift = jnp.asarray([3.0, 0.0], dtype=jnp.float32)
+    x0s = std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = endpoint_shift + std * jax.random.normal(x1_key, shape=(n_samples, 2))
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+    }
+
+
+def sample_fork_gaussian_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for a one-source/two-target Gaussian fork.
+
+    Source samples are drawn from N((0, 0), std^2 I). Each source sample is
+    independently assigned to the left or right target with equal probability,
+    then paired with a target sample from N((-2, 2), std^2 I) or
+    N((2, 2), std^2 I).
+    """
+
+    branch_key, x0_key, x1_key = jax.random.split(key, num=3)
+    branch_labels = jax.random.bernoulli(branch_key, p=0.5, shape=(n_samples,))
+    branch_labels_i = branch_labels.astype(jnp.int32)
+    target_means = jnp.asarray(
+        [[-2.0, 2.0], [2.0, 2.0]], dtype=jnp.float32
+    )
+
+    x0s = std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = target_means[branch_labels_i] + std * jax.random.normal(
+        x1_key, shape=(n_samples, 2)
+    )
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+        "branch_label": np.asarray(branch_labels_i, dtype=np.int32),
+    }
+
+
+def sample_box_avoiding_bezier_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    std: float,
+    height: float,
+    reject_box: bool = False,
+    box_xlim=(-1.5, 1.5),
+    box_ylim=(-1.0, 1.0),
+    reject_times=None,
+    chunk_size: int = 65_536,
+) -> Dict[str, np.ndarray]:
+    """Sample endpoints and branch signs for box-avoiding Bezier interpolants.
+
+    Source samples are drawn from N((-3, 0), std^2 I), target samples from
+    N((3, 0), std^2 I), and each pair receives an independent branch sign in
+    {-1, +1}. The sign is used by BezierBoxInterpolant to place the control
+    point above or below the infeasible box.
+    """
+
+    source_mean = jnp.asarray([-3.0, 0.0], dtype=jnp.float32)
+    target_mean = jnp.asarray([3.0, 0.0], dtype=jnp.float32)
+
+    def draw_candidates(draw_key, n_draw):
+        sign_key, x0_key, x1_key = jax.random.split(draw_key, num=3)
+        signs = 2.0 * jax.random.bernoulli(sign_key, p=0.5, shape=(n_draw,)) - 1.0
+        x0s = source_mean + std * jax.random.normal(x0_key, shape=(n_draw, 2))
+        x1s = target_mean + std * jax.random.normal(x1_key, shape=(n_draw, 2))
+        return x0s, x1s, signs
+
+    if not reject_box:
+        x0s, x1s, signs = draw_candidates(key, n_samples)
+        return {
+            "x0": np.asarray(x0s, dtype=np.float32),
+            "x1": np.asarray(x1s, dtype=np.float32),
+            "label": np.asarray(signs, dtype=np.float32),
+        }
+
+    if reject_times is None:
+        reject_times = np.linspace(0.0, 1.0, 81, dtype=np.float32)
+    reject_times = jnp.asarray(reject_times, dtype=jnp.float32)
+    box_xlim = jnp.asarray(box_xlim, dtype=jnp.float32)
+    box_ylim = jnp.asarray(box_ylim, dtype=jnp.float32)
+
+    def keep_mask(x0s, x1s, signs):
+        controls = 0.5 * (x0s + x1s)
+        controls = controls.at[:, 1].add(float(height) * signs)
+        t = reject_times[:, None, None]
+        paths = (
+            ((1.0 - t) ** 2) * x0s[None, :, :]
+            + 2.0 * t * (1.0 - t) * controls[None, :, :]
+            + (t**2) * x1s[None, :, :]
+        )
+        inside = (
+            (paths[..., 0] >= box_xlim[0])
+            & (paths[..., 0] <= box_xlim[1])
+            & (paths[..., 1] >= box_ylim[0])
+            & (paths[..., 1] <= box_ylim[1])
+        )
+        return ~jnp.any(inside, axis=0)
+
+    x0_chunks = []
+    x1_chunks = []
+    sign_chunks = []
+    total = 0
+    draw_key = key
+    chunk_size = max(1, int(chunk_size))
+    while total < n_samples:
+        remaining = n_samples - total
+        n_draw = min(max(2 * remaining, 4096), chunk_size)
+        draw_key, subkey = jax.random.split(draw_key)
+        x0cand, x1cand, signcand = draw_candidates(subkey, n_draw)
+        keep = np.asarray(keep_mask(x0cand, x1cand, signcand))
+        if not np.any(keep):
+            continue
+
+        x0_keep = np.asarray(x0cand, dtype=np.float32)[keep]
+        x1_keep = np.asarray(x1cand, dtype=np.float32)[keep]
+        sign_keep = np.asarray(signcand, dtype=np.float32)[keep]
+        take = min(remaining, x0_keep.shape[0])
+        x0_chunks.append(x0_keep[:take])
+        x1_chunks.append(x1_keep[:take])
+        sign_chunks.append(sign_keep[:take])
+        total += take
+
+    x0s = np.concatenate(x0_chunks, axis=0)
+    x1s = np.concatenate(x1_chunks, axis=0)
+    signs = np.concatenate(sign_chunks, axis=0)
+
+    return {
+        "x0": x0s.astype(np.float32),
+        "x1": x1s.astype(np.float32),
+        "label": signs.astype(np.float32),
+    }
+
+
 def _resolve_schiebinger_base_path(cfg: config_dict.ConfigDict) -> Path:
     dataset_location = getattr(cfg.problem, "dataset_location", "")
     default_filename = getattr(
@@ -515,14 +706,54 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
             )
             return source_pool[idx]
 
+    elif cfg.problem.base == "four_gaussians_source":
+        std = float(getattr(cfg.problem, "four_gaussians_std", 0.35))
+        source_means = jnp.asarray(
+            [[-3.0, 3.0], [-3.0, -3.0]], dtype=jnp.float32
+        )
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            label_key, noise_key = jax.random.split(key)
+            labels = jax.random.bernoulli(label_key, p=0.5, shape=(bs,)).astype(
+                jnp.int32
+            )
+            return source_means[labels] + std * jax.random.normal(
+                noise_key, shape=(bs, *ex_input.shape)
+            )
+
+    elif cfg.problem.base == "triangle_gaussian_source":
+        std = float(getattr(cfg.problem, "triangle_std", 0.18))
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return std * jax.random.normal(key, shape=(bs, *ex_input.shape))
+
+    elif cfg.problem.base == "fork_gaussian_source":
+        std = float(getattr(cfg.problem, "fork_std", 0.12))
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return std * jax.random.normal(key, shape=(bs, *ex_input.shape))
+
+    elif cfg.problem.base == "box_avoiding_source":
+        std = float(getattr(cfg.problem, "box_avoiding_std", 0.25))
+        source_mean = jnp.asarray([-3.0, 0.0], dtype=jnp.float32)
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return source_mean + std * jax.random.normal(
+                key, shape=(bs, *ex_input.shape)
+            )
+
     else:
         raise ValueError("Specified base density is not implemented.")
 
     return sample_rho0
 
 
-def np_to_tfds(cfg: config_dict.ConfigDict, x1s: np.ndarray) -> tf.data.Dataset:
-    """Given a NumPy array, convert to a TensorFlow dataset with batching and shuffling."""
+def np_to_tfds(cfg: config_dict.ConfigDict, x1s) -> tf.data.Dataset:
+    """Convert NumPy arrays or array dictionaries to a shuffled TF dataset."""
     return (
         tf.data.Dataset.from_tensor_slices(x1s)
         .shuffle(50_000, reshuffle_each_iteration=True)
@@ -562,6 +793,68 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         x1s = np.asarray(x1s)
         rescale_value = float(np.std(x1s))
         ds = np_to_tfds(cfg, x1s)
+    elif cfg.problem.target == "four_gaussians":
+        assert cfg.problem.d == 2, "Four-Gaussian target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_four_gaussian_pairs(
+            n_samples,
+            key,
+            std=float(getattr(cfg.problem, "four_gaussians_std", 0.35)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = np_to_tfds(cfg, paired)
+    elif cfg.problem.target == "triangle_gaussian":
+        assert cfg.problem.d == 2, "Triangle Gaussian target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_triangle_gaussian_pairs(
+            n_samples,
+            key,
+            std=float(getattr(cfg.problem, "triangle_std", 0.18)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = np_to_tfds(cfg, paired)
+    elif cfg.problem.target == "fork_gaussian":
+        assert cfg.problem.d == 2, "Fork Gaussian target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_fork_gaussian_pairs(
+            n_samples,
+            key,
+            std=float(getattr(cfg.problem, "fork_std", 0.12)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = np_to_tfds(cfg, paired)
+    elif cfg.problem.target == "box_avoiding_bezier":
+        assert cfg.problem.d == 2, "Box-avoiding Bezier target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_box_avoiding_bezier_pairs(
+            n_samples,
+            key,
+            std=float(getattr(cfg.problem, "box_avoiding_std", 0.25)),
+            height=float(getattr(cfg.problem, "bezier_height", 4.0)),
+            reject_box=bool(getattr(cfg.problem, "reject_infeasible", False)),
+            box_xlim=getattr(cfg.problem, "infeasible_box_xlim", [-1.5, 1.5]),
+            box_ylim=getattr(cfg.problem, "infeasible_box_ylim", [-1.0, 1.0]),
+            reject_times=getattr(cfg.problem, "reject_times", None),
+            chunk_size=int(getattr(cfg.problem, "rejection_chunk_size", 65_536)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = np_to_tfds(cfg, paired)
     elif cfg.problem.target == "schiebinger":
         split_data = load_schiebinger_splits(cfg, subsample_endpoints=True)
         x0s = split_data["x0_train"]

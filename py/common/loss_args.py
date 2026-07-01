@@ -6,7 +6,7 @@ Code for setting up arguments for loss functions.
 """
 
 import functools
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -209,7 +209,7 @@ def get_loss_fn_args_randomness(
 
 def get_batch(
     cfg: config_dict.ConfigDict, statics: state_utils.StaticArgs, prng_key: jnp.ndarray
-) -> int:
+) -> Tuple[Optional[jnp.ndarray], jnp.ndarray, Optional[jnp.ndarray], jnp.ndarray]:
     """Extract a batch based on the structure expected for image
     or non-image datasets."""
     is_image_dataset = (cfg.problem.target in ["cifar10", "celeb_a"]) or (
@@ -217,19 +217,25 @@ def get_batch(
     )
 
     batch = next(statics.ds)
+    x0batch = None
     if is_image_dataset:
         x1batch = batch["image"]
         label_batch = batch["label"]
+    elif isinstance(batch, dict) and "x1" in batch:
+        x0batch = batch.get("x0")
+        x1batch = batch["x1"]
+        label_batch = batch.get("label")
     else:
         x1batch = batch
         label_batch = None
 
     # add droput to randomly replace fraction cfg.class_dropout of labels by num_classes
     # if not conditional, we don't need the labels
-    if not cfg.training.conditional:
+    interp_uses_labels = bool(getattr(cfg.problem, "interp_uses_labels", False))
+    if not cfg.training.conditional and not interp_uses_labels:
         label_batch = None
 
-    elif cfg.training.class_dropout > 0:
+    elif cfg.training.conditional and cfg.training.class_dropout > 0:
         assert cfg.network.use_cfg  # class dropout doesn't make sense without cfg
         mask = jax.random.bernoulli(
             prng_key, cfg.training.class_dropout, shape=(cfg.optimization.bs,)
@@ -238,7 +244,7 @@ def get_batch(
         label_batch = label_batch.at[mask].set(cfg.problem.num_classes)
         prng_key = jax.random.split(prng_key)[0]
 
-    return x1batch, label_batch, prng_key
+    return x0batch, x1batch, label_batch, prng_key
 
 
 def get_loss_fn_args(
@@ -272,7 +278,9 @@ def get_loss_fn_args(
     )
 
     # grab next batch of samples and labels
-    x1batch, label_batch, prng_key = get_batch(cfg, statics, prng_key)
+    paired_x0batch, x1batch, label_batch, prng_key = get_batch(cfg, statics, prng_key)
+    if paired_x0batch is not None:
+        x0batch = paired_x0batch
 
     # set up the teacher (uses current params for self-distillation)
     teacher_params = select_teacher_params(cfg, train_state)

@@ -137,6 +137,29 @@ def sample(
     return final_state
 
 
+def sample_trajectory(
+    apply_flow_map: Callable, variables: Dict, x0: jnp.ndarray, N: int, label: int
+) -> jnp.ndarray:
+    """Track every node in an N-step unconditional sample trajectory."""
+    ts = jnp.linspace(0.0, 1.0, N + 1)
+
+    def step(x, idx):
+        x_next = apply_flow_map(
+            variables,
+            ts[idx],
+            ts[idx + 1],
+            x,
+            label=label,
+            train=False,
+            calc_weight=False,
+            return_X_and_phi=False,
+        )
+        return x_next, x_next
+
+    _, states = jax.lax.scan(step, x0, jnp.arange(N))
+    return jnp.concatenate([x0[None, ...], states], axis=0)
+
+
 @functools.partial(jax.jit, static_argnums=(0, 3))
 @functools.partial(jax.vmap, in_axes=(None, None, 0, None, 0))
 def batch_sample(
@@ -144,6 +167,15 @@ def batch_sample(
 ) -> jnp.ndarray:
     """Batch unconditional sampling."""
     return sample(apply_flow_map, variables, x0s, N, label)
+
+
+@functools.partial(jax.jit, static_argnums=(0, 3))
+@functools.partial(jax.vmap, in_axes=(None, None, 0, None, 0))
+def batch_sample_trajectory(
+    apply_flow_map: Callable, variables: Dict, x0s: jnp.ndarray, N: int, label: int
+) -> jnp.ndarray:
+    """Batch trajectory tracking for unconditional sampling."""
+    return sample_trajectory(apply_flow_map, variables, x0s, N, label)
 
 
 @functools.partial(
