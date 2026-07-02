@@ -106,6 +106,52 @@ def _np_points_in_forbidden_box(points: np.ndarray, bounds) -> np.ndarray:
     )
 
 
+def _np_segments_intersect_forbidden_box(
+    starts: np.ndarray, ends: np.ndarray, bounds
+) -> np.ndarray:
+    """Return whether each 2D segment intersects an axis-aligned box."""
+    xmin, xmax, ymin, ymax = bounds
+    starts = np.asarray(starts, dtype=np.float64)
+    ends = np.asarray(ends, dtype=np.float64)
+
+    d = ends - starts
+    tmin = np.zeros(starts.shape[0], dtype=np.float64)
+    tmax = np.ones(starts.shape[0], dtype=np.float64)
+    valid = np.ones(starts.shape[0], dtype=bool)
+
+    for axis, low, high in [(0, xmin, xmax), (1, ymin, ymax)]:
+        p = starts[:, axis]
+        v = d[:, axis]
+        parallel = np.abs(v) < 1e-12
+        valid &= (~parallel) | ((p >= low) & (p <= high))
+
+        nonparallel = ~parallel
+        t1 = np.zeros_like(tmin)
+        t2 = np.zeros_like(tmin)
+        t1[nonparallel] = (low - p[nonparallel]) / v[nonparallel]
+        t2[nonparallel] = (high - p[nonparallel]) / v[nonparallel]
+        axis_min = np.minimum(t1, t2)
+        axis_max = np.maximum(t1, t2)
+
+        tmin[nonparallel] = np.maximum(tmin[nonparallel], axis_min[nonparallel])
+        tmax[nonparallel] = np.minimum(tmax[nonparallel], axis_max[nonparallel])
+
+    return valid & (tmax >= tmin) & (tmax >= 0.0) & (tmin <= 1.0)
+
+
+def _np_trajectory_forbidden_box_rate(paths: np.ndarray, bounds) -> float:
+    """Fraction of polyline trajectories whose segments touch the box."""
+    paths = np.asarray(paths)
+    if paths.ndim != 3 or paths.shape[1] < 2:
+        return 0.0
+
+    starts = paths[:, :-1, :].reshape((-1, paths.shape[-1]))
+    ends = paths[:, 1:, :].reshape((-1, paths.shape[-1]))
+    intersects = _np_segments_intersect_forbidden_box(starts, ends, bounds)
+    intersects = intersects.reshape((paths.shape[0], paths.shape[1] - 1))
+    return float(np.mean(np.any(intersects, axis=1)))
+
+
 def _constraint_box_bounds(cfg: config_dict.ConfigDict):
     constraint_cfg = getattr(cfg, "constraints", None)
     if constraint_cfg is not None:
@@ -311,7 +357,7 @@ def _draw_trajectory_paths(
 def _rollout_forbidden_box_metrics(
     cfg: config_dict.ConfigDict, rollout_paths: list, rollout_name: str
 ) -> Dict[str, float]:
-    """Measure box occupancy on the exact nodes plotted for rollout paths."""
+    """Measure point and trajectory box occupancy for rollout polylines."""
     bounds = _forbidden_box_bounds(cfg)
     if bounds is None:
         return {}
@@ -322,8 +368,10 @@ def _rollout_forbidden_box_metrics(
         inside = _np_points_in_forbidden_box(path_points, bounds)
         total = int(inside.size)
         pct = 100.0 * int(np.sum(inside)) / max(total, 1)
+        trajectory_pct = 100.0 * _np_trajectory_forbidden_box_rate(paths, bounds)
         prefix = f"forbidden_box/{rollout_name}_{step}"
         metrics[f"{prefix}_point_pct"] = pct
+        metrics[f"{prefix}_trajectory_pct"] = trajectory_pct
 
     return metrics
 
@@ -981,6 +1029,8 @@ def compute_forbidden_box_metrics(
     if times is not None:
         learned_any = jnp.zeros((x0batch.shape[0],), dtype=bool)
         interp_any = jnp.zeros((x0batch.shape[0],), dtype=bool)
+        learned_paths = []
+        interp_paths = []
         for time_value in times:
             tau_i = jnp.full((x0batch.shape[0],), float(time_value), dtype=x0batch.dtype)
             learned_i = _path_positions(
@@ -993,13 +1043,31 @@ def compute_forbidden_box_metrics(
             interp_i = statics.interp.batch_calc_It(tau_i, x0batch, x1batch, label_batch)
             learned_any = learned_any | _points_in_forbidden_box(learned_i, bounds)
             interp_any = interp_any | _points_in_forbidden_box(interp_i, bounds)
+            learned_paths.append(np.asarray(learned_i, dtype=np.float32))
+            interp_paths.append(np.asarray(interp_i, dtype=np.float32))
 
         learned_any_f = learned_any.astype(jnp.float32)
         interp_any_f = interp_any.astype(jnp.float32)
+        learned_path_arr = np.stack(learned_paths, axis=1)
+        interp_path_arr = np.stack(interp_paths, axis=1)
+        learned_point_inside = _np_points_in_forbidden_box(
+            learned_path_arr.reshape((-1, learned_path_arr.shape[-1])), bounds
+        )
+        interp_point_inside = _np_points_in_forbidden_box(
+            interp_path_arr.reshape((-1, interp_path_arr.shape[-1])), bounds
+        )
         metrics.update(
             {
                 "forbidden_box/learned_path_rate": jnp.mean(learned_any_f),
                 "forbidden_box/interpolant_path_rate": jnp.mean(interp_any_f),
+                "forbidden_box/learned_point_pct": 100.0
+                * float(np.mean(learned_point_inside)),
+                "forbidden_box/interpolant_point_pct": 100.0
+                * float(np.mean(interp_point_inside)),
+                "forbidden_box/learned_trajectory_pct": 100.0
+                * _np_trajectory_forbidden_box_rate(learned_path_arr, bounds),
+                "forbidden_box/interpolant_trajectory_pct": 100.0
+                * _np_trajectory_forbidden_box_rate(interp_path_arr, bounds),
             }
         )
 
