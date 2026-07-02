@@ -450,7 +450,11 @@ def eval_checkpoint(args) -> Tuple[Dict[str, str], Dict[str, float]]:
 
     analytic_path = analytical_paths(interp, path_times, x0, x1, labels)
     direct_path = direct_paths(x0, labels, path_times)
-    euler_path = np.asarray(euler_paths_fn(x0, labels, args.euler_steps), dtype=np.float32)
+    euler_step_counts = parse_int_list(args.euler_steps)
+    euler_paths = {
+        n_steps: np.asarray(euler_paths_fn(x0, labels, n_steps), dtype=np.float32)
+        for n_steps in euler_step_counts
+    }
     flowmap_paths = {
         n_steps: np.asarray(flowmap_rollout_paths_fn(x0, labels, n_steps), dtype=np.float32)
         for n_steps in flowmap_steps
@@ -459,7 +463,6 @@ def eval_checkpoint(args) -> Tuple[Dict[str, str], Dict[str, float]]:
     metrics: Dict[str, float] = {}
     analytic_endpoint = np.asarray(x1, dtype=np.float32)
     direct_endpoint = direct_path[:, -1, :]
-    euler_endpoint = euler_path[:, -1, :]
 
     metrics["endpoint_sliced_w2_direct"] = sliced_wasserstein_2(
         direct_endpoint,
@@ -467,12 +470,13 @@ def eval_checkpoint(args) -> Tuple[Dict[str, str], Dict[str, float]]:
         n_projections=args.wasserstein_projections,
         rng=wasserstein_rng,
     )
-    metrics[f"endpoint_sliced_w2_euler_{args.euler_steps}"] = sliced_wasserstein_2(
-        euler_endpoint,
-        analytic_endpoint,
-        n_projections=args.wasserstein_projections,
-        rng=wasserstein_rng,
-    )
+    for n_steps, path in euler_paths.items():
+        metrics[f"endpoint_sliced_w2_euler_{n_steps}"] = sliced_wasserstein_2(
+            path[:, -1, :],
+            analytic_endpoint,
+            n_projections=args.wasserstein_projections,
+            rng=wasserstein_rng,
+        )
     for n_steps, path in flowmap_paths.items():
         metrics[f"endpoint_sliced_w2_flowmap_{n_steps}"] = sliced_wasserstein_2(
             path[:, -1, :],
@@ -485,30 +489,34 @@ def eval_checkpoint(args) -> Tuple[Dict[str, str], Dict[str, float]]:
         tag = time_tag(tau)
         analytic_tau = analytical_paths(interp, [tau], x0, x1, labels)[:, 0, :]
         direct_tau = direct_paths(x0, labels, [tau])[:, 0, :]
-        euler_idx = int(round(tau * args.euler_steps))
-        euler_idx = min(max(euler_idx, 0), euler_path.shape[1] - 1)
-        euler_tau = euler_path[:, euler_idx, :]
         metrics[f"marginal_sliced_w2_direct_t{tag}"] = sliced_wasserstein_2(
             direct_tau,
             analytic_tau,
             n_projections=args.wasserstein_projections,
             rng=wasserstein_rng,
         )
-        metrics[f"marginal_sliced_w2_euler_{args.euler_steps}_t{tag}"] = (
-            sliced_wasserstein_2(
+        for n_steps, path in euler_paths.items():
+            euler_idx = int(round(tau * n_steps))
+            euler_idx = min(max(euler_idx, 0), path.shape[1] - 1)
+            euler_tau = path[:, euler_idx, :]
+            metrics[f"marginal_sliced_w2_euler_{n_steps}_t{tag}"] = sliced_wasserstein_2(
                 euler_tau,
                 analytic_tau,
                 n_projections=args.wasserstein_projections,
                 rng=wasserstein_rng,
             )
-        )
 
-    for prefix, path in [
-        ("analytic", analytic_path),
-        ("direct", direct_path),
-        (f"euler_{args.euler_steps}", euler_path),
-    ]:
+    for prefix, path in [("analytic", analytic_path), ("direct", direct_path)]:
         violation = path_violation_metrics(path, bounds)
+        metrics[f"{prefix}_point_violation_pct"] = violation["point_pct"]
+        metrics[f"{prefix}_node_trajectory_violation_rate"] = violation[
+            "node_trajectory_rate"
+        ]
+        metrics[f"{prefix}_trajectory_violation_rate"] = violation["trajectory_rate"]
+
+    for n_steps, path in euler_paths.items():
+        violation = path_violation_metrics(path, bounds)
+        prefix = f"euler_{n_steps}"
         metrics[f"{prefix}_point_violation_pct"] = violation["point_pct"]
         metrics[f"{prefix}_node_trajectory_violation_rate"] = violation[
             "node_trajectory_rate"
@@ -649,7 +657,7 @@ def parse_args():
     parser.add_argument("--wasserstein_projections", type=int, default=256)
     parser.add_argument("--marginal_times", default="0.25,0.5,0.75")
     parser.add_argument("--path_points", type=int, default=401)
-    parser.add_argument("--euler_steps", type=int, default=200)
+    parser.add_argument("--euler_steps", default="200")
     parser.add_argument("--flowmap_steps", default="1,2,5,10,25")
     parser.add_argument("--rescale_cache_dir", default="")
     return parser.parse_args()
