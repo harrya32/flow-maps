@@ -20,7 +20,7 @@ import wandb
 from flax.serialization import to_bytes
 from jax.flatten_util import ravel_pytree
 from matplotlib.collections import LineCollection
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Circle, Ellipse, Rectangle
 from matplotlib import pyplot as plt
 from ml_collections import config_dict
 
@@ -39,6 +39,19 @@ def is_image_problem(cfg: config_dict.ConfigDict) -> bool:
     return getattr(cfg.problem, "image_dims", None) is not None
 
 
+def is_diagonal_only_training(cfg: config_dict.ConfigDict) -> bool:
+    """Return True when training only uses diagonal velocity-matching points."""
+    diag_fraction = getattr(cfg.optimization, "diag_fraction", None)
+    if diag_fraction is not None:
+        return float(diag_fraction) >= 1.0
+
+    diag_bs = getattr(cfg.optimization, "diag_bs", None)
+    if diag_bs is not None:
+        return int(diag_bs) >= int(cfg.optimization.bs)
+
+    return False
+
+
 def finite_lowd_limits(
     points: np.ndarray, pad_frac: float = 0.1, default_lim: float = 2.0
 ) -> Tuple[list, list]:
@@ -55,6 +68,36 @@ def finite_lowd_limits(
     xlim = [mins[0] - pads[0], maxs[0] + pads[0]]
     ylim = [mins[1] - pads[1], maxs[1] + pads[1]]
     return xlim, ylim
+
+
+def lowd_limits_for(
+    cfg: config_dict.ConfigDict,
+    *arrays,
+    pad_frac: float = 0.1,
+    default_lim: float = 2.0,
+) -> Tuple[list, list]:
+    """Compute 2D plot limits for one panel, including visible constraint regions."""
+    pieces = []
+    for arr in arrays:
+        if arr is None:
+            continue
+        arr = np.asarray(arr)
+        if arr.size == 0 or arr.ndim == 0 or arr.shape[-1] < 2:
+            continue
+        pieces.append(arr.reshape((-1, arr.shape[-1]))[:, :2])
+
+    region_points = _lowd_region_limit_points(cfg)
+    if region_points.size > 0:
+        pieces.append(region_points)
+
+    if not pieces:
+        return [-default_lim, default_lim], [-default_lim, default_lim]
+
+    return finite_lowd_limits(
+        np.concatenate(pieces, axis=0),
+        pad_frac=pad_frac,
+        default_lim=default_lim,
+    )
 
 
 def extract_x1_from_batch(batch):
@@ -205,6 +248,693 @@ def _draw_forbidden_box(ax, cfg: config_dict.ConfigDict, *, label: bool = False)
     )
 
 
+def _matched_gates_spec(cfg: config_dict.ConfigDict):
+    gate_cfg = getattr(getattr(cfg, "logging", None), "matched_gates", None)
+    if gate_cfg is None or not bool(getattr(gate_cfg, "enabled", False)):
+        return None
+
+    problem_cfg = getattr(cfg, "problem", None)
+    if problem_cfg is None:
+        return None
+
+    return {
+        "source": np.asarray(
+            getattr(problem_cfg, "matched_gates_source_mean", [0.0, -2.0]),
+            dtype=np.float32,
+        ),
+        "midpoint_a": np.asarray(
+            getattr(problem_cfg, "gate_midpoint_a", [-0.35, 0.0]),
+            dtype=np.float32,
+        ),
+        "midpoint_b": np.asarray(
+            getattr(problem_cfg, "gate_midpoint_b", [0.35, 0.0]),
+            dtype=np.float32,
+        ),
+        "endpoint_a": np.asarray(
+            getattr(problem_cfg, "gate_endpoint_a", [-0.45, 2.0]),
+            dtype=np.float32,
+        ),
+        "endpoint_b": np.asarray(
+            getattr(problem_cfg, "gate_endpoint_b", [0.45, 2.0]),
+            dtype=np.float32,
+        ),
+        "source_radius": float(
+            getattr(gate_cfg, "source_radius", getattr(problem_cfg, "source_radius", 0.18))
+        ),
+        "gate_radius": float(
+            getattr(gate_cfg, "gate_radius", getattr(problem_cfg, "gate_radius", 0.18))
+        ),
+        "endpoint_radius": float(
+            getattr(
+                gate_cfg,
+                "endpoint_radius",
+                getattr(problem_cfg, "endpoint_radius", 0.22),
+            )
+        ),
+        "forbid_wrong_midpoint_first": bool(
+            getattr(gate_cfg, "forbid_wrong_midpoint_first", True)
+        ),
+    }
+
+
+def _draw_matched_gate_regions(
+    ax, cfg: config_dict.ConfigDict, *, label: bool = False
+) -> None:
+    spec = _matched_gates_spec(cfg)
+    if spec is None:
+        return
+
+    region_style = dict(facecolor="none", linewidth=1.4, linestyle="--", alpha=0.95)
+    ax.add_patch(
+        Circle(
+            spec["source"],
+            spec["source_radius"],
+            edgecolor="0.45",
+            label="source" if label else None,
+            **region_style,
+        )
+    )
+    ax.add_patch(
+        Circle(
+            spec["midpoint_a"],
+            spec["gate_radius"],
+            edgecolor="C0",
+            label="A gate" if label else None,
+            **region_style,
+        )
+    )
+    ax.add_patch(
+        Circle(
+            spec["midpoint_b"],
+            spec["gate_radius"],
+            edgecolor="C1",
+            label="B gate" if label else None,
+            **region_style,
+        )
+    )
+    ax.add_patch(
+        Circle(spec["endpoint_a"], spec["endpoint_radius"], edgecolor="C0", **region_style)
+    )
+    ax.add_patch(
+        Circle(spec["endpoint_b"], spec["endpoint_radius"], edgecolor="C1", **region_style)
+    )
+
+    text_kwargs = dict(fontsize=9, ha="center", va="center", zorder=25)
+    ax.text(*(spec["source"] + np.asarray([0.0, -0.28])), "S", color="0.30", **text_kwargs)
+    ax.text(*(spec["midpoint_a"] + np.asarray([-0.23, 0.0])), "M_A", color="C0", **text_kwargs)
+    ax.text(*(spec["midpoint_b"] + np.asarray([0.23, 0.0])), "M_B", color="C1", **text_kwargs)
+    ax.text(*(spec["endpoint_a"] + np.asarray([-0.25, 0.0])), "E_A", color="C0", **text_kwargs)
+    ax.text(*(spec["endpoint_b"] + np.asarray([0.25, 0.0])), "E_B", color="C1", **text_kwargs)
+
+
+def _dive_gate_spec(cfg: config_dict.ConfigDict):
+    gate_cfg = getattr(getattr(cfg, "logging", None), "dive_gate", None)
+    if gate_cfg is None or not bool(getattr(gate_cfg, "enabled", False)):
+        return None
+
+    problem_cfg = getattr(cfg, "problem", None)
+    if problem_cfg is None:
+        return None
+
+    depth = float(getattr(problem_cfg, "dive_gate_depth", 0.85))
+    gate_center = np.asarray(
+        getattr(gate_cfg, "gate_center", [0.0, -depth]),
+        dtype=np.float32,
+    )
+    checkpoint_center = np.asarray(
+        getattr(gate_cfg, "checkpoint_center", [0.9, 0.0]),
+        dtype=np.float32,
+    )
+    pre_checkpoint_center = np.asarray(
+        getattr(gate_cfg, "pre_checkpoint_center", [-0.35, 0.0]),
+        dtype=np.float32,
+    )
+
+    return {
+        "source": np.asarray(
+            getattr(problem_cfg, "dive_gate_source_mean", [-3.0, 0.0]),
+            dtype=np.float32,
+        ),
+        "target": np.asarray(
+            getattr(problem_cfg, "dive_gate_target_mean", [3.0, 0.0]),
+            dtype=np.float32,
+        ),
+        "pre_checkpoint_center": pre_checkpoint_center,
+        "gate_center": gate_center,
+        "checkpoint_center": checkpoint_center,
+        "pre_checkpoint_radii": np.asarray(
+            getattr(
+                gate_cfg,
+                "pre_checkpoint_radii",
+                getattr(problem_cfg, "checkpoint_radii", [0.35, 0.24]),
+            ),
+            dtype=np.float32,
+        ),
+        "gate_radii": np.asarray(
+            getattr(gate_cfg, "gate_radii", getattr(problem_cfg, "gate_radii", [0.42, 0.28])),
+            dtype=np.float32,
+        ),
+        "checkpoint_radii": np.asarray(
+            getattr(
+                gate_cfg,
+                "checkpoint_radii",
+                getattr(problem_cfg, "checkpoint_radii", [0.32, 0.24]),
+            ),
+            dtype=np.float32,
+        ),
+        "require_gate_hit": bool(getattr(gate_cfg, "require_gate_hit", True)),
+    }
+
+
+def _draw_dive_gate_regions(
+    ax, cfg: config_dict.ConfigDict, *, label: bool = False
+) -> None:
+    spec = _dive_gate_spec(cfg)
+    if spec is None:
+        return
+
+    region_style = dict(facecolor="none", linewidth=1.4, linestyle="--", alpha=0.95)
+    ax.add_patch(
+        Ellipse(
+            spec["pre_checkpoint_center"],
+            2.0 * spec["pre_checkpoint_radii"][0],
+            2.0 * spec["pre_checkpoint_radii"][1],
+            edgecolor="C4",
+            label="A checkpoint" if label else None,
+            **region_style,
+        )
+    )
+    ax.add_patch(
+        Ellipse(
+            spec["gate_center"],
+            2.0 * spec["gate_radii"][0],
+            2.0 * spec["gate_radii"][1],
+            edgecolor="C3",
+            label="B gate" if label else None,
+            **region_style,
+        )
+    )
+    ax.add_patch(
+        Ellipse(
+            spec["checkpoint_center"],
+            2.0 * spec["checkpoint_radii"][0],
+            2.0 * spec["checkpoint_radii"][1],
+            edgecolor="C2",
+            label="C checkpoint" if label else None,
+            **region_style,
+        )
+    )
+
+    text_kwargs = dict(fontsize=9, ha="center", va="center", zorder=25)
+    ax.text(
+        *(spec["pre_checkpoint_center"] + np.asarray([0.0, 0.28])),
+        "A",
+        color="C4",
+        **text_kwargs,
+    )
+    ax.text(
+        *(spec["gate_center"] + np.asarray([0.0, -0.34])),
+        "B",
+        color="C3",
+        **text_kwargs,
+    )
+    ax.text(
+        *(spec["checkpoint_center"] + np.asarray([0.0, 0.28])),
+        "C",
+        color="C2",
+        **text_kwargs,
+    )
+
+
+def _region_limit_points(center: np.ndarray, radii: np.ndarray) -> np.ndarray:
+    center = np.asarray(center, dtype=np.float32)
+    radii = np.asarray(radii, dtype=np.float32)
+    return np.asarray(
+        [
+            center - radii,
+            center + radii,
+            center + np.asarray([radii[0], -radii[1]], dtype=np.float32),
+            center + np.asarray([-radii[0], radii[1]], dtype=np.float32),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _lowd_region_limit_points(cfg: config_dict.ConfigDict) -> np.ndarray:
+    points = []
+
+    matched = _matched_gates_spec(cfg)
+    if matched is not None:
+        for key, radius_key in [
+            ("source", "source_radius"),
+            ("midpoint_a", "gate_radius"),
+            ("midpoint_b", "gate_radius"),
+            ("endpoint_a", "endpoint_radius"),
+            ("endpoint_b", "endpoint_radius"),
+        ]:
+            radius = float(matched[radius_key])
+            points.append(
+                _region_limit_points(
+                    matched[key],
+                    np.asarray([radius, radius], dtype=np.float32),
+                )
+            )
+
+    dive = _dive_gate_spec(cfg)
+    if dive is not None:
+        points.append(
+            _region_limit_points(
+                dive["pre_checkpoint_center"],
+                dive["pre_checkpoint_radii"],
+            )
+        )
+        points.append(_region_limit_points(dive["gate_center"], dive["gate_radii"]))
+        points.append(
+            _region_limit_points(dive["checkpoint_center"], dive["checkpoint_radii"])
+        )
+
+    if not points:
+        return np.zeros((0, 2), dtype=np.float32)
+
+    return np.concatenate(points, axis=0)
+
+
+def _draw_lowd_regions(ax, cfg: config_dict.ConfigDict, *, label: bool = False) -> None:
+    _draw_forbidden_box(ax, cfg, label=label)
+    _draw_matched_gate_regions(ax, cfg, label=label)
+    _draw_dive_gate_regions(ax, cfg, label=label)
+
+
+def _matched_gate_first_hit(paths: np.ndarray, center: np.ndarray, radius: float):
+    distances = np.linalg.norm(paths - center[None, None, :], axis=-1)
+    hit = distances <= radius
+    exists = np.any(hit, axis=1)
+    first = np.argmax(hit, axis=1)
+    first = np.where(exists, first, paths.shape[1])
+    return exists, first
+
+
+def _matched_gate_predicted_endpoint_b(paths: np.ndarray, spec) -> np.ndarray:
+    final = paths[:, -1, :]
+    dist_a = np.linalg.norm(final - spec["endpoint_a"][None, :], axis=1)
+    dist_b = np.linalg.norm(final - spec["endpoint_b"][None, :], axis=1)
+    return dist_b < dist_a
+
+
+def _matched_gate_violation_details(paths: np.ndarray, cfg: config_dict.ConfigDict):
+    spec = _matched_gates_spec(cfg)
+    if spec is None:
+        return None
+
+    paths = np.asarray(paths, dtype=np.float32)
+    pred_b = _matched_gate_predicted_endpoint_b(paths, spec)
+    hit_ma, first_ma = _matched_gate_first_hit(
+        paths, spec["midpoint_a"], spec["gate_radius"]
+    )
+    hit_mb, first_mb = _matched_gate_first_hit(
+        paths, spec["midpoint_b"], spec["gate_radius"]
+    )
+    hit_ea, first_ea = _matched_gate_first_hit(
+        paths, spec["endpoint_a"], spec["endpoint_radius"]
+    )
+    hit_eb, first_eb = _matched_gate_first_hit(
+        paths, spec["endpoint_b"], spec["endpoint_radius"]
+    )
+
+    valid_a = hit_ma & ((~hit_ea) | (first_ma < first_ea))
+    valid_b = hit_mb & ((~hit_eb) | (first_mb < first_eb))
+    wrong_first_a = hit_mb & (first_mb < first_ma)
+    wrong_first_b = hit_ma & (first_ma < first_mb)
+
+    if spec["forbid_wrong_midpoint_first"]:
+        valid_a = valid_a & (~wrong_first_a)
+        valid_b = valid_b & (~wrong_first_b)
+
+    valid = np.where(pred_b, valid_b, valid_a)
+    correct_midpoint_hit = np.where(pred_b, hit_mb, hit_ma)
+    wrong_first = np.where(pred_b, wrong_first_b, wrong_first_a)
+
+    return {
+        "invalid": ~valid,
+        "pred_b": pred_b,
+        "correct_midpoint_hit": correct_midpoint_hit,
+        "wrong_midpoint_first": wrong_first,
+    }
+
+
+def _matched_gate_violation_mask(paths: np.ndarray, cfg: config_dict.ConfigDict):
+    details = _matched_gate_violation_details(paths, cfg)
+    if details is None:
+        return None
+    return details["invalid"]
+
+
+def _ellipse_first_hit(paths: np.ndarray, center: np.ndarray, radii: np.ndarray):
+    """Return first sampled-segment intersection time with an axis-aligned ellipse."""
+    paths = np.asarray(paths, dtype=np.float32)
+    scaled = (paths - center[None, None, :]) / radii[None, None, :]
+
+    if scaled.shape[1] < 2:
+        hit = np.sum(scaled * scaled, axis=-1) <= 1.0
+        exists = np.any(hit, axis=1)
+        first = np.argmax(hit, axis=1).astype(np.float32)
+        first = np.where(exists, first, float(paths.shape[1]))
+        return exists, first
+
+    starts = scaled[:, :-1, :]
+    ends = scaled[:, 1:, :]
+    delta = ends - starts
+
+    a = np.sum(delta * delta, axis=-1)
+    b = 2.0 * np.sum(starts * delta, axis=-1)
+    c = np.sum(starts * starts, axis=-1) - 1.0
+    discriminant = b * b - 4.0 * a * c
+
+    inf = np.full_like(a, np.inf, dtype=np.float32)
+    segment_u = np.where(c <= 0.0, 0.0, inf)
+
+    nondegenerate = a > 1e-12
+    has_roots = nondegenerate & (discriminant >= 0.0)
+    sqrt_disc = np.sqrt(np.maximum(discriminant, 0.0))
+    denom = np.where(nondegenerate, 2.0 * a, 1.0)
+    root1 = (-b - sqrt_disc) / denom
+    root2 = (-b + sqrt_disc) / denom
+
+    root1_valid = has_roots & (root1 >= 0.0) & (root1 <= 1.0)
+    root2_valid = has_roots & (root2 >= 0.0) & (root2 <= 1.0)
+    segment_u = np.minimum(segment_u, np.where(root1_valid, root1, inf))
+    segment_u = np.minimum(segment_u, np.where(root2_valid, root2, inf))
+
+    segment_index = np.arange(starts.shape[1], dtype=np.float32)[None, :]
+    first_times = np.min(segment_index + segment_u, axis=1)
+    exists = np.isfinite(first_times)
+    first = np.where(exists, first_times, float(paths.shape[1]))
+    return exists, first
+
+
+def _dive_gate_violation_details(paths: np.ndarray, cfg: config_dict.ConfigDict):
+    spec = _dive_gate_spec(cfg)
+    if spec is None:
+        return None
+
+    paths = np.asarray(paths, dtype=np.float32)
+    hit_a, first_a = _ellipse_first_hit(
+        paths,
+        spec["pre_checkpoint_center"],
+        spec["pre_checkpoint_radii"],
+    )
+    hit_b, first_b = _ellipse_first_hit(
+        paths,
+        spec["gate_center"],
+        spec["gate_radii"],
+    )
+    hit_c, first_c = _ellipse_first_hit(
+        paths,
+        spec["checkpoint_center"],
+        spec["checkpoint_radii"],
+    )
+    b_before_a = hit_b & ((~hit_a) | (first_b <= first_a))
+    c_before_b = hit_c & ((~hit_b) | (first_c <= first_b))
+    valid = hit_a & hit_b & hit_c & (first_a < first_b) & (first_b < first_c)
+    invalid = ~valid
+
+    return {
+        "invalid": invalid,
+        "hit_a": hit_a,
+        "hit_b": hit_b,
+        "hit_c": hit_c,
+        "b_before_a": b_before_a,
+        "c_before_b": c_before_b,
+    }
+
+
+def _dive_gate_violation_mask(paths: np.ndarray, cfg: config_dict.ConfigDict):
+    details = _dive_gate_violation_details(paths, cfg)
+    if details is None:
+        return None
+    return details["invalid"]
+
+
+def _dive_gate_cfg_value(
+    cfg: config_dict.ConfigDict,
+    name: str,
+    default,
+):
+    constraint_cfg = getattr(cfg, "constraints", None)
+    logging_cfg = getattr(getattr(cfg, "logging", None), "dive_gate", None)
+    problem_cfg = getattr(cfg, "problem", None)
+
+    if constraint_cfg is not None and hasattr(constraint_cfg, name):
+        return getattr(constraint_cfg, name)
+    if logging_cfg is not None and hasattr(logging_cfg, name):
+        return getattr(logging_cfg, name)
+    if problem_cfg is not None and hasattr(problem_cfg, name):
+        return getattr(problem_cfg, name)
+    return default
+
+
+def _dive_gate_path_mode(cfg: config_dict.ConfigDict) -> str:
+    constraint_cfg = cfg.constraints
+    mode = getattr(
+        constraint_cfg,
+        "path_mode",
+        getattr(constraint_cfg, "constraint_mode", "flow_map"),
+    )
+    if mode == "auto":
+        return "flow_map"
+    if mode in ("euler", "flow_matching", "velocity"):
+        return "euler"
+    if mode in ("flow_map", "direct"):
+        return "flow_map"
+    raise ValueError(
+        "constraints.path_mode must be one of 'auto', 'euler', or 'flow_map'"
+    )
+
+
+def _dive_gate_path_times(
+    cfg: config_dict.ConfigDict,
+    dtype,
+) -> jnp.ndarray:
+    path_times = getattr(cfg.constraints, "path_times", None)
+    if path_times is None:
+        n_times = int(getattr(cfg.constraints, "path_n_times", 101))
+        if n_times < 2:
+            raise ValueError("constraints.path_n_times must be >= 2")
+        return jnp.linspace(0.0, 1.0, n_times, dtype=dtype)
+
+    path_times = jnp.asarray(path_times, dtype=dtype)
+    if path_times.shape[0] < 2:
+        raise ValueError("constraints.path_times must contain at least two times")
+    return path_times
+
+
+def _dive_gate_soft_geometry(
+    cfg: config_dict.ConfigDict,
+    dtype,
+):
+    depth = float(getattr(cfg.problem, "dive_gate_depth", 0.85))
+    pre_checkpoint_center = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "pre_checkpoint_center", [-0.35, 0.0]),
+        dtype=dtype,
+    )
+    pre_checkpoint_radii = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "pre_checkpoint_radii", [0.35, 0.24]),
+        dtype=dtype,
+    )
+    gate_center = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "gate_center", [0.0, -depth]),
+        dtype=dtype,
+    )
+    gate_radii = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "gate_radii", [0.45, 0.30]),
+        dtype=dtype,
+    )
+    checkpoint_center = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "checkpoint_center", [0.9, 0.0]),
+        dtype=dtype,
+    )
+    checkpoint_radii = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "checkpoint_radii", [0.35, 0.24]),
+        dtype=dtype,
+    )
+    eps = jnp.asarray(1e-6, dtype=dtype)
+    return (
+        pre_checkpoint_center,
+        jnp.maximum(pre_checkpoint_radii, eps),
+        gate_center,
+        jnp.maximum(gate_radii, eps),
+        checkpoint_center,
+        jnp.maximum(checkpoint_radii, eps),
+    )
+
+
+def _soft_ellipse_indicator(
+    x: jnp.ndarray,
+    center: jnp.ndarray,
+    radii: jnp.ndarray,
+    temperature: float,
+) -> jnp.ndarray:
+    scaled = (x - center) / radii
+    normalized_sqdist = jnp.sum(scaled * scaled, axis=-1)
+    return jax.nn.sigmoid((1.0 - normalized_sqdist) / temperature)
+
+
+def _dive_gate_soft_terms(paths: jnp.ndarray, cfg: config_dict.ConfigDict):
+    (
+        pre_checkpoint_center,
+        pre_checkpoint_radii,
+        gate_center,
+        gate_radii,
+        checkpoint_center,
+        checkpoint_radii,
+    ) = _dive_gate_soft_geometry(cfg, paths.dtype)
+    temperature = float(getattr(cfg.constraints, "indicator_temperature", 0.08))
+    eps = jnp.asarray(float(getattr(cfg.constraints, "eps", 1e-6)), dtype=paths.dtype)
+
+    p_a = _soft_ellipse_indicator(
+        paths,
+        pre_checkpoint_center,
+        pre_checkpoint_radii,
+        temperature,
+    )
+    p_b = _soft_ellipse_indicator(paths, gate_center, gate_radii, temperature)
+    p_c = _soft_ellipse_indicator(
+        paths,
+        checkpoint_center,
+        checkpoint_radii,
+        temperature,
+    )
+    no_a_prefix_inclusive = jnp.cumprod(jnp.clip(1.0 - p_a, 0.0, 1.0), axis=1)
+    no_a_before = jnp.concatenate(
+        [jnp.ones_like(no_a_prefix_inclusive[:, :1]), no_a_prefix_inclusive[:, :-1]],
+        axis=1,
+    )
+    no_b_prefix_inclusive = jnp.cumprod(jnp.clip(1.0 - p_b, 0.0, 1.0), axis=1)
+    no_b_before = jnp.concatenate(
+        [jnp.ones_like(no_b_prefix_inclusive[:, :1]), no_b_prefix_inclusive[:, :-1]],
+        axis=1,
+    )
+    miss_a_prob = no_a_prefix_inclusive[:, -1]
+    miss_b_prob = no_b_prefix_inclusive[:, -1]
+    miss_c_prob = jnp.prod(jnp.clip(1.0 - p_c, 0.0, 1.0), axis=1)
+    bad_b_before_a_prob = 1.0 - jnp.prod(
+        jnp.clip(1.0 - p_b * no_a_before, 0.0, 1.0),
+        axis=1,
+    )
+    bad_c_before_b_prob = 1.0 - jnp.prod(
+        jnp.clip(1.0 - p_c * no_b_before, 0.0, 1.0),
+        axis=1,
+    )
+    hit_a_prob = jnp.clip(1.0 - miss_a_prob, eps, 1.0)
+    hit_b_prob = jnp.clip(1.0 - miss_b_prob, eps, 1.0)
+    hit_c_prob = jnp.clip(1.0 - miss_c_prob, eps, 1.0)
+
+    hit_loss_type = getattr(cfg.constraints, "hit_loss", "miss")
+    if hit_loss_type == "miss":
+        hit_a_loss = jnp.mean(miss_a_prob)
+        hit_b_loss = jnp.mean(miss_b_prob)
+        hit_c_loss = jnp.mean(miss_c_prob)
+    elif hit_loss_type == "nll":
+        hit_a_loss = jnp.mean(-jnp.log(hit_a_prob))
+        hit_b_loss = jnp.mean(-jnp.log(hit_b_prob))
+        hit_c_loss = jnp.mean(-jnp.log(hit_c_prob))
+    else:
+        raise ValueError("constraints.hit_loss must be 'miss' or 'nll'")
+
+    order_loss = jnp.mean(bad_b_before_a_prob + bad_c_before_b_prob)
+    return {
+        "hit_a_loss": hit_a_loss,
+        "hit_b_loss": hit_b_loss,
+        "hit_c_loss": hit_c_loss,
+        "hit_loss": hit_a_loss + hit_b_loss + hit_c_loss,
+        "order_loss": order_loss,
+        "hit_a_prob": jnp.mean(hit_a_prob),
+        "hit_b_prob": jnp.mean(hit_b_prob),
+        "hit_c_prob": jnp.mean(hit_c_prob),
+        "bad_b_before_a_prob": jnp.mean(bad_b_before_a_prob),
+        "bad_c_before_b_prob": jnp.mean(bad_c_before_b_prob),
+        "soft_a_occupancy": jnp.mean(p_a),
+        "soft_b_occupancy": jnp.mean(p_b),
+        "soft_c_occupancy": jnp.mean(p_c),
+    }
+
+
+def _trajectory_violation_mask(paths: np.ndarray, cfg: config_dict.ConfigDict):
+    masks = []
+    for mask_fn in [_matched_gate_violation_mask, _dive_gate_violation_mask]:
+        mask = mask_fn(paths, cfg)
+        if mask is not None:
+            masks.append(mask)
+
+    if not masks:
+        return None
+
+    invalid = masks[0].copy()
+    for mask in masks[1:]:
+        invalid = invalid | mask
+    return invalid
+
+
+def _rollout_matched_gate_metrics(
+    cfg: config_dict.ConfigDict, rollout_paths: list, rollout_name: str
+) -> Dict[str, float]:
+    """Measure matched-gate rule adherence for rollout polylines."""
+    metrics = {}
+    if _matched_gates_spec(cfg) is None:
+        return metrics
+
+    for step, paths in rollout_paths:
+        details = _matched_gate_violation_details(paths, cfg)
+        if details is None:
+            continue
+
+        prefix = f"matched_gates/{rollout_name}_{step}"
+        metrics[f"{prefix}_violation_pct"] = 100.0 * float(
+            np.mean(details["invalid"])
+        )
+        metrics[f"{prefix}_correct_midpoint_hit_pct"] = 100.0 * float(
+            np.mean(details["correct_midpoint_hit"])
+        )
+        metrics[f"{prefix}_wrong_midpoint_first_pct"] = 100.0 * float(
+            np.mean(details["wrong_midpoint_first"])
+        )
+        metrics[f"{prefix}_pred_endpoint_b_pct"] = 100.0 * float(
+            np.mean(details["pred_b"])
+        )
+
+    return metrics
+
+
+def _rollout_dive_gate_metrics(
+    cfg: config_dict.ConfigDict, rollout_paths: list, rollout_name: str
+) -> Dict[str, float]:
+    """Measure dive-gate rule adherence for rollout polylines."""
+    metrics = {}
+    if _dive_gate_spec(cfg) is None:
+        return metrics
+
+    for step, paths in rollout_paths:
+        details = _dive_gate_violation_details(paths, cfg)
+        if details is None:
+            continue
+
+        prefix = f"dive_gate/{rollout_name}_{step}"
+        metrics[f"{prefix}_violation_pct"] = 100.0 * float(
+            np.mean(details["invalid"])
+        )
+        metrics[f"{prefix}_hit_a_pct"] = 100.0 * float(np.mean(details["hit_a"]))
+        metrics[f"{prefix}_hit_b_pct"] = 100.0 * float(np.mean(details["hit_b"]))
+        metrics[f"{prefix}_hit_c_pct"] = 100.0 * float(np.mean(details["hit_c"]))
+        metrics[f"{prefix}_b_before_a_pct"] = 100.0 * float(
+            np.mean(details["b_before_a"])
+        )
+        metrics[f"{prefix}_c_before_b_pct"] = 100.0 * float(
+            np.mean(details["c_before_b"])
+        )
+
+    return metrics
+
+
 def _flow_map_batch(
     apply_fn,
     params: Dict,
@@ -320,30 +1050,76 @@ def _draw_trajectory_paths(
 ) -> None:
     """Draw trajectory lines with dots at all evaluated path nodes."""
     path_points = paths.reshape((-1, paths.shape[-1]))
+    invalid_mask = _trajectory_violation_mask(paths, cfg) if cfg is not None else None
     ax.scatter(
         x0s[:, 0], x0s[:, 1], s=0.2, alpha=0.2, marker="o", c="gray", label="base"
     )
     ax.scatter(
         x1s[:, 0], x1s[:, 1], s=0.2, alpha=0.2, marker="o", c="C0", label="target"
     )
-    ax.add_collection(
-        LineCollection(
-            _trajectory_segments(paths),
-            colors="black",
-            linewidths=0.25,
-            alpha=0.2,
+    if invalid_mask is None:
+        ax.add_collection(
+            LineCollection(
+                _trajectory_segments(paths),
+                colors="black",
+                linewidths=0.25,
+                alpha=0.2,
+                label="trajectory",
+            )
         )
-    )
-    ax.scatter(
-        path_points[:, 0],
-        path_points[:, 1],
-        s=2.0,
-        alpha=0.25,
-        marker="o",
-        c="black",
-        linewidths=0,
-        label="trajectory",
-    )
+        ax.scatter(
+            path_points[:, 0],
+            path_points[:, 1],
+            s=2.0,
+            alpha=0.25,
+            marker="o",
+            c="black",
+            linewidths=0,
+            label="trajectory",
+        )
+    else:
+        valid_paths = paths[~invalid_mask]
+        invalid_paths = paths[invalid_mask]
+        if valid_paths.shape[0] > 0:
+            ax.add_collection(
+                LineCollection(
+                    _trajectory_segments(valid_paths),
+                    colors="black",
+                    linewidths=0.25,
+                    alpha=0.18,
+                    label="valid trajectory",
+                )
+            )
+            valid_points = valid_paths.reshape((-1, valid_paths.shape[-1]))
+            ax.scatter(
+                valid_points[:, 0],
+                valid_points[:, 1],
+                s=1.8,
+                alpha=0.20,
+                marker="o",
+                c="black",
+                linewidths=0,
+            )
+        if invalid_paths.shape[0] > 0:
+            ax.add_collection(
+                LineCollection(
+                    _trajectory_segments(invalid_paths),
+                    colors="crimson",
+                    linewidths=0.65,
+                    alpha=0.72,
+                    label="violating trajectory",
+                )
+            )
+            invalid_points = invalid_paths.reshape((-1, invalid_paths.shape[-1]))
+            ax.scatter(
+                invalid_points[:, 0],
+                invalid_points[:, 1],
+                s=2.2,
+                alpha=0.45,
+                marker="o",
+                c="crimson",
+                linewidths=0,
+            )
     ax.set_title(title, fontsize=fontsize)
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
@@ -351,7 +1127,7 @@ def _draw_trajectory_paths(
     ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
     ax.tick_params(axis="both", labelsize=fontsize)
     if cfg is not None:
-        _draw_forbidden_box(ax, cfg, label=True)
+        _draw_lowd_regions(ax, cfg, label=True)
 
 
 def _rollout_forbidden_box_metrics(
@@ -943,6 +1719,121 @@ def compute_constraint_metrics(
     if ctype == "box_path":
         return {}
 
+    if ctype == "dive_gate_path":
+        params = dist_utils.safe_unreplicate(cfg, train_state.params)
+        constraint_bs = int(getattr(cfg.constraints, "constraint_batch_size", 0))
+        if constraint_bs <= 0:
+            constraint_fraction = float(
+                getattr(cfg.constraints, "constraint_batch_fraction", 1.0)
+            )
+            constraint_bs = max(1, int(x0batch.shape[0] * constraint_fraction))
+        constraint_bs = min(x0batch.shape[0], constraint_bs)
+
+        x0_constraint = x0batch[:constraint_bs]
+        label_constraint = None if label_batch is None else label_batch[:constraint_bs]
+        mode = _dive_gate_path_mode(cfg)
+
+        if mode == "flow_map":
+            times = _dive_gate_path_times(cfg, x0_constraint.dtype)
+            if label_constraint is None:
+                paths = jax.vmap(
+                    lambda x: jax.vmap(
+                        lambda tau: train_state.apply_fn(
+                            params,
+                            0.0,
+                            tau,
+                            x,
+                            label=None,
+                            train=False,
+                            calc_weight=False,
+                            return_X_and_phi=False,
+                        )
+                    )(times)
+                )(x0_constraint)
+            else:
+                paths = jax.vmap(
+                    lambda x, lbl: jax.vmap(
+                        lambda tau: train_state.apply_fn(
+                            params,
+                            0.0,
+                            tau,
+                            x,
+                            label=lbl,
+                            train=False,
+                            calc_weight=False,
+                            return_X_and_phi=False,
+                        )
+                    )(times)
+                )(
+                    x0_constraint,
+                    label_constraint,
+                )
+        else:
+            euler_steps = int(getattr(cfg.constraints, "euler_steps", 100))
+            labels_for_euler = label_constraint
+            if labels_for_euler is None:
+                labels_for_euler = -jnp.ones((x0_constraint.shape[0],))
+            paths = jnp.asarray(
+                _euler_paths(
+                    train_state.apply_fn,
+                    params,
+                    x0_constraint,
+                    labels_for_euler,
+                    euler_steps,
+                ),
+                dtype=x0_constraint.dtype,
+            )
+
+        terms = _dive_gate_soft_terms(paths, cfg)
+        lambda_hit = float(getattr(cfg.constraints, "lambda_hit", 1.0))
+        lambda_hit_a = float(getattr(cfg.constraints, "lambda_hit_a", lambda_hit))
+        lambda_hit_b = float(getattr(cfg.constraints, "lambda_hit_b", lambda_hit))
+        lambda_hit_c = float(getattr(cfg.constraints, "lambda_hit_c", 1.0))
+        lambda_order = float(getattr(cfg.constraints, "lambda_order", 1.0))
+        weighted = constraint_scale * cfg.constraints.weight * (
+            lambda_hit_a * terms["hit_a_loss"]
+            + lambda_hit_b * terms["hit_b_loss"]
+            + lambda_hit_c * terms["hit_c_loss"]
+            + lambda_order * terms["order_loss"]
+        )
+
+        metrics = {
+            "constraint/dive_gate_hit_a_loss": terms["hit_a_loss"],
+            "constraint/dive_gate_hit_b_loss": terms["hit_b_loss"],
+            "constraint/dive_gate_hit_c_loss": terms["hit_c_loss"],
+            "constraint/dive_gate_hit_loss": terms["hit_loss"],
+            "constraint/dive_gate_order_loss": terms["order_loss"],
+            "constraint/dive_gate_total": weighted,
+            "constraint/dive_gate_hit_a_prob": terms["hit_a_prob"],
+            "constraint/dive_gate_hit_b_prob": terms["hit_b_prob"],
+            "constraint/dive_gate_hit_c_prob": terms["hit_c_prob"],
+            "constraint/dive_gate_b_before_a_prob": terms["bad_b_before_a_prob"],
+            "constraint/dive_gate_c_before_b_prob": terms["bad_c_before_b_prob"],
+            "constraint/dive_gate_soft_a_occupancy": terms["soft_a_occupancy"],
+            "constraint/dive_gate_soft_b_occupancy": terms["soft_b_occupancy"],
+            "constraint/dive_gate_soft_c_occupancy": terms["soft_c_occupancy"],
+            "constraint/anneal_scale": constraint_scale,
+            "stage/two_stage_scale": stage2_scale,
+        }
+
+        hard_details = _dive_gate_violation_details(np.asarray(paths), cfg)
+        if hard_details is not None:
+            metrics.update(
+                {
+                    "constraint/dive_gate_hard_violation_pct": 100.0
+                    * float(np.mean(hard_details["invalid"])),
+                    "constraint/dive_gate_hard_hit_a_pct": 100.0
+                    * float(np.mean(hard_details["hit_a"])),
+                    "constraint/dive_gate_hard_hit_b_pct": 100.0
+                    * float(np.mean(hard_details["hit_b"])),
+                    "constraint/dive_gate_hard_b_before_a_pct": 100.0
+                    * float(np.mean(hard_details["b_before_a"])),
+                    "constraint/dive_gate_hard_c_before_b_pct": 100.0
+                    * float(np.mean(hard_details["c_before_b"])),
+                }
+            )
+        return metrics
+
     return {}
 
 
@@ -1196,11 +2087,9 @@ def make_lowd_plot(
     train_state: state_utils.EMATrainState,
     prng_key: jnp.ndarray,
 ) -> None:
-    # Use flow map batch sampler for single-device visualization
-    batch_sample = flow_map.batch_sample
-
     # Get parameters for visualization
     params_for_visual = get_params_for_sampling(cfg, train_state, param_type="visual")
+    diagonal_only = is_diagonal_only_training(cfg)
 
     ## common plot parameters
     plt.close("all")
@@ -1219,34 +2108,52 @@ def make_lowd_plot(
     x0s = statics.sample_rho0(cfg.logging.plot_bs, prng_key)
     prng_key = jax.random.split(prng_key)[0]
     xhats = np.zeros((len(steps), cfg.logging.plot_bs, cfg.problem.d))
-    for kk, step in enumerate(steps):
-        xhats[kk] = batch_sample(
-            train_state.apply_fn,
-            params_for_visual,
-            x0s,
-            step,
-            -jnp.ones(cfg.logging.plot_bs),
-        )
+    sample_labels = -jnp.ones(cfg.logging.plot_bs)
+    if diagonal_only:
+        titles = ["base and target"] + [rf"${step}$-step Euler" for step in steps]
+        for kk, step in enumerate(steps):
+            xhats[kk] = _euler_paths(
+                train_state.apply_fn,
+                params_for_visual,
+                x0s,
+                sample_labels,
+                step,
+            )[:, -1, :]
+    else:
+        # Use flow map batch sampler for single-device visualization.
+        batch_sample = flow_map.batch_sample
+        for kk, step in enumerate(steps):
+            xhats[kk] = batch_sample(
+                train_state.apply_fn,
+                params_for_visual,
+                x0s,
+                step,
+                sample_labels,
+            )
 
     # Track full direct and multi-step trajectories for a subset of particles.
     line_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "line_plot_bs", 1000))
-    n_line_times = max(2, int(getattr(cfg.logging, "line_plot_n_times", 20)))
-    line_times = np.linspace(0.0, 1.0, n_line_times)
-    x0_line = x0s[:line_bs]
-    x1_line = plot_x1s[:line_bs]
-    labels_line = -jnp.ones(line_bs)
-    one_step_line_paths = _one_step_paths(
-        train_state.apply_fn,
-        params_for_visual,
-        x0_line,
-        labels_line,
-        line_times,
-    )
+    one_step_line_paths = None
+    multi_step_line_paths = []
+    if not diagonal_only:
+        n_line_times = max(2, int(getattr(cfg.logging, "line_plot_n_times", 20)))
+        line_times = np.linspace(0.0, 1.0, n_line_times)
+        x0_line = x0s[:line_bs]
+        x1_line = plot_x1s[:line_bs]
+        labels_line = -jnp.ones(line_bs)
+        one_step_line_paths = _one_step_paths(
+            train_state.apply_fn,
+            params_for_visual,
+            x0_line,
+            labels_line,
+            line_times,
+        )
 
-    multi_step_counts = getattr(cfg.logging, "multi_step_line_steps", steps)
-    if isinstance(multi_step_counts, int):
-        multi_step_counts = [multi_step_counts]
-    multi_step_counts = [max(1, int(step)) for step in multi_step_counts]
+        multi_step_counts = getattr(cfg.logging, "multi_step_line_steps", steps)
+        if isinstance(multi_step_counts, int):
+            multi_step_counts = [multi_step_counts]
+        multi_step_counts = [max(1, int(step)) for step in multi_step_counts]
+
     multi_line_bs = min(
         line_bs,
         int(getattr(cfg.logging, "multi_step_line_plot_bs", min(line_bs, 500))),
@@ -1254,19 +2161,21 @@ def make_lowd_plot(
     x0_multi_line = x0s[:multi_line_bs]
     x1_multi_line = plot_x1s[:multi_line_bs]
     labels_multi_line = -jnp.ones(multi_line_bs)
-    multi_step_line_paths = [
-        (
-            step,
-            _multi_step_paths(
-                train_state.apply_fn,
-                params_for_visual,
-                x0_multi_line,
-                labels_multi_line,
+    if not diagonal_only:
+        multi_step_line_paths = [
+            (
                 step,
-            ),
-        )
-        for step in multi_step_counts
-    ]
+                _multi_step_paths(
+                    train_state.apply_fn,
+                    params_for_visual,
+                    x0_multi_line,
+                    labels_multi_line,
+                    step,
+                ),
+            )
+            for step in multi_step_counts
+        ]
+
     euler_step_counts = getattr(cfg.logging, "euler_line_steps", [5, 10, 25, 100])
     if isinstance(euler_step_counts, int):
         euler_step_counts = [euler_step_counts]
@@ -1285,26 +2194,6 @@ def make_lowd_plot(
         for step in euler_step_counts
     ]
 
-    # determine plotting limits from observed and generated samples
-    all_points = np.concatenate(
-        [
-            np.asarray(x0s),
-            np.asarray(plot_x1s),
-            np.asarray(xhats).reshape((-1, cfg.problem.d)),
-            one_step_line_paths.reshape((-1, cfg.problem.d)),
-            *[
-                paths.reshape((-1, cfg.problem.d))
-                for _, paths in multi_step_line_paths
-            ],
-            *[
-                paths.reshape((-1, cfg.problem.d))
-                for _, paths in euler_line_paths
-            ],
-        ],
-        axis=0,
-    )
-    xlim, ylim = finite_lowd_limits(all_points)
-
     ## construct the figure
     nrows = 1
     ncols = len(titles)
@@ -1312,14 +2201,12 @@ def make_lowd_plot(
         nrows=nrows,
         ncols=ncols,
         figsize=(fw * ncols, fh * nrows),
-        sharex=True,
-        sharey=True,
+        sharex=False,
+        sharey=False,
         constrained_layout=True,
     )
 
     for ax in axs.ravel():
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
         ax.set_aspect("equal")
         ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
         ax.tick_params(axis="both", labelsize=fontsize)
@@ -1335,6 +2222,7 @@ def make_lowd_plot(
             ax.scatter(
                 plot_x1s[:, 0], plot_x1s[:, 1], s=0.1, alpha=0.5, marker="o", c="C0"
             )
+            panel_xlim, panel_ylim = lowd_limits_for(cfg, x0s, plot_x1s)
         else:
             ax.scatter(
                 plot_x1s[:, 0], plot_x1s[:, 1], s=0.1, alpha=0.5, marker="o", c="C0"
@@ -1348,123 +2236,168 @@ def make_lowd_plot(
                 marker="o",
                 c="black",
             )
-        _draw_forbidden_box(ax, cfg)
+            panel_xlim, panel_ylim = lowd_limits_for(cfg, plot_x1s, xhats[jj - 1])
+        _draw_lowd_regions(ax, cfg)
+        ax.set_xlim(panel_xlim)
+        ax.set_ylim(panel_ylim)
 
     wandb.log({"samples": wandb.Image(fig)})
 
-    # Visualize direct trajectory slices X_{0,t}(x0) for fixed times.
-    traj_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "traj_plot_bs", 2000))
-    x0_traj = x0s[:traj_bs]
-    x1_traj = plot_x1s[:traj_bs]
-    labels = -jnp.ones(traj_bs)
-    time_points = [0.0, 0.25, 0.5, 0.75, 1.0]
+    if not diagonal_only:
+        # Visualize direct trajectory slices X_{0,t}(x0) for fixed times.
+        traj_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "traj_plot_bs", 2000))
+        x0_traj = x0s[:traj_bs]
+        x1_traj = plot_x1s[:traj_bs]
+        labels = -jnp.ones(traj_bs)
+        time_points = [0.0, 0.25, 0.5, 0.75, 1.0]
 
-    traj_fig, traj_axs = plt.subplots(
-        nrows=1,
-        ncols=len(time_points),
-        figsize=(fw * len(time_points), fh),
-        sharex=True,
-        sharey=True,
-        constrained_layout=True,
-    )
+        traj_fig, traj_axs = plt.subplots(
+            nrows=1,
+            ncols=len(time_points),
+            figsize=(fw * len(time_points), fh),
+            sharex=False,
+            sharey=False,
+            constrained_layout=True,
+        )
 
-    for tt, ax in zip(time_points, traj_axs.ravel()):
-        if tt == 0.0:
-            xt = x0_traj
-        else:
-            xt = jax.vmap(
-                lambda x, lbl: train_state.apply_fn(
-                    params_for_visual,
-                    0.0,
-                    tt,
-                    x,
-                    label=lbl,
-                    train=False,
-                    calc_weight=False,
-                    return_X_and_phi=False,
-                )
-            )(x0_traj, labels)
+        for tt, ax in zip(time_points, traj_axs.ravel()):
+            if tt == 0.0:
+                xt = x0_traj
+            else:
+                xt = jax.vmap(
+                    lambda x, lbl: train_state.apply_fn(
+                        params_for_visual,
+                        0.0,
+                        tt,
+                        x,
+                        label=lbl,
+                        train=False,
+                        calc_weight=False,
+                        return_X_and_phi=False,
+                    )
+                )(x0_traj, labels)
 
-        ax.scatter(x1_traj[:, 0], x1_traj[:, 1], s=0.3, alpha=0.5, marker="o", c="C0")
-        ax.scatter(xt[:, 0], xt[:, 1], s=0.3, alpha=0.5, marker="o", c="black")
-        ax.set_title(rf"$t={tt:.2f}$", fontsize=fontsize)
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-        ax.set_aspect("equal")
-        ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
-        ax.tick_params(axis="both", labelsize=fontsize)
-        _draw_forbidden_box(ax, cfg)
+            ax.scatter(
+                x1_traj[:, 0], x1_traj[:, 1], s=0.3, alpha=0.5, marker="o", c="C0"
+            )
+            ax.scatter(xt[:, 0], xt[:, 1], s=0.3, alpha=0.5, marker="o", c="black")
+            ax.set_title(rf"$t={tt:.2f}$", fontsize=fontsize)
+            panel_xlim, panel_ylim = lowd_limits_for(cfg, x1_traj, xt)
+            ax.set_xlim(panel_xlim)
+            ax.set_ylim(panel_ylim)
+            ax.set_aspect("equal")
+            ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
+            ax.tick_params(axis="both", labelsize=fontsize)
+            _draw_lowd_regions(ax, cfg)
 
-    wandb.log({"trajectory_times": wandb.Image(traj_fig)})
+        wandb.log({"trajectory_times": wandb.Image(traj_fig)})
 
-    line_fig, line_ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
-    _draw_trajectory_paths(
-        line_ax,
-        one_step_line_paths,
-        np.asarray(x0_line),
-        np.asarray(x1_line),
-        title=f"1-step trajectory X_{{0,t}}(x), {n_line_times} times",
-        xlim=xlim,
-        ylim=ylim,
-        fontsize=fontsize,
-        cfg=cfg,
-    )
-    line_ax.legend(loc="upper right", fontsize=10, markerscale=6, frameon=True)
-    wandb.log({"trajectory_1step_lines": wandb.Image(line_fig)})
-
-    multi_fig, multi_axs = plt.subplots(
-        nrows=1,
-        ncols=len(multi_step_line_paths),
-        figsize=(fw * len(multi_step_line_paths), fh),
-        sharex=True,
-        sharey=True,
-        constrained_layout=True,
-        squeeze=False,
-    )
-    for ax, (step, paths) in zip(multi_axs.ravel(), multi_step_line_paths):
+        line_fig, line_ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
+        line_xlim, line_ylim = lowd_limits_for(
+            cfg,
+            x0_line,
+            x1_line,
+            one_step_line_paths,
+        )
         _draw_trajectory_paths(
-            ax,
-            paths,
-            np.asarray(x0_multi_line),
-            np.asarray(x1_multi_line),
-            title=f"{step}-step rollout",
-            xlim=xlim,
-            ylim=ylim,
+            line_ax,
+            one_step_line_paths,
+            np.asarray(x0_line),
+            np.asarray(x1_line),
+            title=f"1-step trajectory X_{{0,t}}(x), {n_line_times} times",
+            xlim=line_xlim,
+            ylim=line_ylim,
             fontsize=fontsize,
             cfg=cfg,
         )
-    multi_axs.ravel()[0].legend(
-        loc="upper right", fontsize=10, markerscale=6, frameon=True
-    )
+        line_ax.legend(loc="upper right", fontsize=10, markerscale=6, frameon=True)
+        one_step_gate_metrics = _rollout_matched_gate_metrics(
+            cfg, [("direct", one_step_line_paths)], "direct"
+        )
+        one_step_dive_metrics = _rollout_dive_gate_metrics(
+            cfg, [("direct", one_step_line_paths)], "direct"
+        )
+        wandb.log(
+            {
+                "trajectory_1step_lines": wandb.Image(line_fig),
+                **one_step_gate_metrics,
+                **one_step_dive_metrics,
+            }
+        )
 
-    multistep_box_metrics = _rollout_forbidden_box_metrics(
-        cfg, multi_step_line_paths, "multistep"
-    )
-    wandb.log(
-        {
-            "trajectory_multistep_lines": wandb.Image(multi_fig),
-            **multistep_box_metrics,
-        }
-    )
+        multi_fig, multi_axs = plt.subplots(
+            nrows=1,
+            ncols=len(multi_step_line_paths),
+            figsize=(fw * len(multi_step_line_paths), fh),
+            sharex=False,
+            sharey=False,
+            constrained_layout=True,
+            squeeze=False,
+        )
+        for ax, (step, paths) in zip(multi_axs.ravel(), multi_step_line_paths):
+            panel_xlim, panel_ylim = lowd_limits_for(
+                cfg,
+                x0_multi_line,
+                x1_multi_line,
+                paths,
+            )
+            _draw_trajectory_paths(
+                ax,
+                paths,
+                np.asarray(x0_multi_line),
+                np.asarray(x1_multi_line),
+                title=f"{step}-step rollout",
+                xlim=panel_xlim,
+                ylim=panel_ylim,
+                fontsize=fontsize,
+                cfg=cfg,
+            )
+        multi_axs.ravel()[0].legend(
+            loc="upper right", fontsize=10, markerscale=6, frameon=True
+        )
+
+        multistep_box_metrics = _rollout_forbidden_box_metrics(
+            cfg, multi_step_line_paths, "multistep"
+        )
+        multistep_gate_metrics = _rollout_matched_gate_metrics(
+            cfg, multi_step_line_paths, "multistep"
+        )
+        multistep_dive_metrics = _rollout_dive_gate_metrics(
+            cfg, multi_step_line_paths, "multistep"
+        )
+        wandb.log(
+            {
+                "trajectory_multistep_lines": wandb.Image(multi_fig),
+                **multistep_box_metrics,
+                **multistep_gate_metrics,
+                **multistep_dive_metrics,
+            }
+        )
 
     euler_fig, euler_axs = plt.subplots(
         nrows=1,
         ncols=len(euler_line_paths),
         figsize=(fw * len(euler_line_paths), fh),
-        sharex=True,
-        sharey=True,
+        sharex=False,
+        sharey=False,
         constrained_layout=True,
         squeeze=False,
     )
     for ax, (step, paths) in zip(euler_axs.ravel(), euler_line_paths):
+        panel_xlim, panel_ylim = lowd_limits_for(
+            cfg,
+            x0_multi_line,
+            x1_multi_line,
+            paths,
+        )
         _draw_trajectory_paths(
             ax,
             paths,
             np.asarray(x0_multi_line),
             np.asarray(x1_multi_line),
             title=f"{step}-step Euler",
-            xlim=xlim,
-            ylim=ylim,
+            xlim=panel_xlim,
+            ylim=panel_ylim,
             fontsize=fontsize,
             cfg=cfg,
         )
@@ -1474,10 +2407,18 @@ def make_lowd_plot(
     euler_box_metrics = _rollout_forbidden_box_metrics(
         cfg, euler_line_paths, "euler"
     )
+    euler_gate_metrics = _rollout_matched_gate_metrics(
+        cfg, euler_line_paths, "euler"
+    )
+    euler_dive_metrics = _rollout_dive_gate_metrics(
+        cfg, euler_line_paths, "euler"
+    )
     wandb.log(
         {
             "trajectory_euler_lines": wandb.Image(euler_fig),
             **euler_box_metrics,
+            **euler_gate_metrics,
+            **euler_dive_metrics,
         }
     )
     return prng_key
@@ -1605,11 +2546,6 @@ def make_loss_fn_args_plot(
     ## set up plot array
     if lowd_problem:
         titles = [r"$x_0$", r"$x_1$", r"$x_t$", r"$(s, t)$"]
-        all_points = np.concatenate(
-            [np.asarray(x0batch), np.asarray(x1batch), np.asarray(xtbatch)],
-            axis=0,
-        )
-        xlim, ylim = finite_lowd_limits(all_points)
     else:
         titles = [r"$(s, t)$"]
 
@@ -1630,10 +2566,6 @@ def make_loss_fn_args_plot(
         if kk == (len(titles) - 1):
             ax.set_xlim([-0.1, 1.1])
             ax.set_ylim([-0.1, 1.1])
-        else:
-            if lowd_problem:
-                ax.set_xlim(xlim)
-                ax.set_ylim(ylim)
 
         ax.set_aspect("equal")
         ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
@@ -1648,14 +2580,19 @@ def make_loss_fn_args_plot(
         if lowd_problem:
             if jj == 0:
                 ax.scatter(x0batch[:, 0], x0batch[:, 1], s=0.1, alpha=0.5, marker="o")
+                panel_xlim, panel_ylim = lowd_limits_for(cfg, x0batch)
             elif jj == 1:
                 ax.scatter(x1batch[:, 0], x1batch[:, 1], s=0.1, alpha=0.5, marker="o")
+                panel_xlim, panel_ylim = lowd_limits_for(cfg, x1batch)
             elif jj == 2:
                 ax.scatter(xtbatch[:, 0], xtbatch[:, 1], s=0.1, alpha=0.5, marker="o")
+                panel_xlim, panel_ylim = lowd_limits_for(cfg, xtbatch)
             elif jj == 3:
                 ax.scatter(sbatch, tbatch, s=0.1, alpha=0.5, marker="o")
             if jj < 3:
-                _draw_forbidden_box(ax, cfg)
+                _draw_lowd_regions(ax, cfg)
+                ax.set_xlim(panel_xlim)
+                ax.set_ylim(panel_ylim)
         else:
             ax.scatter(sbatch, tbatch, s=0.1, alpha=0.5, marker="o")
 

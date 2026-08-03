@@ -154,6 +154,364 @@ def _box_path_penalty(x: jnp.ndarray, cfg: config_dict.ConfigDict) -> jnp.ndarra
     return cfg.constraints.weight * lambda_box * jnp.mean(penalties)
 
 
+def _dive_gate_cfg_value(
+    cfg: config_dict.ConfigDict,
+    name: str,
+    default,
+):
+    """Read dive-gate geometry from constraints, logging, then problem config."""
+    constraint_cfg = cfg.constraints
+    logging_cfg = getattr(getattr(cfg, "logging", None), "dive_gate", None)
+    problem_cfg = cfg.problem
+
+    if hasattr(constraint_cfg, name):
+        return getattr(constraint_cfg, name)
+    if logging_cfg is not None and hasattr(logging_cfg, name):
+        return getattr(logging_cfg, name)
+    if hasattr(problem_cfg, name):
+        return getattr(problem_cfg, name)
+    return default
+
+
+def _dive_gate_geometry(
+    cfg: config_dict.ConfigDict,
+    dtype,
+) -> Tuple[
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+]:
+    depth = float(getattr(cfg.problem, "dive_gate_depth", 0.85))
+    pre_checkpoint_center = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "pre_checkpoint_center", [-0.35, 0.0]),
+        dtype=dtype,
+    )
+    pre_checkpoint_radii = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "pre_checkpoint_radii", [0.35, 0.24]),
+        dtype=dtype,
+    )
+    gate_center = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "gate_center", [0.0, -depth]),
+        dtype=dtype,
+    )
+    gate_radii = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "gate_radii", [0.45, 0.30]),
+        dtype=dtype,
+    )
+    checkpoint_center = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "checkpoint_center", [0.9, 0.0]),
+        dtype=dtype,
+    )
+    checkpoint_radii = jnp.asarray(
+        _dive_gate_cfg_value(cfg, "checkpoint_radii", [0.35, 0.24]),
+        dtype=dtype,
+    )
+    eps = jnp.asarray(1e-6, dtype=dtype)
+    return (
+        pre_checkpoint_center,
+        jnp.maximum(pre_checkpoint_radii, eps),
+        gate_center,
+        jnp.maximum(gate_radii, eps),
+        checkpoint_center,
+        jnp.maximum(checkpoint_radii, eps),
+    )
+
+
+def _dive_gate_path_mode(cfg: config_dict.ConfigDict) -> str:
+    mode = getattr(
+        cfg.constraints,
+        "path_mode",
+        getattr(cfg.constraints, "constraint_mode", "flow_map"),
+    )
+    if mode == "auto":
+        return "flow_map"
+
+    if mode in ("euler", "flow_matching", "velocity"):
+        return "euler"
+    if mode in ("flow_map", "direct"):
+        return "flow_map"
+
+    raise ValueError(
+        "constraints.path_mode must be one of 'auto', 'euler', or 'flow_map'"
+    )
+
+
+def _dive_gate_path_times(
+    cfg: config_dict.ConfigDict,
+    dtype,
+) -> jnp.ndarray:
+    path_times = getattr(cfg.constraints, "path_times", None)
+    if path_times is None:
+        n_times = int(getattr(cfg.constraints, "path_n_times", 101))
+        if n_times < 2:
+            raise ValueError("constraints.path_n_times must be >= 2")
+        return jnp.linspace(0.0, 1.0, n_times, dtype=dtype)
+
+    path_times = jnp.asarray(path_times, dtype=dtype)
+    if path_times.shape[0] < 2:
+        raise ValueError("constraints.path_times must contain at least two times")
+    return path_times
+
+
+def _soft_ellipse_indicator(
+    x: jnp.ndarray,
+    center: jnp.ndarray,
+    radii: jnp.ndarray,
+    temperature: float,
+) -> jnp.ndarray:
+    scaled = (x - center) / radii
+    normalized_sqdist = jnp.sum(scaled * scaled, axis=-1)
+    return jax.nn.sigmoid((1.0 - normalized_sqdist) / temperature)
+
+
+def _dive_gate_soft_terms(
+    paths: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+) -> Tuple[
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+    jnp.ndarray,
+]:
+    """Soft temporal-logic terms for: hit A, B, C, and in that order."""
+    (
+        pre_checkpoint_center,
+        pre_checkpoint_radii,
+        gate_center,
+        gate_radii,
+        checkpoint_center,
+        checkpoint_radii,
+    ) = _dive_gate_geometry(cfg, paths.dtype)
+    temperature = float(getattr(cfg.constraints, "indicator_temperature", 0.08))
+    eps = jnp.asarray(float(getattr(cfg.constraints, "eps", 1e-6)), dtype=paths.dtype)
+
+    p_a = _soft_ellipse_indicator(
+        paths,
+        pre_checkpoint_center,
+        pre_checkpoint_radii,
+        temperature,
+    )
+    p_b = _soft_ellipse_indicator(paths, gate_center, gate_radii, temperature)
+    p_c = _soft_ellipse_indicator(
+        paths,
+        checkpoint_center,
+        checkpoint_radii,
+        temperature,
+    )
+
+    no_a_prefix_inclusive = jnp.cumprod(jnp.clip(1.0 - p_a, 0.0, 1.0), axis=1)
+    no_a_before = jnp.concatenate(
+        [jnp.ones_like(no_a_prefix_inclusive[:, :1]), no_a_prefix_inclusive[:, :-1]],
+        axis=1,
+    )
+    no_b_prefix_inclusive = jnp.cumprod(jnp.clip(1.0 - p_b, 0.0, 1.0), axis=1)
+    no_b_before = jnp.concatenate(
+        [jnp.ones_like(no_b_prefix_inclusive[:, :1]), no_b_prefix_inclusive[:, :-1]],
+        axis=1,
+    )
+
+    miss_a_prob = no_a_prefix_inclusive[:, -1]
+    miss_b_prob = no_b_prefix_inclusive[:, -1]
+    miss_c_prob = jnp.prod(jnp.clip(1.0 - p_c, 0.0, 1.0), axis=1)
+    bad_b_before_a_prob = 1.0 - jnp.prod(
+        jnp.clip(1.0 - p_b * no_a_before, 0.0, 1.0),
+        axis=1,
+    )
+    bad_c_before_b_prob = 1.0 - jnp.prod(
+        jnp.clip(1.0 - p_c * no_b_before, 0.0, 1.0),
+        axis=1,
+    )
+    hit_a_prob = jnp.clip(1.0 - miss_a_prob, eps, 1.0)
+    hit_b_prob = jnp.clip(1.0 - miss_b_prob, eps, 1.0)
+    hit_c_prob = jnp.clip(1.0 - miss_c_prob, eps, 1.0)
+
+    hit_loss_type = getattr(cfg.constraints, "hit_loss", "miss")
+    if hit_loss_type == "miss":
+        hit_a_loss = jnp.mean(miss_a_prob)
+        hit_b_loss = jnp.mean(miss_b_prob)
+        hit_c_loss = jnp.mean(miss_c_prob)
+    elif hit_loss_type == "nll":
+        hit_a_loss = jnp.mean(-jnp.log(hit_a_prob))
+        hit_b_loss = jnp.mean(-jnp.log(hit_b_prob))
+        hit_c_loss = jnp.mean(-jnp.log(hit_c_prob))
+    else:
+        raise ValueError("constraints.hit_loss must be 'miss' or 'nll'")
+
+    order_loss = jnp.mean(bad_b_before_a_prob + bad_c_before_b_prob)
+    return (
+        hit_a_loss,
+        hit_b_loss,
+        hit_c_loss,
+        order_loss,
+        jnp.mean(hit_a_prob),
+        jnp.mean(hit_b_prob),
+        jnp.mean(hit_c_prob),
+        jnp.mean(bad_b_before_a_prob),
+        jnp.mean(bad_c_before_b_prob),
+    )
+
+
+def _flow_map_path_grid(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    times = _dive_gate_path_times(cfg, x0.dtype)
+
+    if label is None:
+        return jax.vmap(
+            lambda x: jax.vmap(
+                lambda tau: X.apply(
+                    params,
+                    0.0,
+                    tau,
+                    x,
+                    None,
+                    train=False,
+                    calc_weight=False,
+                    return_X_and_phi=False,
+                )
+            )(times)
+        )(x0)
+
+    return jax.vmap(
+        lambda x, lbl: jax.vmap(
+            lambda tau: X.apply(
+                params,
+                0.0,
+                tau,
+                x,
+                lbl,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(times)
+    )(x0, label)
+
+
+def _velocity_batch(
+    params: Parameters,
+    t: jnp.ndarray,
+    x: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+) -> jnp.ndarray:
+    if label is None:
+        return jax.vmap(
+            lambda xi: X.apply(
+                params,
+                t,
+                xi,
+                None,
+                train=False,
+                method="calc_b",
+            )
+        )(x)
+
+    return jax.vmap(
+        lambda xi, lbl: X.apply(
+            params,
+            t,
+            xi,
+            lbl,
+            train=False,
+            method="calc_b",
+        )
+    )(x, label)
+
+
+def _euler_velocity_paths(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    n_steps = int(getattr(cfg.constraints, "euler_steps", 100))
+    if n_steps < 1:
+        raise ValueError("constraints.euler_steps must be >= 1")
+
+    times = jnp.linspace(0.0, 1.0, n_steps + 1, dtype=x0.dtype)
+
+    def step(x, idx):
+        t0 = times[idx]
+        dt = times[idx + 1] - times[idx]
+        x_next = x + dt * _velocity_batch(params, t0, x, label, X=X)
+        return x_next, x_next
+
+    _, states = jax.lax.scan(step, x0, jnp.arange(n_steps))
+    return jnp.concatenate([x0[:, None, :], jnp.swapaxes(states, 0, 1)], axis=1)
+
+
+def _dive_gate_constraint_paths(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    mode = _dive_gate_path_mode(cfg)
+    if mode == "flow_map":
+        return _flow_map_path_grid(params, x0, label, X=X, cfg=cfg)
+    return _euler_velocity_paths(params, x0, label, X=X, cfg=cfg)
+
+
+def dive_gate_path_constraint(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> float:
+    """Penalize learned paths that miss B or reach C before B."""
+    constraint_bs = _flow_matching_constraint_batch_size(cfg, x0.shape[0])
+    x0 = x0[:constraint_bs]
+    if label is not None:
+        label = label[:constraint_bs]
+
+    paths = _dive_gate_constraint_paths(params, x0, label, X=X, cfg=cfg)
+    (
+        hit_a_loss,
+        hit_b_loss,
+        hit_c_loss,
+        order_loss,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = _dive_gate_soft_terms(paths, cfg)
+
+    lambda_hit = float(getattr(cfg.constraints, "lambda_hit", 1.0))
+    lambda_hit_a = float(getattr(cfg.constraints, "lambda_hit_a", lambda_hit))
+    lambda_hit_b = float(getattr(cfg.constraints, "lambda_hit_b", lambda_hit))
+    lambda_hit_c = float(getattr(cfg.constraints, "lambda_hit_c", 1.0))
+    lambda_order = float(getattr(cfg.constraints, "lambda_order", 1.0))
+    loss = cfg.constraints.weight * (
+        lambda_hit_a * hit_a_loss
+        + lambda_hit_b * hit_b_loss
+        + lambda_hit_c * hit_c_loss
+        + lambda_order * order_loss
+    )
+    return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
+
+
 def _select_kde_observations(
     x0: jnp.ndarray, x1: jnp.ndarray, cfg: config_dict.ConfigDict
 ) -> jnp.ndarray:
@@ -1198,6 +1556,14 @@ def setup_loss(
                     raise ValueError(
                         f"Unknown constraints.box_path_mode: {box_path_mode}"
                     )
+            elif cfg.constraints.type == "dive_gate_path":
+                total_loss += constraint_scale * dive_gate_path_constraint(
+                    params,
+                    x0,
+                    label,
+                    X=net,
+                    cfg=cfg,
+                )
             else:
                 raise ValueError(f"Unknown constraint type: {cfg.constraints.type}")
 
