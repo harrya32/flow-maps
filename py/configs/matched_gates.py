@@ -1,9 +1,8 @@
-"""
-Lagrangian self-distillation on a constrained four-Gaussian transport toy.
+"""Quick local config for close non-crossing matched-gate trajectories.
 
-Source distribution: A=(-3, 3) and C=(-3, -3).
-Target distribution: B=(3, 3) and D=(3, -3).
-Interpolant endpoint coupling: A -> D and C -> B.
+Particles start near a common source, then branch to one of two close endpoints.
+The interpolant for branch A must pass through midpoint gate A, and branch B
+must pass through midpoint gate B.
 """
 
 import os
@@ -18,16 +17,15 @@ experiments = [
 def get_config(
     slurm_id: int, dataset_location: str = "", output_folder: str = ""
 ) -> ml_collections.ConfigDict:
-    # ensure jax.device_count works (weird issue with importlib)
     import jax
 
-    del dataset_location  # Synthetic dataset generated on the fly.
+    del dataset_location  # Synthetic data generated on the fly.
 
     loss_type, psd_type, stopgrad_type = experiments[slurm_id % len(experiments)]
 
     config = ml_collections.ConfigDict()
 
-    # training config
+    # Training config.
     config.training = ml_collections.ConfigDict()
     config.training.shuffle = True
     config.training.conditional = False
@@ -41,89 +39,73 @@ def get_config(
     config.training.ema_facs = [0.999, 0.9999]
     config.training.ndevices = jax.device_count()
 
-    # Branch-conditional MMD on the direct endpoint map X_{0,1}(x0) -> x1.
-    config.training.endpoint_matching = ml_collections.ConfigDict()
-    config.training.endpoint_matching.enabled = True
-    config.training.endpoint_matching.weight = 1.0
-    config.training.endpoint_matching.branch_conditional = True
-    config.training.endpoint_matching.branch_axis = 1
-    config.training.endpoint_matching.branch_threshold = 0.0
-    config.training.endpoint_matching.bandwidths = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
-    config.training.endpoint_matching.eps = 1e-6
-    config.training.endpoint_matching.min_branch_mass = 1.0
-
-    # problem config
+    # Problem config.
     config.problem = ml_collections.ConfigDict()
-    config.problem.n = 500_000
+    config.problem.n = 50_000
     config.problem.d = 2
     config.problem.image_dims = None
     config.problem.num_classes = None
-    config.problem.target = "four_gaussians"
+    config.problem.target = "matched_gates"
     config.problem.dataset_location = None
-    config.problem.interp_type = "linear"
-    config.problem.base = "four_gaussians_source"
+    config.problem.interp_type = "matched_gates"
+    config.problem.interp_uses_labels = True
+    config.problem.base = "matched_gates_source"
     config.problem.gaussian_scale = "adaptive"
-    config.problem.four_gaussians_std = 0.35
-    config.problem.coupling = "A_to_D_C_to_B"
 
-    # optimization config
+    # Close, non-crossing branch geometry.
+    config.problem.matched_gates_source_mean = [0.0, -2.0]
+    config.problem.gate_midpoint_a = [-0.35, 0.0]
+    config.problem.gate_midpoint_b = [0.35, 0.0]
+    config.problem.gate_endpoint_a = [-0.45, 2.0]
+    config.problem.gate_endpoint_b = [0.45, 2.0]
+    config.problem.gate_tau_mid = 0.5
+    config.problem.matched_gates_source_std = 0.12
+    config.problem.matched_gates_endpoint_std = 0.12
+    config.problem.source_radius = 0.18
+    config.problem.gate_radius = 0.18
+    config.problem.endpoint_radius = 0.22
+
+    # Optimization config: deliberately small enough for quick local iteration.
     config.optimization = ml_collections.ConfigDict()
-    config.optimization.bs = 512
+    config.optimization.bs = 2048
     config.optimization.diag_fraction = 0.75
     config.optimization.learning_rate = 3e-4
     config.optimization.clip = 1.0
-    config.optimization.total_steps = 20_000
+    config.optimization.total_steps = 2_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
-    config.optimization.decay_steps = 5_000
+    config.optimization.decay_steps = 2_000
     config.optimization.schedule_type = "sqrt"
 
-    # One-shot midpoint bias: push the direct X_{0,0.5}(x0) distribution upward.
-    config.constraints = ml_collections.ConfigDict()
-    config.constraints.enabled = True
-    config.constraints.type = "mid_moment"
-    config.constraints.weight = 1.0
-    config.constraints.stage2_only = False
-    config.constraints.x_clip = 10.0
-    config.constraints.x_clip_mode = "tanh"
-
-    config.constraints.time = 0.5
-    config.constraints.lambda_mean = 1.0
-    config.constraints.lambda_cov = 0.0
-    config.constraints.target_mean = [0.0, 2.0]
-    config.constraints.target_cov = [[1.0, 0.0], [0.0, 1.0]]
-
-    # logging config
+    # Logging config.
     config.logging = ml_collections.ConfigDict()
-    config.logging.plot_bs = 5000
-    config.logging.traj_plot_bs = 1000
-    config.logging.line_plot_bs = 1000
-    config.logging.line_plot_n_times = 20
-    config.logging.multi_step_line_plot_bs = 500
-    config.logging.multi_step_line_steps = [1, 2, 5, 10, 25]
+    config.logging.plot_bs = 4_000
+    config.logging.traj_plot_bs = 1_000
+    config.logging.line_plot_bs = 300
+    config.logging.line_plot_n_times = 41
+    config.logging.multi_step_line_plot_bs = 160
+    config.logging.multi_step_line_steps = [5, 10, 25]
+    config.logging.euler_line_steps = [10, 25, 100]
+    config.logging.scalar_freq = 50
+    config.logging.progress_freq = 50
     config.logging.visual_freq = 250
-    config.logging.save_freq = 500
+    config.logging.save_freq = 1_000
     config.logging.wandb_project = "self-distill-flow-maps"
 
     method_str = f"{loss_type}_{psd_type}" if psd_type else loss_type
-    endpoint_suffix = (
-        "_endpoint_mmd"
-        if getattr(config.training.endpoint_matching, "enabled", False)
-        else ""
-    )
-    constraint_suffix = (
-        "_midup"
-        if getattr(config.constraints, "enabled", False)
-        and getattr(config.constraints, "type", "") == "mid_moment"
-        else ""
-    )
-    config.logging.wandb_name = (
-        f"four_gaussians_{method_str}{endpoint_suffix}{constraint_suffix}"
-    )
+    config.logging.wandb_name = f"matched_gates_vanilla_{method_str}"
     config.logging.wandb_entity = os.getenv("WANDB_ENTITY", "your-username")
     config.logging.output_folder = output_folder
     config.logging.output_name = config.logging.wandb_name
+
+    config.logging.matched_gates = ml_collections.ConfigDict()
+    config.logging.matched_gates.enabled = True
+    config.logging.matched_gates.freq = config.logging.visual_freq
+    config.logging.matched_gates.source_radius = config.problem.source_radius
+    config.logging.matched_gates.gate_radius = config.problem.gate_radius
+    config.logging.matched_gates.endpoint_radius = config.problem.endpoint_radius
+    config.logging.matched_gates.forbid_wrong_midpoint_first = True
 
     # FID not relevant for low-dimensional synthetic trajectories.
     config.logging.fid_freq = 0
@@ -134,7 +116,11 @@ def get_config(
     config.logging.fid_ema_factor = None
     config.logging.visual_ema_factor = None
 
-    # network config
+    # Constraints are intentionally off for this vanilla baseline.
+    config.constraints = ml_collections.ConfigDict()
+    config.constraints.enabled = False
+
+    # Network config.
     config.network = ml_collections.ConfigDict()
     config.network.network_type = "mlp"
     config.network.n_hidden = 3
@@ -146,7 +132,7 @@ def get_config(
     config.network.use_bfloat16 = False
     config.network.rescale = 0.5
 
-    # required but not used for MLP
+    # Required but not used for MLP.
     config.network.load_path = ""
     config.network.input_dims = (2,)
     config.network.load_ema_fac = None

@@ -1,10 +1,9 @@
-"""
-Lagrangian self-distillation on a triangular Gaussian temporal process.
+"""Vanilla local config for clockwise spiral interpolants.
 
-Endpoint pairs are independent samples from p0 = N((0, 0), sigma^2 I) and
-p1 = N((3, 0), sigma^2 I). The custom triangle interpolant moves the mean
-along (0, 0) -> (1.5, 3) -> (3, 0); its per-sample diagonal target is
-x1 - x0 plus (0, 6) before t=0.5 and (0, -6) after t=0.5.
+The endpoints are paired Gaussians with p0 near the origin and p1 directly
+above it. The true interpolants rotate clockwise around each source point:
+they initially move downward, pass between p0 and p1 at 180 degrees, continue
+downward, then return to p1. No constraint loss is enabled in this config.
 """
 
 import os
@@ -15,20 +14,26 @@ experiments = [
     ("lsd", None, "convex"),
 ]
 
+variants = [
+    ("vanilla_flow_matching", 1.0),
+    ("vanilla_flow_map", 0.95),
+]
+
 
 def get_config(
     slurm_id: int, dataset_location: str = "", output_folder: str = ""
 ) -> ml_collections.ConfigDict:
-    # ensure jax.device_count works (weird issue with importlib)
     import jax
 
-    del dataset_location  # Synthetic dataset generated on the fly.
+    del dataset_location  # Synthetic data generated on the fly.
 
-    loss_type, psd_type, stopgrad_type = experiments[slurm_id % len(experiments)]
+    variant_name, diag_fraction = variants[slurm_id % len(variants)]
+    experiment_id = (slurm_id // len(variants)) % len(experiments)
+    loss_type, psd_type, stopgrad_type = experiments[experiment_id]
 
     config = ml_collections.ConfigDict()
 
-    # training config
+    # Training config.
     config.training = ml_collections.ConfigDict()
     config.training.shuffle = True
     config.training.conditional = False
@@ -38,54 +43,67 @@ def get_config(
     config.training.loss_type = loss_type
     config.training.tmin = 0.0
     config.training.tmax = 1.0
-    config.training.seed = 42
+    config.training.seed = 0
     config.training.ema_facs = [0.999, 0.9999]
     config.training.ndevices = jax.device_count()
 
-    # problem config
+    # Problem config.
     config.problem = ml_collections.ConfigDict()
-    config.problem.n = 500_000
+    config.problem.n = 100_000
     config.problem.d = 2
     config.problem.image_dims = None
     config.problem.num_classes = None
-    config.problem.target = "triangle_gaussian"
+    config.problem.target = "spiral"
     config.problem.dataset_location = None
-    config.problem.interp_type = "triangle"
-    config.problem.base = "triangle_gaussian_source"
+    config.problem.interp_type = "spiral"
+    config.problem.interp_uses_labels = False
+    config.problem.base = "spiral_source"
     config.problem.gaussian_scale = "adaptive"
-    config.problem.triangle_std = 0.18
-    config.problem.triangle_height = 3.0
 
-    # optimization config
+    # Endpoint and spiral geometry.
+    config.problem.spiral_source_mean = [0.0, 0.0]
+    config.problem.spiral_target_mean = [0.0, 3.0]
+    config.problem.spiral_source_std = 0.17
+    config.problem.spiral_target_std = 0.17
+    config.problem.spiral_radius_a = 2.88
+    config.problem.spiral_radius_b = -4.59
+    config.problem.spiral_radius_c = 2.71
+    config.problem.spiral_turns = 1.5
+
+    # Optimization config.
     config.optimization = ml_collections.ConfigDict()
-    config.optimization.bs = 512
-    config.optimization.diag_fraction = 0.75
+    config.optimization.bs = 2048
+    config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 3e-4
     config.optimization.clip = 1.0
-    config.optimization.total_steps = 20_000
+    config.optimization.total_steps = 3_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
-    config.optimization.decay_steps = 5_000
+    config.optimization.decay_steps = 3_000
     config.optimization.schedule_type = "sqrt"
 
-    # logging config
+    # Logging config. The generic low-d plots include learned and true trajectories.
     config.logging = ml_collections.ConfigDict()
-    config.logging.plot_bs = 5000
-    config.logging.traj_plot_bs = 1000
-    config.logging.line_plot_bs = 1000
-    config.logging.line_plot_n_times = 20
-    config.logging.multi_step_line_plot_bs = 500
-    config.logging.multi_step_line_steps = [1, 2, 5, 10, 25]
-    config.logging.visual_freq = 250
-    config.logging.save_freq = 500
+    config.logging.plot_bs = 512
+    config.logging.traj_plot_bs = 256
+    config.logging.line_plot_bs = 96
+    config.logging.line_plot_n_times = 121
+    config.logging.multi_step_line_plot_bs = 96
+    config.logging.multi_step_line_steps = [10, 25, 100]
+    config.logging.euler_line_steps = [10, 25, 100]
+    config.logging.scalar_freq = 1
+    config.logging.progress_freq = 1
+    config.logging.visual_freq = 1_000
+    config.logging.save_freq = 1_000
     config.logging.wandb_project = "self-distill-flow-maps"
 
     method_str = f"{loss_type}_{psd_type}" if psd_type else loss_type
-    config.logging.wandb_name = f"triangle_gaussian_{method_str}"
+    config.logging.wandb_name = f"spiral_{variant_name}_{method_str}"
     config.logging.wandb_entity = os.getenv("WANDB_ENTITY", "your-username")
     config.logging.output_folder = output_folder
     config.logging.output_name = config.logging.wandb_name
+    config.logging.comparison_mode = variant_name
 
     # FID not relevant for low-dimensional synthetic trajectories.
     config.logging.fid_freq = 0
@@ -96,16 +114,15 @@ def get_config(
     config.logging.fid_ema_factor = None
     config.logging.visual_ema_factor = None
 
-    # Optional constraints are disabled; the triangle is specified by
-    # independent endpoint pairs plus the custom interpolant velocity.
+    # Constraint training is intentionally off for this vanilla experiment.
     config.constraints = ml_collections.ConfigDict()
     config.constraints.enabled = False
 
-    # network config
+    # Network config.
     config.network = ml_collections.ConfigDict()
     config.network.network_type = "mlp"
-    config.network.n_hidden = 3
-    config.network.n_neurons = 256
+    config.network.n_hidden = 4
+    config.network.n_neurons = 512
     config.network.output_dim = 2
     config.network.act = "gelu"
     config.network.use_residual = False
@@ -113,7 +130,7 @@ def get_config(
     config.network.use_bfloat16 = False
     config.network.rescale = 0.5
 
-    # required but not used for MLP
+    # Required but not used for MLP.
     config.network.load_path = ""
     config.network.input_dims = (2,)
     config.network.load_ema_fac = None

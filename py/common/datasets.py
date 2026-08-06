@@ -273,6 +273,54 @@ def sample_triangle_gaussian_pairs(
     }
 
 
+def sample_spiral_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    source_mean,
+    target_mean,
+    source_std: float,
+    target_std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for the spiral interpolant process."""
+
+    x0_key, x1_key = jax.random.split(key)
+    source_mean = jnp.asarray(source_mean, dtype=jnp.float32)
+    target_mean = jnp.asarray(target_mean, dtype=jnp.float32)
+
+    x0s = source_mean + source_std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = target_mean + target_std * jax.random.normal(x1_key, shape=(n_samples, 2))
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+    }
+
+
+def sample_hairpin_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    source_mean,
+    target_mean,
+    source_std: float,
+    target_std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for the hairpin interpolant process."""
+
+    x0_key, x1_key = jax.random.split(key)
+    source_mean = jnp.asarray(source_mean, dtype=jnp.float32)
+    target_mean = jnp.asarray(target_mean, dtype=jnp.float32)
+
+    x0s = source_mean + source_std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = target_mean + target_std * jax.random.normal(x1_key, shape=(n_samples, 2))
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+    }
+
+
 def sample_fork_gaussian_pairs(
     n_samples: int,
     key: jnp.ndarray,
@@ -399,6 +447,71 @@ def sample_box_avoiding_bezier_pairs(
         "x0": x0s.astype(np.float32),
         "x1": x1s.astype(np.float32),
         "label": signs.astype(np.float32),
+    }
+
+
+def sample_matched_gates_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    source_mean,
+    endpoint_a,
+    endpoint_b,
+    source_std: float,
+    endpoint_std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for the close matched-gates toy process.
+
+    A branch label in {-1, +1} selects the endpoint mode. The custom interpolant
+    uses the same label to route through the corresponding midpoint gate.
+    """
+
+    branch_key, x0_key, x1_key = jax.random.split(key, num=3)
+    branch_b = jax.random.bernoulli(branch_key, p=0.5, shape=(n_samples,))
+    labels = jnp.where(branch_b, 1.0, -1.0)
+
+    source_mean = jnp.asarray(source_mean, dtype=jnp.float32)
+    endpoint_a = jnp.asarray(endpoint_a, dtype=jnp.float32)
+    endpoint_b = jnp.asarray(endpoint_b, dtype=jnp.float32)
+    endpoints = jnp.where(branch_b[:, None], endpoint_b[None, :], endpoint_a[None, :])
+
+    x0s = source_mean + source_std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = endpoints + endpoint_std * jax.random.normal(x1_key, shape=(n_samples, 2))
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+        "label": np.asarray(labels, dtype=np.float32),
+    }
+
+
+def sample_dive_gate_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    source_mean,
+    target_mean,
+    source_std: float,
+    target_std: float,
+    gate_jitter_std,
+) -> Dict[str, np.ndarray]:
+    """Sample endpoint pairs and gate jitters for the dive-gate process."""
+
+    x0_key, x1_key, gate_key = jax.random.split(key, num=3)
+    source_mean = jnp.asarray(source_mean, dtype=jnp.float32)
+    target_mean = jnp.asarray(target_mean, dtype=jnp.float32)
+    gate_jitter_std = jnp.asarray(gate_jitter_std, dtype=jnp.float32)
+
+    x0s = source_mean + source_std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = target_mean + target_std * jax.random.normal(x1_key, shape=(n_samples, 2))
+    gate_jitters = gate_jitter_std * jax.random.normal(
+        gate_key, shape=(n_samples, 2)
+    )
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+        "label": np.asarray(gate_jitters, dtype=np.float32),
     }
 
 
@@ -729,6 +842,32 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
         def sample_rho0(bs: int, key: jnp.ndarray):
             return std * jax.random.normal(key, shape=(bs, *ex_input.shape))
 
+    elif cfg.problem.base == "spiral_source":
+        std = float(getattr(cfg.problem, "spiral_source_std", 0.16))
+        source_mean = jnp.asarray(
+            getattr(cfg.problem, "spiral_source_mean", [0.0, 0.0]),
+            dtype=jnp.float32,
+        )
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return source_mean + std * jax.random.normal(
+                key, shape=(bs, *ex_input.shape)
+            )
+
+    elif cfg.problem.base == "hairpin_source":
+        std = float(getattr(cfg.problem, "hairpin_source_std", 0.08))
+        source_mean = jnp.asarray(
+            getattr(cfg.problem, "hairpin_source_mean", [0.0, 0.0]),
+            dtype=jnp.float32,
+        )
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return source_mean + std * jax.random.normal(
+                key, shape=(bs, *ex_input.shape)
+            )
+
     elif cfg.problem.base == "fork_gaussian_source":
         std = float(getattr(cfg.problem, "fork_std", 0.12))
 
@@ -739,6 +878,32 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
     elif cfg.problem.base == "box_avoiding_source":
         std = float(getattr(cfg.problem, "box_avoiding_std", 0.25))
         source_mean = jnp.asarray([-3.0, 0.0], dtype=jnp.float32)
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return source_mean + std * jax.random.normal(
+                key, shape=(bs, *ex_input.shape)
+            )
+
+    elif cfg.problem.base == "matched_gates_source":
+        std = float(getattr(cfg.problem, "matched_gates_source_std", 0.12))
+        source_mean = jnp.asarray(
+            getattr(cfg.problem, "matched_gates_source_mean", [0.0, -2.0]),
+            dtype=jnp.float32,
+        )
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return source_mean + std * jax.random.normal(
+                key, shape=(bs, *ex_input.shape)
+            )
+
+    elif cfg.problem.base == "dive_gate_source":
+        std = float(getattr(cfg.problem, "dive_gate_source_std", 0.12))
+        source_mean = jnp.asarray(
+            getattr(cfg.problem, "dive_gate_source_mean", [-3.0, 0.0]),
+            dtype=jnp.float32,
+        )
 
         @functools.partial(jax.jit, static_argnums=(0,))
         def sample_rho0(bs: int, key: jnp.ndarray):
@@ -880,6 +1045,40 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
         )
         ds = paired_np_to_dataset(cfg, paired)
+    elif cfg.problem.target == "spiral":
+        assert cfg.problem.d == 2, "Spiral target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_spiral_pairs(
+            n_samples,
+            key,
+            source_mean=getattr(cfg.problem, "spiral_source_mean", [0.0, 0.0]),
+            target_mean=getattr(cfg.problem, "spiral_target_mean", [0.0, 3.0]),
+            source_std=float(getattr(cfg.problem, "spiral_source_std", 0.16)),
+            target_std=float(getattr(cfg.problem, "spiral_target_std", 0.17)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = paired_np_to_dataset(cfg, paired)
+    elif cfg.problem.target == "hairpin":
+        assert cfg.problem.d == 2, "Hairpin target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_hairpin_pairs(
+            n_samples,
+            key,
+            source_mean=getattr(cfg.problem, "hairpin_source_mean", [0.0, 0.0]),
+            target_mean=getattr(cfg.problem, "hairpin_target_mean", [0.0, -1.0]),
+            source_std=float(getattr(cfg.problem, "hairpin_source_std", 0.08)),
+            target_std=float(getattr(cfg.problem, "hairpin_target_std", 0.08)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = paired_np_to_dataset(cfg, paired)
     elif cfg.problem.target == "fork_gaussian":
         assert cfg.problem.d == 2, "Fork Gaussian target only implemented for d=2."
 
@@ -909,6 +1108,42 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             box_ylim=getattr(cfg.problem, "infeasible_box_ylim", [-1.0, 1.0]),
             reject_times=getattr(cfg.problem, "reject_times", None),
             chunk_size=int(getattr(cfg.problem, "rejection_chunk_size", 65_536)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = paired_np_to_dataset(cfg, paired)
+    elif cfg.problem.target == "matched_gates":
+        assert cfg.problem.d == 2, "Matched-gates target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_matched_gates_pairs(
+            n_samples,
+            key,
+            source_mean=getattr(cfg.problem, "matched_gates_source_mean", [0.0, -2.0]),
+            endpoint_a=getattr(cfg.problem, "gate_endpoint_a", [-0.45, 2.0]),
+            endpoint_b=getattr(cfg.problem, "gate_endpoint_b", [0.45, 2.0]),
+            source_std=float(getattr(cfg.problem, "matched_gates_source_std", 0.12)),
+            endpoint_std=float(getattr(cfg.problem, "matched_gates_endpoint_std", 0.12)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = paired_np_to_dataset(cfg, paired)
+    elif cfg.problem.target == "dive_gate":
+        assert cfg.problem.d == 2, "Dive-gate target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_dive_gate_pairs(
+            n_samples,
+            key,
+            source_mean=getattr(cfg.problem, "dive_gate_source_mean", [-3.0, 0.0]),
+            target_mean=getattr(cfg.problem, "dive_gate_target_mean", [3.0, 0.0]),
+            source_std=float(getattr(cfg.problem, "dive_gate_source_std", 0.12)),
+            target_std=float(getattr(cfg.problem, "dive_gate_target_std", 0.12)),
+            gate_jitter_std=getattr(cfg.problem, "dive_gate_jitter_std", [0.12, 0.07]),
         )
         rescale_value = float(
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
