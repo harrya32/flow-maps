@@ -127,10 +127,10 @@ def get_config(
     config.logging.multi_step_line_plot_bs = 500
     config.logging.multi_step_line_steps = [1, 2, 5, 10, 25]
     config.logging.euler_line_steps = [5, 10, 25, 100]
-    config.logging.scalar_freq = 100
-    config.logging.progress_freq = 100
-    config.logging.visual_freq = 1000
-    config.logging.save_freq = 500
+    config.logging.scalar_freq = 1
+    config.logging.progress_freq = 1
+    config.logging.visual_freq = 5000
+    config.logging.save_freq = 5000
     config.logging.wandb_project = "self-distill-flow-maps"
 
     method_str = f"{loss_type}_{psd_type}" if psd_type else loss_type
