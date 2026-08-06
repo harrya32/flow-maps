@@ -186,7 +186,7 @@ def _dive_gate_geometry(
 ]:
     depth = float(getattr(cfg.problem, "dive_gate_depth", 0.85))
     pre_checkpoint_center = jnp.asarray(
-        _dive_gate_cfg_value(cfg, "pre_checkpoint_center", [-0.35, 0.0]),
+        _dive_gate_cfg_value(cfg, "pre_checkpoint_center", [-0.9, 0.0]),
         dtype=dtype,
     )
     pre_checkpoint_radii = jnp.asarray(

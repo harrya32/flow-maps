@@ -71,14 +71,14 @@ def get_config(
     # Optimization config.
     config.optimization = ml_collections.ConfigDict()
     config.optimization.bs = 2048
-    config.optimization.diag_fraction = 0.95
+    config.optimization.diag_fraction = 1
     config.optimization.learning_rate = 3e-4
     config.optimization.clip = 1.0
-    config.optimization.total_steps = 20000
+    config.optimization.total_steps = 10000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
-    config.optimization.decay_steps = 2000
+    config.optimization.decay_steps = 3000
     config.optimization.schedule_type = "sqrt"
 
     # Logging config. Scalars are every step; plots are every 1k steps.
@@ -105,7 +105,7 @@ def get_config(
     config.logging.dive_gate = ml_collections.ConfigDict()
     config.logging.dive_gate.enabled = True
     config.logging.dive_gate.freq = config.logging.visual_freq
-    config.logging.dive_gate.pre_checkpoint_center = [-0.35, 0.0]
+    config.logging.dive_gate.pre_checkpoint_center = [-0.9, 0.0]
     config.logging.dive_gate.pre_checkpoint_radii = config.problem.checkpoint_radii
     config.logging.dive_gate.gate_center = [0.0, -config.problem.dive_gate_depth]
     config.logging.dive_gate.gate_radii = config.problem.gate_radii
@@ -173,8 +173,8 @@ def get_config(
     # Network config.
     config.network = ml_collections.ConfigDict()
     config.network.network_type = "mlp"
-    config.network.n_hidden = 3
-    config.network.n_neurons = 256
+    config.network.n_hidden = 4
+    config.network.n_neurons = 512
     config.network.output_dim = 2
     config.network.act = "gelu"
     config.network.use_residual = False

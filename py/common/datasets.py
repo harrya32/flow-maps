@@ -273,6 +273,54 @@ def sample_triangle_gaussian_pairs(
     }
 
 
+def sample_spiral_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    source_mean,
+    target_mean,
+    source_std: float,
+    target_std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for the spiral interpolant process."""
+
+    x0_key, x1_key = jax.random.split(key)
+    source_mean = jnp.asarray(source_mean, dtype=jnp.float32)
+    target_mean = jnp.asarray(target_mean, dtype=jnp.float32)
+
+    x0s = source_mean + source_std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = target_mean + target_std * jax.random.normal(x1_key, shape=(n_samples, 2))
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+    }
+
+
+def sample_hairpin_pairs(
+    n_samples: int,
+    key: jnp.ndarray,
+    *,
+    source_mean,
+    target_mean,
+    source_std: float,
+    target_std: float,
+) -> Dict[str, np.ndarray]:
+    """Sample paired endpoints for the hairpin interpolant process."""
+
+    x0_key, x1_key = jax.random.split(key)
+    source_mean = jnp.asarray(source_mean, dtype=jnp.float32)
+    target_mean = jnp.asarray(target_mean, dtype=jnp.float32)
+
+    x0s = source_mean + source_std * jax.random.normal(x0_key, shape=(n_samples, 2))
+    x1s = target_mean + target_std * jax.random.normal(x1_key, shape=(n_samples, 2))
+
+    return {
+        "x0": np.asarray(x0s, dtype=np.float32),
+        "x1": np.asarray(x1s, dtype=np.float32),
+    }
+
+
 def sample_fork_gaussian_pairs(
     n_samples: int,
     key: jnp.ndarray,
@@ -794,6 +842,32 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
         def sample_rho0(bs: int, key: jnp.ndarray):
             return std * jax.random.normal(key, shape=(bs, *ex_input.shape))
 
+    elif cfg.problem.base == "spiral_source":
+        std = float(getattr(cfg.problem, "spiral_source_std", 0.16))
+        source_mean = jnp.asarray(
+            getattr(cfg.problem, "spiral_source_mean", [0.0, 0.0]),
+            dtype=jnp.float32,
+        )
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return source_mean + std * jax.random.normal(
+                key, shape=(bs, *ex_input.shape)
+            )
+
+    elif cfg.problem.base == "hairpin_source":
+        std = float(getattr(cfg.problem, "hairpin_source_std", 0.08))
+        source_mean = jnp.asarray(
+            getattr(cfg.problem, "hairpin_source_mean", [0.0, 0.0]),
+            dtype=jnp.float32,
+        )
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            return source_mean + std * jax.random.normal(
+                key, shape=(bs, *ex_input.shape)
+            )
+
     elif cfg.problem.base == "fork_gaussian_source":
         std = float(getattr(cfg.problem, "fork_std", 0.12))
 
@@ -966,6 +1040,40 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             n_samples,
             key,
             std=float(getattr(cfg.problem, "triangle_std", 0.18)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = paired_np_to_dataset(cfg, paired)
+    elif cfg.problem.target == "spiral":
+        assert cfg.problem.d == 2, "Spiral target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_spiral_pairs(
+            n_samples,
+            key,
+            source_mean=getattr(cfg.problem, "spiral_source_mean", [0.0, 0.0]),
+            target_mean=getattr(cfg.problem, "spiral_target_mean", [0.0, 3.0]),
+            source_std=float(getattr(cfg.problem, "spiral_source_std", 0.16)),
+            target_std=float(getattr(cfg.problem, "spiral_target_std", 0.17)),
+        )
+        rescale_value = float(
+            np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
+        )
+        ds = paired_np_to_dataset(cfg, paired)
+    elif cfg.problem.target == "hairpin":
+        assert cfg.problem.d == 2, "Hairpin target only implemented for d=2."
+
+        n_samples = cfg.problem.n
+        key, prng_key = jax.random.split(prng_key)
+        paired = sample_hairpin_pairs(
+            n_samples,
+            key,
+            source_mean=getattr(cfg.problem, "hairpin_source_mean", [0.0, 0.0]),
+            target_mean=getattr(cfg.problem, "hairpin_target_mean", [0.0, -1.0]),
+            source_std=float(getattr(cfg.problem, "hairpin_source_std", 0.08)),
+            target_std=float(getattr(cfg.problem, "hairpin_target_std", 0.08)),
         )
         rescale_value = float(
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))

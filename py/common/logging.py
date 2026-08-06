@@ -100,11 +100,16 @@ def lowd_limits_for(
     )
 
 
+def extract_lowd_batch_components(batch):
+    """Extract paired low-dimensional batch fields when they are available."""
+    if isinstance(batch, dict) and "x1" in batch:
+        return batch.get("x0"), batch["x1"], batch.get("label")
+    return None, batch, None
+
+
 def extract_x1_from_batch(batch):
     """Extract target samples from either plain or paired low-dimensional batches."""
-    if isinstance(batch, dict) and "x1" in batch:
-        return batch["x1"]
-    return batch
+    return extract_lowd_batch_components(batch)[1]
 
 
 def _forbidden_box_bounds(cfg: config_dict.ConfigDict):
@@ -366,7 +371,7 @@ def _dive_gate_spec(cfg: config_dict.ConfigDict):
         dtype=np.float32,
     )
     pre_checkpoint_center = np.asarray(
-        getattr(gate_cfg, "pre_checkpoint_center", [-0.35, 0.0]),
+        getattr(gate_cfg, "pre_checkpoint_center", [-0.9, 0.0]),
         dtype=np.float32,
     )
 
@@ -734,7 +739,7 @@ def _dive_gate_soft_geometry(
 ):
     depth = float(getattr(cfg.problem, "dive_gate_depth", 0.85))
     pre_checkpoint_center = jnp.asarray(
-        _dive_gate_cfg_value(cfg, "pre_checkpoint_center", [-0.35, 0.0]),
+        _dive_gate_cfg_value(cfg, "pre_checkpoint_center", [-0.9, 0.0]),
         dtype=dtype,
     )
     pre_checkpoint_radii = jnp.asarray(
@@ -971,6 +976,26 @@ def _one_step_paths(
     for idx, tt in enumerate(times[1:], start=1):
         xt = _flow_map_batch(apply_fn, params, 0.0, float(tt), x0s, labels)
         paths[:, idx, :] = np.asarray(xt)
+    return paths
+
+
+def _interpolant_paths(
+    interp,
+    x0s: jnp.ndarray,
+    x1s: jnp.ndarray,
+    labels: jnp.ndarray,
+    times: np.ndarray,
+) -> np.ndarray:
+    """Evaluate the configured ground-truth interpolant on a time grid."""
+    x0s = jnp.asarray(x0s)
+    x1s = jnp.asarray(x1s)
+    labels = None if labels is None else jnp.asarray(labels)
+
+    paths = np.zeros((x0s.shape[0], len(times), x0s.shape[-1]), dtype=np.float32)
+    for idx, tt in enumerate(times):
+        tau = jnp.full((x0s.shape[0],), float(tt), dtype=x0s.dtype)
+        xt = interp.batch_calc_It(tau, x0s, x1s, labels)
+        paths[:, idx, :] = np.asarray(xt, dtype=np.float32)
     return paths
 
 
@@ -2102,7 +2127,13 @@ def make_lowd_plot(
     titles = ["base and target"] + [rf"${step}$-step" for step in steps]
 
     ## extract target samples
-    plot_x1s = extract_x1_from_batch(next(statics.ds))[: cfg.logging.plot_bs]
+    plot_batch = next(statics.ds)
+    paired_plot_x0s, plot_x1s, plot_labels = extract_lowd_batch_components(plot_batch)
+    plot_x1s = jnp.asarray(plot_x1s)[: cfg.logging.plot_bs]
+    if paired_plot_x0s is not None:
+        paired_plot_x0s = jnp.asarray(paired_plot_x0s)[: cfg.logging.plot_bs]
+    if plot_labels is not None:
+        plot_labels = jnp.asarray(plot_labels)[: cfg.logging.plot_bs]
 
     ## draw multi-step samples from the model
     x0s = statics.sample_rho0(cfg.logging.plot_bs, prng_key)
@@ -2131,13 +2162,27 @@ def make_lowd_plot(
                 sample_labels,
             )
 
-    # Track full direct and multi-step trajectories for a subset of particles.
+    # Track full direct, interpolant, and multi-step trajectories for a subset.
     line_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "line_plot_bs", 1000))
+    n_line_times = max(2, int(getattr(cfg.logging, "line_plot_n_times", 20)))
+    line_times = np.linspace(0.0, 1.0, n_line_times)
     one_step_line_paths = None
+    ground_truth_line_paths = None
     multi_step_line_paths = []
+    if paired_plot_x0s is not None:
+        gt_line_bs = min(line_bs, paired_plot_x0s.shape[0])
+        x0_gt_line = paired_plot_x0s[:gt_line_bs]
+        x1_gt_line = plot_x1s[:gt_line_bs]
+        labels_gt_line = None if plot_labels is None else plot_labels[:gt_line_bs]
+        ground_truth_line_paths = _interpolant_paths(
+            statics.interp,
+            x0_gt_line,
+            x1_gt_line,
+            labels_gt_line,
+            line_times,
+        )
+
     if not diagonal_only:
-        n_line_times = max(2, int(getattr(cfg.logging, "line_plot_n_times", 20)))
-        line_times = np.linspace(0.0, 1.0, n_line_times)
         x0_line = x0s[:line_bs]
         x1_line = plot_x1s[:line_bs]
         labels_line = -jnp.ones(line_bs)
@@ -2242,6 +2287,40 @@ def make_lowd_plot(
         ax.set_ylim(panel_ylim)
 
     wandb.log({"samples": wandb.Image(fig)})
+
+    if ground_truth_line_paths is not None:
+        gt_fig, gt_ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
+        gt_xlim, gt_ylim = lowd_limits_for(
+            cfg,
+            x0_gt_line,
+            x1_gt_line,
+            ground_truth_line_paths,
+        )
+        _draw_trajectory_paths(
+            gt_ax,
+            ground_truth_line_paths,
+            np.asarray(x0_gt_line),
+            np.asarray(x1_gt_line),
+            title=f"Ground truth interpolant I_t(x0, x1), {n_line_times} times",
+            xlim=gt_xlim,
+            ylim=gt_ylim,
+            fontsize=fontsize,
+            cfg=cfg,
+        )
+        gt_ax.legend(loc="upper right", fontsize=10, markerscale=6, frameon=True)
+        ground_truth_gate_metrics = _rollout_matched_gate_metrics(
+            cfg, [("interpolant", ground_truth_line_paths)], "ground_truth"
+        )
+        ground_truth_dive_metrics = _rollout_dive_gate_metrics(
+            cfg, [("interpolant", ground_truth_line_paths)], "ground_truth"
+        )
+        wandb.log(
+            {
+                "trajectory_ground_truth_lines": wandb.Image(gt_fig),
+                **ground_truth_gate_metrics,
+                **ground_truth_dive_metrics,
+            }
+        )
 
     if not diagonal_only:
         # Visualize direct trajectory slices X_{0,t}(x0) for fixed times.
