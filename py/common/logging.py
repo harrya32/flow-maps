@@ -24,14 +24,14 @@ from matplotlib.patches import Circle, Ellipse, Rectangle
 from matplotlib import pyplot as plt
 from ml_collections import config_dict
 
-from . import datasets, dist_utils, fid_utils, flow_map, state_utils
+from . import datasets, dist_utils, fid_utils, flow_map, maizels, state_utils
 
 Parameters = Dict[str, Dict]
 
 
 def is_lowd_problem(cfg: config_dict.ConfigDict) -> bool:
-    """Returns True for two-dimensional non-image datasets."""
-    return getattr(cfg.problem, "image_dims", None) is None and cfg.problem.d == 2
+    """Returns True for non-image datasets with plottable first two dimensions."""
+    return getattr(cfg.problem, "image_dims", None) is None and cfg.problem.d >= 2
 
 
 def is_image_problem(cfg: config_dict.ConfigDict) -> bool:
@@ -1056,9 +1056,10 @@ def _euler_paths(
 
 
 def _trajectory_segments(paths: np.ndarray) -> np.ndarray:
-    """Convert paths with shape (N, T, 2) to LineCollection segments."""
-    segments = np.stack([paths[:, :-1, :], paths[:, 1:, :]], axis=2)
-    return segments.reshape((-1, 2, paths.shape[-1]))
+    """Convert paths with shape (N, T, D) to PC1/PC2 line segments."""
+    xy = paths[:, :, :2]
+    segments = np.stack([xy[:, :-1, :], xy[:, 1:, :]], axis=2)
+    return segments.reshape((-1, 2, 2))
 
 
 def _draw_trajectory_paths(
@@ -1153,6 +1154,304 @@ def _draw_trajectory_paths(
     ax.tick_params(axis="both", labelsize=fontsize)
     if cfg is not None:
         _draw_lowd_regions(ax, cfg, label=True)
+
+
+def _draw_maizels_validity_paths(
+    ax,
+    paths: np.ndarray,
+    x0s: np.ndarray,
+    x1s: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    title: str,
+    xlim: list,
+    ylim: list,
+    fontsize: float,
+) -> None:
+    """Draw Maizels PC1/PC2 paths, coloring classifier-invalid paths red."""
+    valid_mask = np.asarray(valid_mask, dtype=bool)
+    invalid_mask = ~valid_mask
+    ax.scatter(
+        x1s[:, 0],
+        x1s[:, 1],
+        s=3.0,
+        alpha=0.10,
+        marker="o",
+        c="C0",
+        linewidths=0,
+        label="target",
+    )
+    if valid_mask.any():
+        valid_paths = paths[valid_mask]
+        ax.add_collection(
+            LineCollection(
+                _trajectory_segments(valid_paths[:, :, :2]),
+                colors="black",
+                linewidths=0.35,
+                alpha=0.30,
+                label="classifier-valid",
+            )
+        )
+        ax.scatter(
+            x0s[valid_mask, 0],
+            x0s[valid_mask, 1],
+            s=4.0,
+            alpha=0.55,
+            marker="o",
+            c="black",
+            linewidths=0,
+        )
+    if invalid_mask.any():
+        invalid_paths = paths[invalid_mask]
+        ax.add_collection(
+            LineCollection(
+                _trajectory_segments(invalid_paths[:, :, :2]),
+                colors="crimson",
+                linewidths=0.85,
+                alpha=0.80,
+                label="classifier-invalid",
+            )
+        )
+        ax.scatter(
+            x0s[invalid_mask, 0],
+            x0s[invalid_mask, 1],
+            s=5.0,
+            alpha=0.85,
+            marker="o",
+            c="crimson",
+            linewidths=0,
+        )
+    ax.set_title(title, fontsize=fontsize)
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_aspect("equal")
+    ax.grid(which="both", axis="both", color="0.90", alpha=0.2)
+    ax.tick_params(axis="both", labelsize=fontsize)
+
+
+def _maizels_check_times(check_n: int, *, include_final: bool) -> np.ndarray:
+    check_n = max(1, int(check_n))
+    if include_final:
+        return np.linspace(0.0, 1.0, check_n + 1, dtype=np.float32)[1:]
+    return np.linspace(0.0, 1.0, check_n + 2, dtype=np.float32)[1:-1]
+
+
+def _log_maizels_trajectory_diagnostics(
+    cfg: config_dict.ConfigDict,
+    statics: state_utils.StaticArgs,
+    train_state: state_utils.EMATrainState,
+    params_for_visual: Dict,
+    paired_x0s: jnp.ndarray,
+    x1s: jnp.ndarray,
+    labels: jnp.ndarray,
+    *,
+    fontsize: float,
+) -> None:
+    """Log classifier-validity plots on Maizels D3/D8 cells held out from training."""
+    maizels_cfg = getattr(cfg.logging, "maizels", None)
+    if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
+        return
+
+    n_plot = int(getattr(maizels_cfg, "plot_bs", 128))
+    if n_plot <= 0:
+        return
+
+    plot_pair_mode = getattr(
+        maizels_cfg,
+        "pair_mode",
+        getattr(cfg.problem, "maizels_pair_mode", "none"),
+    )
+    if plot_pair_mode == "same_as_training":
+        plot_pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    plot_seed = int(
+        getattr(
+            maizels_cfg,
+            "plot_seed",
+            int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997,
+        )
+    )
+    heldout_pairs, heldout_stats = maizels.make_heldout_pair_pool(
+        cfg,
+        n_plot,
+        dataset_location=getattr(cfg.problem, "dataset_location", None),
+        pair_mode=str(plot_pair_mode),
+        seed=plot_seed,
+    )
+
+    x0_plot = jnp.asarray(heldout_pairs["x0"], dtype=jnp.float32)
+    x1_plot = jnp.asarray(heldout_pairs["x1"], dtype=jnp.float32)
+    labels_plot = jnp.asarray(heldout_pairs["label"])
+    labels_np = np.asarray(labels_plot)
+    start_type_ids = labels_np[:, 0].astype(np.int32)
+    target_type_ids = labels_np[:, 1].astype(np.int32)
+
+    path_n_times = max(2, int(getattr(maizels_cfg, "path_n_times", 25)))
+    path_times = np.linspace(0.0, 1.0, path_n_times, dtype=np.float32)
+    euler_n_steps = max(
+        1, int(getattr(maizels_cfg, "euler_n_steps", path_n_times - 1))
+    )
+    check_n_times = max(1, int(getattr(maizels_cfg, "check_n_times", 5)))
+    prob_threshold = float(getattr(maizels_cfg, "prob_threshold", 0.85))
+    margin_threshold = float(getattr(maizels_cfg, "margin_threshold", 1.0))
+    classifier_batch_size = int(getattr(maizels_cfg, "classifier_batch_size", 8192))
+    classifier_path = getattr(cfg.problem, "classifier_path", maizels.DEFAULT_CLASSIFIER)
+
+    direct_paths = _one_step_paths(
+        train_state.apply_fn,
+        params_for_visual,
+        x0_plot,
+        labels_plot,
+        path_times,
+    )
+    euler_paths = _euler_paths(
+        train_state.apply_fn,
+        params_for_visual,
+        x0_plot,
+        labels_plot,
+        euler_n_steps,
+    )
+    gt_paths = _interpolant_paths(
+        statics.interp,
+        x0_plot,
+        x1_plot,
+        labels_plot,
+        path_times,
+    )
+
+    direct_check_paths = _one_step_paths(
+        train_state.apply_fn,
+        params_for_visual,
+        x0_plot,
+        labels_plot,
+        _maizels_check_times(check_n_times, include_final=True),
+    )
+    euler_check_paths = _euler_paths(
+        train_state.apply_fn,
+        params_for_visual,
+        x0_plot,
+        labels_plot,
+        check_n_times,
+    )[:, 1:, :]
+    gt_check_paths = _interpolant_paths(
+        statics.interp,
+        x0_plot,
+        x1_plot,
+        labels_plot,
+        _maizels_check_times(check_n_times, include_final=False),
+    )
+
+    direct_validity = maizels.check_paths_with_classifier(
+        paths=direct_check_paths,
+        start_type_ids=start_type_ids,
+        classifier_path=classifier_path,
+        prob_threshold=prob_threshold,
+        margin_threshold=margin_threshold,
+        final_type_ids=None,
+        classifier_batch_size=classifier_batch_size,
+    )
+    euler_validity = maizels.check_paths_with_classifier(
+        paths=euler_check_paths,
+        start_type_ids=start_type_ids,
+        classifier_path=classifier_path,
+        prob_threshold=prob_threshold,
+        margin_threshold=margin_threshold,
+        final_type_ids=None,
+        classifier_batch_size=classifier_batch_size,
+    )
+    gt_validity = maizels.check_paths_with_classifier(
+        paths=gt_check_paths,
+        start_type_ids=start_type_ids,
+        classifier_path=classifier_path,
+        prob_threshold=prob_threshold,
+        margin_threshold=margin_threshold,
+        final_type_ids=target_type_ids,
+        classifier_batch_size=classifier_batch_size,
+    )
+
+    direct_valid = np.asarray(direct_validity["valid"], dtype=bool)
+    euler_valid = np.asarray(euler_validity["valid"], dtype=bool)
+    gt_valid = np.asarray(gt_validity["valid"], dtype=bool)
+    panel_xlim, panel_ylim = lowd_limits_for(
+        cfg,
+        x0_plot,
+        x1_plot,
+        direct_paths,
+        euler_paths,
+        gt_paths,
+    )
+
+    fig, axs = plt.subplots(
+        nrows=1,
+        ncols=3,
+        figsize=(18, 5),
+        sharex=False,
+        sharey=False,
+        constrained_layout=True,
+    )
+    _draw_maizels_validity_paths(
+        axs[0],
+        direct_paths,
+        np.asarray(x0_plot),
+        np.asarray(x1_plot),
+        direct_valid,
+        title="Held-out direct flow-map paths in PC1/PC2",
+        xlim=panel_xlim,
+        ylim=panel_ylim,
+        fontsize=fontsize,
+    )
+    _draw_maizels_validity_paths(
+        axs[1],
+        euler_paths,
+        np.asarray(x0_plot),
+        np.asarray(x1_plot),
+        euler_valid,
+        title=f"Held-out Euler rollouts in PC1/PC2 ({euler_n_steps} steps)",
+        xlim=panel_xlim,
+        ylim=panel_ylim,
+        fontsize=fontsize,
+    )
+    _draw_maizels_validity_paths(
+        axs[2],
+        gt_paths,
+        np.asarray(x0_plot),
+        np.asarray(x1_plot),
+        gt_valid,
+        title="Held-out D3/D8 interpolants in PC1/PC2",
+        xlim=panel_xlim,
+        ylim=panel_ylim,
+        fontsize=fontsize,
+    )
+    axs[0].legend(loc="upper right", fontsize=9, markerscale=3, frameon=True)
+
+    direct_point_den = max(int(direct_validity["n_points"]), 1)
+    euler_point_den = max(int(euler_validity["n_points"]), 1)
+    gt_point_den = max(int(gt_validity["n_points"]), 1)
+    wandb.log(
+        {
+            "maizels/classifier_validity_paths": wandb.Image(fig),
+            "maizels/model_direct_invalid_trajectory_pct": 100.0
+            * float(np.mean(~direct_valid)),
+            "maizels/model_euler_invalid_trajectory_pct": 100.0
+            * float(np.mean(~euler_valid)),
+            "maizels/interpolant_invalid_trajectory_pct": 100.0
+            * float(np.mean(~gt_valid)),
+            "maizels/model_direct_confident_point_pct": 100.0
+            * float(int(direct_validity["n_confident"]))
+            / direct_point_den,
+            "maizels/model_euler_confident_point_pct": 100.0
+            * float(int(euler_validity["n_confident"]))
+            / euler_point_den,
+            "maizels/interpolant_confident_point_pct": 100.0
+            * float(int(gt_validity["n_confident"]))
+            / gt_point_den,
+            "maizels/heldout_source_n": int(heldout_stats["source_holdout_n"]),
+            "maizels/heldout_target_n": int(heldout_stats["target_holdout_n"]),
+            "maizels/heldout_plot_pairs": int(heldout_pairs["x0"].shape[0]),
+            "maizels/heldout_candidate_acceptance_rate": float(
+                heldout_stats["candidate_acceptance_rate"]
+            ),
+        }
+    )
 
 
 def _rollout_forbidden_box_metrics(
@@ -2127,7 +2426,32 @@ def make_lowd_plot(
     titles = ["base and target"] + [rf"${step}$-step" for step in steps]
 
     ## extract target samples
-    plot_batch = next(statics.ds)
+    is_maizels = getattr(cfg.problem, "target", None) == "maizels_pca50"
+    if is_maizels:
+        maizels_cfg = getattr(cfg.logging, "maizels", None)
+        plot_pair_mode = getattr(
+            maizels_cfg,
+            "pair_mode",
+            getattr(cfg.problem, "maizels_pair_mode", "none"),
+        )
+        if plot_pair_mode == "same_as_training":
+            plot_pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+        plot_seed = int(
+            getattr(
+                maizels_cfg,
+                "plot_seed",
+                int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997,
+            )
+        )
+        plot_batch, _ = maizels.make_heldout_pair_pool(
+            cfg,
+            cfg.logging.plot_bs,
+            dataset_location=getattr(cfg.problem, "dataset_location", None),
+            pair_mode=str(plot_pair_mode),
+            seed=plot_seed + 101,
+        )
+    else:
+        plot_batch = next(statics.ds)
     paired_plot_x0s, plot_x1s, plot_labels = extract_lowd_batch_components(plot_batch)
     plot_x1s = jnp.asarray(plot_x1s)[: cfg.logging.plot_bs]
     if paired_plot_x0s is not None:
@@ -2136,10 +2460,17 @@ def make_lowd_plot(
         plot_labels = jnp.asarray(plot_labels)[: cfg.logging.plot_bs]
 
     ## draw multi-step samples from the model
-    x0s = statics.sample_rho0(cfg.logging.plot_bs, prng_key)
-    prng_key = jax.random.split(prng_key)[0]
+    if is_maizels and paired_plot_x0s is not None:
+        x0s = paired_plot_x0s
+    else:
+        x0s = statics.sample_rho0(cfg.logging.plot_bs, prng_key)
+        prng_key = jax.random.split(prng_key)[0]
     xhats = np.zeros((len(steps), cfg.logging.plot_bs, cfg.problem.d))
-    sample_labels = -jnp.ones(cfg.logging.plot_bs)
+    sample_labels = (
+        plot_labels
+        if is_maizels and plot_labels is not None
+        else -jnp.ones(cfg.logging.plot_bs)
+    )
     if diagonal_only:
         titles = ["base and target"] + [rf"${step}$-step Euler" for step in steps]
         for kk, step in enumerate(steps):
@@ -2185,7 +2516,7 @@ def make_lowd_plot(
     if not diagonal_only:
         x0_line = x0s[:line_bs]
         x1_line = plot_x1s[:line_bs]
-        labels_line = -jnp.ones(line_bs)
+        labels_line = sample_labels[:line_bs]
         one_step_line_paths = _one_step_paths(
             train_state.apply_fn,
             params_for_visual,
@@ -2205,7 +2536,7 @@ def make_lowd_plot(
     )
     x0_multi_line = x0s[:multi_line_bs]
     x1_multi_line = plot_x1s[:multi_line_bs]
-    labels_multi_line = -jnp.ones(multi_line_bs)
+    labels_multi_line = sample_labels[:multi_line_bs]
     if not diagonal_only:
         multi_step_line_paths = [
             (
@@ -2327,7 +2658,7 @@ def make_lowd_plot(
         traj_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "traj_plot_bs", 2000))
         x0_traj = x0s[:traj_bs]
         x1_traj = plot_x1s[:traj_bs]
-        labels = -jnp.ones(traj_bs)
+        labels = sample_labels[:traj_bs]
         time_points = [0.0, 0.25, 0.5, 0.75, 1.0]
 
         traj_fig, traj_axs = plt.subplots(
@@ -2500,6 +2831,22 @@ def make_lowd_plot(
             **euler_dive_metrics,
         }
     )
+
+    if getattr(cfg.problem, "target", None) == "maizels_pca50":
+        try:
+            _log_maizels_trajectory_diagnostics(
+                cfg,
+                statics,
+                train_state,
+                params_for_visual,
+                paired_plot_x0s,
+                plot_x1s,
+                plot_labels,
+                fontsize=fontsize,
+            )
+        except Exception as e:
+            print(f"Warning: Maizels trajectory diagnostics failed: {e}")
+
     return prng_key
 
 

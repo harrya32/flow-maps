@@ -16,6 +16,8 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from ml_collections import config_dict
 
+from . import maizels
+
 _SCHIEBINGER_SERUM_URLS = [
     "https://figshare.com/ndownloader/files/35858033",
     "https://ndownloader.figshare.com/files/35858033",
@@ -819,6 +821,25 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
             )
             return source_pool[idx]
 
+    elif cfg.problem.base == "maizels_d3":
+        splits = maizels.endpoint_pool_splits(
+            cfg,
+            dataset_location=getattr(cfg.problem, "dataset_location", None),
+        )
+        source_pool = jnp.asarray(splits["source_train_x"], dtype=jnp.float32)
+        if source_pool.shape[0] == 0:
+            raise RuntimeError("Maizels source pool is empty.")
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            idx = jax.random.randint(
+                key,
+                shape=(bs,),
+                minval=0,
+                maxval=source_pool.shape[0],
+            )
+            return source_pool[idx]
+
     elif cfg.problem.base == "four_gaussians_source":
         std = float(getattr(cfg.problem, "four_gaussians_std", 0.35))
         source_means = jnp.asarray(
@@ -1163,6 +1184,32 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             f"t_start={cfg.problem.t_start:g} (n={x0s.shape[0]}), "
             f"t_end={cfg.problem.t_end:g} (n={x1s.shape[0]}), "
             f"dim={x1s.shape[1]}"
+        )
+
+    elif cfg.problem.target == "maizels_pca50":
+        paired, stats = maizels.make_pair_pool(
+            cfg,
+            dataset_location=getattr(cfg.problem, "dataset_location", None),
+        )
+        x0s = paired["x0"]
+        x1s = paired["x1"]
+        cfg.problem.n = int(x1s.shape[0])
+        cfg.problem.d = int(x1s.shape[1])
+        cfg.problem.maizels_pair_stats = stats
+        rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
+        ds = paired_np_to_dataset(cfg, paired)
+        print(
+            "Loaded Maizels PCA50 pairs: "
+            f"mode={getattr(cfg.problem, 'maizels_pair_mode', 'none')}, "
+            f"source={getattr(cfg.problem, 'source_time', 'D3')} "
+            f"(train={stats['source_train_n']}, holdout={stats['source_holdout_n']}, "
+            f"total={stats['source_total_n']}), "
+            f"target={getattr(cfg.problem, 'target_time', 'D8')} "
+            f"(train={stats['target_train_n']}, holdout={stats['target_holdout_n']}, "
+            f"total={stats['target_total_n']}), "
+            f"pairs={cfg.problem.n}, "
+            f"candidate_acceptance={stats['candidate_acceptance_rate']:.4f}, "
+            f"dim={cfg.problem.d}"
         )
 
     elif (
