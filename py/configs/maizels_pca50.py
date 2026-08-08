@@ -70,12 +70,12 @@ def get_config(
     config.problem.maizels_holdout_seed = 701
     config.problem.maizels_pair_mode = pair_mode
     config.problem.classifier_path = (
-        "/Users/harryamad/Desktop/Maizels2023aa/models/"
+        "/mnt/pdata/hmka3/flow-maps/"
         "celltype_classifier_pca50.pt"
     )
-    config.problem.n_interpolant_check_times = 5
-    config.problem.classifier_prob_threshold = 0.85
-    config.problem.classifier_margin_threshold = 1.0
+    config.problem.n_interpolant_check_times = 50
+    config.problem.classifier_prob_threshold = 0.5
+    config.problem.classifier_margin_threshold = 0
     config.problem.classifier_batch_size = 8192
     config.problem.rejection_chunk_size = 50_000
     config.problem.rejection_max_candidates = 5_000_000
@@ -87,7 +87,7 @@ def get_config(
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 1.0
-    config.optimization.total_steps = 5000
+    config.optimization.total_steps = 50000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
@@ -100,7 +100,7 @@ def get_config(
     config.logging.plot_bs = 1024
     config.logging.traj_plot_bs = 512
     config.logging.line_plot_bs = 128
-    config.logging.line_plot_n_times = 25
+    config.logging.line_plot_n_times = 50
     config.logging.multi_step_line_plot_bs = 128
     config.logging.multi_step_line_steps = [10, 25, 100]
     config.logging.euler_line_steps = [10, 25, 100]
@@ -119,9 +119,9 @@ def get_config(
     config.logging.maizels = ml_collections.ConfigDict()
     config.logging.maizels.enabled = True
     config.logging.maizels.plot_bs = 128
-    config.logging.maizels.path_n_times = 25
-    config.logging.maizels.euler_n_steps = 25
-    config.logging.maizels.check_n_times = 5
+    config.logging.maizels.path_n_times = 50
+    config.logging.maizels.euler_n_steps = 50
+    config.logging.maizels.check_n_times = 50
     config.logging.maizels.pair_mode = "same_as_training"
     config.logging.maizels.plot_seed = 997
     config.logging.maizels.prob_threshold = config.problem.classifier_prob_threshold

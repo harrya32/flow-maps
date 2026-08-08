@@ -1,4 +1,6 @@
 *.h5ad
+*.gz
+*.npz
 datasets/
 .cache/
 .codex/
