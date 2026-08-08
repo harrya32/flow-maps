@@ -121,6 +121,7 @@ def get_config(
     config.logging.maizels.plot_bs = 128
     config.logging.maizels.path_n_times = 50
     config.logging.maizels.euler_n_steps = 50
+    config.logging.maizels.flowmap_n_steps = 25
     config.logging.maizels.check_n_times = 50
     config.logging.maizels.pair_mode = "same_as_training"
     config.logging.maizels.plot_seed = 997
@@ -131,6 +132,23 @@ def get_config(
     #config.logging.maizels.margin_threshold = 0
 
     config.logging.maizels.classifier_batch_size = config.problem.classifier_batch_size
+    config.logging.maizels.distribution_eval_enabled = True
+    config.logging.maizels.distribution_eval_source_pool = "auto"
+    config.logging.maizels.distribution_eval_points_per_time = 512
+    config.logging.maizels.distribution_eval_max_timepoints = 0
+    config.logging.maizels.distribution_eval_wasserstein_projections = 256
+    config.logging.maizels.distribution_eval_euler_n_steps = (
+        config.logging.maizels.euler_n_steps
+    )
+    config.logging.maizels.distribution_eval_flowmap_n_steps = 25
+    config.logging.maizels.distribution_eval_mmd_bandwidths = []
+    config.logging.maizels.distribution_eval_mmd_bandwidth_multipliers = [
+        0.25,
+        0.5,
+        1.0,
+        2.0,
+        4.0,
+    ]
 
     # FID not relevant for PCA-space cellular trajectories.
     config.logging.fid_freq = 0

@@ -1236,6 +1236,414 @@ def _maizels_check_times(check_n: int, *, include_final: bool) -> np.ndarray:
     return np.linspace(0.0, 1.0, check_n + 2, dtype=np.float32)[1:-1]
 
 
+def _maizels_time_tag(timepoint: str) -> str:
+    return str(timepoint).replace(".", "p").replace("/", "_")
+
+
+def _maizels_intermediate_timepoints(
+    data: Dict[str, np.ndarray],
+    source_time: str,
+    target_time: str,
+    max_times: int,
+) -> list:
+    source_value = maizels.parse_timepoint(source_time)
+    target_value = maizels.parse_timepoint(target_time)
+    unique = sorted(
+        {
+            str(tp)
+            for tp, value in zip(data["timepoints"], data["time_values"])
+            if source_value < float(value) < target_value
+        },
+        key=maizels.parse_timepoint,
+    )
+    if max_times <= 0 or len(unique) <= max_times:
+        return unique
+
+    idx = np.linspace(0, len(unique) - 1, num=max_times, dtype=int)
+    return [unique[ii] for ii in np.unique(idx)]
+
+
+def _random_subset_np(
+    x: np.ndarray,
+    n: int,
+    rng: np.random.Generator,
+    *,
+    replace_if_needed: bool = False,
+) -> np.ndarray:
+    if x.shape[0] == 0:
+        raise ValueError("Cannot sample from an empty array.")
+    replace = bool(replace_if_needed and n > x.shape[0])
+    idx = rng.choice(x.shape[0], size=int(n), replace=replace)
+    return x[idx]
+
+
+def _np_sqdist(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    x_norm = np.sum(x * x, axis=1, keepdims=True)
+    y_norm = np.sum(y * y, axis=1, keepdims=True).T
+    return np.maximum(x_norm + y_norm - 2.0 * (x @ y.T), 0.0)
+
+
+def _median_bandwidth(
+    x: np.ndarray,
+    y: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    max_points: int = 512,
+) -> float:
+    z = np.concatenate([x, y], axis=0)
+    if z.shape[0] > max_points:
+        z = z[rng.choice(z.shape[0], size=max_points, replace=False)]
+    sqdist = _np_sqdist(z, z)
+    tri = sqdist[np.triu_indices(sqdist.shape[0], k=1)]
+    tri = tri[tri > 1e-12]
+    if tri.size == 0:
+        return 1.0
+    return float(np.sqrt(np.median(tri)))
+
+
+def _rbf_mmd2_np(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    bandwidths,
+    rng: np.random.Generator,
+    bandwidth_multipliers=(0.25, 0.5, 1.0, 2.0, 4.0),
+) -> float:
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        return float("nan")
+
+    if bandwidths is None or len(bandwidths) == 0:
+        base_bw = _median_bandwidth(x, y, rng)
+        bws = np.asarray(bandwidth_multipliers, dtype=np.float64) * base_bw
+    else:
+        bws = np.asarray(bandwidths, dtype=np.float64)
+    bws = np.maximum(bws, 1e-6)
+
+    xx = _np_sqdist(x, x)
+    yy = _np_sqdist(y, y)
+    xy = _np_sqdist(x, y)
+    mmd2 = 0.0
+    for bw in bws:
+        scale = 2.0 * bw * bw
+        mmd2 += (
+            float(np.exp(-xx / scale).mean())
+            + float(np.exp(-yy / scale).mean())
+            - 2.0 * float(np.exp(-xy / scale).mean())
+        )
+    return max(float(mmd2 / len(bws)), 0.0)
+
+
+def _sliced_wasserstein_2_np(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    n_projections: int,
+    rng: np.random.Generator,
+) -> float:
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    n = min(x.shape[0], y.shape[0])
+    if n <= 0:
+        return float("nan")
+    if x.shape[0] != n:
+        x = x[rng.choice(x.shape[0], size=n, replace=False)]
+    if y.shape[0] != n:
+        y = y[rng.choice(y.shape[0], size=n, replace=False)]
+
+    directions = rng.normal(size=(int(n_projections), x.shape[1]))
+    directions /= np.maximum(np.linalg.norm(directions, axis=1, keepdims=True), 1e-12)
+    x_proj = np.sort(x @ directions.T, axis=0)
+    y_proj = np.sort(y @ directions.T, axis=0)
+    return float(np.sqrt(np.mean((x_proj - y_proj) ** 2)))
+
+
+def _euler_terminal_at_time(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    tau: float,
+    n_steps: int,
+) -> np.ndarray:
+    """Euler rollout of dx/dt=b_t(x) from t=0 to a requested tau."""
+    n_steps = max(1, int(n_steps))
+    ts = jnp.linspace(0.0, float(tau), n_steps + 1)
+
+    def step(x, idx):
+        t0 = ts[idx]
+        dt = ts[idx + 1] - ts[idx]
+        x_next = x + dt * _vector_field_batch(apply_fn, params, t0, x, labels)
+        return x_next, None
+
+    final, _ = jax.lax.scan(step, x0s, jnp.arange(n_steps))
+    return np.asarray(final, dtype=np.float32)
+
+
+def _flowmap_terminal_at_time(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    tau: float,
+    n_steps: int,
+) -> np.ndarray:
+    """Iteratively sample with learned maps X_{t_k,t_{k+1}} from 0 to tau."""
+    n_steps = max(1, int(n_steps))
+    ts = jnp.linspace(0.0, float(tau), n_steps + 1)
+
+    def step(x, idx):
+        x_next = _flow_map_batch(
+            apply_fn,
+            params,
+            ts[idx],
+            ts[idx + 1],
+            x,
+            labels,
+        )
+        return x_next, None
+
+    final, _ = jax.lax.scan(step, x0s, jnp.arange(n_steps))
+    return np.asarray(final, dtype=np.float32)
+
+
+def _maizels_distribution_eval_split(
+    cfg: config_dict.ConfigDict,
+    maizels_cfg,
+    points_per_time: int,
+    dataset_location: str,
+) -> str:
+    mode = str(getattr(maizels_cfg, "distribution_eval_source_pool", "auto")).lower()
+    aliases = {
+        "holdout": "heldout",
+        "held_out": "heldout",
+        "training": "train",
+    }
+    mode = aliases.get(mode, mode)
+    if mode in ("heldout", "train", "all"):
+        return mode
+    if mode != "auto":
+        raise ValueError(
+            "logging.maizels.distribution_eval_source_pool must be one of "
+            "'auto', 'heldout', 'train', or 'all'."
+        )
+
+    splits = maizels.endpoint_pool_splits(cfg, dataset_location=dataset_location)
+    heldout_n = min(int(splits["source_holdout_n"]), int(splits["target_holdout_n"]))
+    if heldout_n >= int(points_per_time):
+        return "heldout"
+
+    train_n = min(int(splits["source_train_n"]), int(splits["target_train_n"]))
+    if train_n > 0:
+        return "train"
+    return "all"
+
+
+def _log_maizels_distribution_eval(
+    cfg: config_dict.ConfigDict,
+    train_state: state_utils.EMATrainState,
+    params_for_visual: Dict,
+) -> None:
+    """Log distributional metrics against unseen intermediate-day populations."""
+    maizels_cfg = getattr(cfg.logging, "maizels", None)
+    if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
+        return
+    if not bool(getattr(maizels_cfg, "distribution_eval_enabled", True)):
+        return
+
+    dataset_location = getattr(cfg.problem, "dataset_location", None)
+    data = maizels.all_timepoint_data(dataset_location)
+    source_time = getattr(cfg.problem, "source_time", "D3")
+    target_time = getattr(cfg.problem, "target_time", "D8")
+    source_value = maizels.parse_timepoint(source_time)
+    target_value = maizels.parse_timepoint(target_time)
+    denom = max(target_value - source_value, 1e-12)
+
+    max_times = int(getattr(maizels_cfg, "distribution_eval_max_timepoints", 0))
+    timepoints = _maizels_intermediate_timepoints(
+        data, source_time, target_time, max_times
+    )
+    if not timepoints:
+        return
+
+    points_per_time = int(getattr(maizels_cfg, "distribution_eval_points_per_time", 512))
+    points_per_time = max(1, points_per_time)
+    plot_pair_mode = getattr(
+        maizels_cfg,
+        "pair_mode",
+        getattr(cfg.problem, "maizels_pair_mode", "none"),
+    )
+    if plot_pair_mode == "same_as_training":
+        plot_pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    seed = int(
+        getattr(
+            maizels_cfg,
+            "distribution_eval_seed",
+            int(getattr(getattr(cfg, "training", None), "seed", 0)) + 1701,
+        )
+    )
+    rng = np.random.default_rng(seed)
+
+    eval_split = _maizels_distribution_eval_split(
+        cfg,
+        maizels_cfg,
+        points_per_time,
+        dataset_location,
+    )
+    eval_pairs, eval_stats = maizels.make_endpoint_split_pair_pool(
+        cfg,
+        points_per_time,
+        split=eval_split,
+        dataset_location=dataset_location,
+        pair_mode=str(plot_pair_mode),
+        seed=seed + 17,
+    )
+    x0_eval_all = eval_pairs["x0"].astype(np.float32)
+    x1_eval_all = eval_pairs["x1"].astype(np.float32)
+    labels_eval_all = jnp.asarray(eval_pairs["label"])
+
+    n_proj = int(getattr(maizels_cfg, "distribution_eval_wasserstein_projections", 256))
+    euler_n_steps = int(
+        getattr(
+            maizels_cfg,
+            "distribution_eval_euler_n_steps",
+            getattr(maizels_cfg, "euler_n_steps", 25),
+        )
+    )
+    flowmap_n_steps = int(
+        getattr(
+            maizels_cfg,
+            "distribution_eval_flowmap_n_steps",
+            getattr(maizels_cfg, "euler_n_steps", 25),
+        )
+    )
+    raw_bandwidths = getattr(maizels_cfg, "distribution_eval_mmd_bandwidths", None)
+    if raw_bandwidths is not None:
+        raw_bandwidths = list(raw_bandwidths)
+    bandwidth_multipliers = tuple(
+        float(x)
+        for x in getattr(
+            maizels_cfg,
+            "distribution_eval_mmd_bandwidth_multipliers",
+            [0.25, 0.5, 1.0, 2.0, 4.0],
+        )
+    )
+
+    split_code = {"heldout": 0, "train": 1, "all": 2}.get(eval_split, -1)
+    metrics = {
+        "maizels/dist_eval/source_pool_code": split_code,
+        "maizels/dist_eval/source_pool_is_heldout": float(eval_split == "heldout"),
+        "maizels/dist_eval/source_pool_is_train": float(eval_split == "train"),
+        "maizels/dist_eval/source_pool_is_all": float(eval_split == "all"),
+        "maizels/dist_eval/split_source_n": int(eval_stats["split_source_n"]),
+        "maizels/dist_eval/split_target_n": int(eval_stats["split_target_n"]),
+        "maizels/dist_eval/source_holdout_n": int(eval_stats["source_holdout_n"]),
+        "maizels/dist_eval/target_holdout_n": int(eval_stats["target_holdout_n"]),
+        "maizels/dist_eval/pair_acceptance_rate": float(
+            eval_stats["candidate_acceptance_rate"]
+        ),
+    }
+    aggregate = {
+        "direct_rbf_mmd2": [],
+        "direct_sliced_w2": [],
+        "flowmap_rbf_mmd2": [],
+        "flowmap_sliced_w2": [],
+        "euler_rbf_mmd2": [],
+        "euler_sliced_w2": [],
+        "linear_rbf_mmd2": [],
+        "linear_sliced_w2": [],
+    }
+
+    for timepoint in timepoints:
+        actual_all = data["x"][data["timepoints"] == timepoint].astype(np.float32)
+        n_compare = min(points_per_time, actual_all.shape[0], x0_eval_all.shape[0])
+        if n_compare <= 0:
+            continue
+
+        actual = _random_subset_np(
+            actual_all,
+            n_compare,
+            rng,
+            replace_if_needed=False,
+        )
+        x0_eval = x0_eval_all[:n_compare]
+        x1_eval = x1_eval_all[:n_compare]
+        labels_eval = labels_eval_all[:n_compare]
+        tau = float(
+            np.clip(
+                (maizels.parse_timepoint(timepoint) - source_value) / denom,
+                0.0,
+                1.0,
+            )
+        )
+
+        direct = np.asarray(
+            _flow_map_batch(
+                train_state.apply_fn,
+                params_for_visual,
+                0.0,
+                tau,
+                jnp.asarray(x0_eval, dtype=jnp.float32),
+                labels_eval,
+            ),
+            dtype=np.float32,
+        )
+        flowmap_sample = _flowmap_terminal_at_time(
+            train_state.apply_fn,
+            params_for_visual,
+            jnp.asarray(x0_eval, dtype=jnp.float32),
+            labels_eval,
+            tau,
+            flowmap_n_steps,
+        )
+        euler = _euler_terminal_at_time(
+            train_state.apply_fn,
+            params_for_visual,
+            jnp.asarray(x0_eval, dtype=jnp.float32),
+            labels_eval,
+            tau,
+            euler_n_steps,
+        )
+        linear = ((1.0 - tau) * x0_eval + tau * x1_eval).astype(np.float32)
+
+        tag = _maizels_time_tag(timepoint)
+        metrics[f"maizels/dist_eval/{tag}_tau"] = tau
+        metrics[f"maizels/dist_eval/{tag}_n"] = int(n_compare)
+        for name, pred in [
+            ("direct", direct),
+            ("flowmap", flowmap_sample),
+            ("euler", euler),
+            ("linear", linear),
+        ]:
+            mmd2 = _rbf_mmd2_np(
+                pred,
+                actual,
+                bandwidths=raw_bandwidths,
+                rng=rng,
+                bandwidth_multipliers=bandwidth_multipliers,
+            )
+            sw2 = _sliced_wasserstein_2_np(
+                pred,
+                actual,
+                n_projections=n_proj,
+                rng=rng,
+            )
+            metrics[f"maizels/dist_eval/{tag}_{name}_rbf_mmd2"] = mmd2
+            metrics[f"maizels/dist_eval/{tag}_{name}_sliced_w2"] = sw2
+            aggregate[f"{name}_rbf_mmd2"].append(mmd2)
+            aggregate[f"{name}_sliced_w2"].append(sw2)
+
+    for key, values in aggregate.items():
+        if values:
+            metrics[f"maizels/dist_eval/{key}_mean"] = float(np.mean(values))
+
+    if len(metrics) > 3:
+        wandb.log(metrics)
+
+
 def _log_maizels_trajectory_diagnostics(
     cfg: config_dict.ConfigDict,
     statics: state_utils.StaticArgs,
@@ -1290,6 +1698,9 @@ def _log_maizels_trajectory_diagnostics(
     euler_n_steps = max(
         1, int(getattr(maizels_cfg, "euler_n_steps", path_n_times - 1))
     )
+    flowmap_n_steps = max(
+        1, int(getattr(maizels_cfg, "flowmap_n_steps", euler_n_steps))
+    )
     check_n_times = max(1, int(getattr(maizels_cfg, "check_n_times", 5)))
     prob_threshold = float(getattr(maizels_cfg, "prob_threshold", 0.85))
     margin_threshold = float(getattr(maizels_cfg, "margin_threshold", 1.0))
@@ -1302,6 +1713,13 @@ def _log_maizels_trajectory_diagnostics(
         x0_plot,
         labels_plot,
         path_times,
+    )
+    flowmap_paths = _multi_step_paths(
+        train_state.apply_fn,
+        params_for_visual,
+        x0_plot,
+        labels_plot,
+        flowmap_n_steps,
     )
     euler_paths = _euler_paths(
         train_state.apply_fn,
@@ -1325,6 +1743,13 @@ def _log_maizels_trajectory_diagnostics(
         labels_plot,
         _maizels_check_times(check_n_times, include_final=True),
     )
+    flowmap_check_paths = _multi_step_paths(
+        train_state.apply_fn,
+        params_for_visual,
+        x0_plot,
+        labels_plot,
+        check_n_times,
+    )[:, 1:, :]
     euler_check_paths = _euler_paths(
         train_state.apply_fn,
         params_for_visual,
@@ -1342,6 +1767,15 @@ def _log_maizels_trajectory_diagnostics(
 
     direct_validity = maizels.check_paths_with_classifier(
         paths=direct_check_paths,
+        start_type_ids=start_type_ids,
+        classifier_path=classifier_path,
+        prob_threshold=prob_threshold,
+        margin_threshold=margin_threshold,
+        final_type_ids=None,
+        classifier_batch_size=classifier_batch_size,
+    )
+    flowmap_validity = maizels.check_paths_with_classifier(
+        paths=flowmap_check_paths,
         start_type_ids=start_type_ids,
         classifier_path=classifier_path,
         prob_threshold=prob_threshold,
@@ -1369,6 +1803,7 @@ def _log_maizels_trajectory_diagnostics(
     )
 
     direct_valid = np.asarray(direct_validity["valid"], dtype=bool)
+    flowmap_valid = np.asarray(flowmap_validity["valid"], dtype=bool)
     euler_valid = np.asarray(euler_validity["valid"], dtype=bool)
     gt_valid = np.asarray(gt_validity["valid"], dtype=bool)
     panel_xlim, panel_ylim = lowd_limits_for(
@@ -1376,14 +1811,15 @@ def _log_maizels_trajectory_diagnostics(
         x0_plot,
         x1_plot,
         direct_paths,
+        flowmap_paths,
         euler_paths,
         gt_paths,
     )
 
     fig, axs = plt.subplots(
         nrows=1,
-        ncols=3,
-        figsize=(18, 5),
+        ncols=4,
+        figsize=(24, 5),
         sharex=False,
         sharey=False,
         constrained_layout=True,
@@ -1401,6 +1837,17 @@ def _log_maizels_trajectory_diagnostics(
     )
     _draw_maizels_validity_paths(
         axs[1],
+        flowmap_paths,
+        np.asarray(x0_plot),
+        np.asarray(x1_plot),
+        flowmap_valid,
+        title=f"Held-out flow-map sampling in PC1/PC2 ({flowmap_n_steps} steps)",
+        xlim=panel_xlim,
+        ylim=panel_ylim,
+        fontsize=fontsize,
+    )
+    _draw_maizels_validity_paths(
+        axs[2],
         euler_paths,
         np.asarray(x0_plot),
         np.asarray(x1_plot),
@@ -1411,7 +1858,7 @@ def _log_maizels_trajectory_diagnostics(
         fontsize=fontsize,
     )
     _draw_maizels_validity_paths(
-        axs[2],
+        axs[3],
         gt_paths,
         np.asarray(x0_plot),
         np.asarray(x1_plot),
@@ -1424,6 +1871,7 @@ def _log_maizels_trajectory_diagnostics(
     axs[0].legend(loc="upper right", fontsize=9, markerscale=3, frameon=True)
 
     direct_point_den = max(int(direct_validity["n_points"]), 1)
+    flowmap_point_den = max(int(flowmap_validity["n_points"]), 1)
     euler_point_den = max(int(euler_validity["n_points"]), 1)
     gt_point_den = max(int(gt_validity["n_points"]), 1)
     wandb.log(
@@ -1431,6 +1879,8 @@ def _log_maizels_trajectory_diagnostics(
             "maizels/classifier_validity_paths": wandb.Image(fig),
             "maizels/model_direct_invalid_trajectory_pct": 100.0
             * float(np.mean(~direct_valid)),
+            "maizels/model_flowmap_invalid_trajectory_pct": 100.0
+            * float(np.mean(~flowmap_valid)),
             "maizels/model_euler_invalid_trajectory_pct": 100.0
             * float(np.mean(~euler_valid)),
             "maizels/interpolant_invalid_trajectory_pct": 100.0
@@ -1438,6 +1888,9 @@ def _log_maizels_trajectory_diagnostics(
             "maizels/model_direct_confident_point_pct": 100.0
             * float(int(direct_validity["n_confident"]))
             / direct_point_den,
+            "maizels/model_flowmap_confident_point_pct": 100.0
+            * float(int(flowmap_validity["n_confident"]))
+            / flowmap_point_den,
             "maizels/model_euler_confident_point_pct": 100.0
             * float(int(euler_validity["n_confident"]))
             / euler_point_den,
@@ -2846,6 +3299,10 @@ def make_lowd_plot(
             )
         except Exception as e:
             print(f"Warning: Maizels trajectory diagnostics failed: {e}")
+        try:
+            _log_maizels_distribution_eval(cfg, train_state, params_for_visual)
+        except Exception as e:
+            print(f"Warning: Maizels distribution eval failed: {e}")
 
     return prng_key
 

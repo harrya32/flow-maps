@@ -742,6 +742,73 @@ def make_heldout_pair_pool(
     return paired, stats
 
 
+def make_endpoint_split_pair_pool(
+    cfg,
+    n_pairs: int,
+    *,
+    split: str,
+    dataset_location: str | None = None,
+    pair_mode: str | None = None,
+    seed: int | None = None,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
+    """Create diagnostic pairs from a named D3/D8 endpoint split."""
+    splits = endpoint_pool_splits(cfg, dataset_location=dataset_location)
+    split = str(split).lower()
+    if split in ("holdout", "heldout"):
+        source_x = splits["source_holdout_x"]
+        source_types = splits["source_holdout_types"]
+        target_x = splits["target_holdout_x"]
+        target_types = splits["target_holdout_types"]
+    elif split == "train":
+        source_x = splits["source_train_x"]
+        source_types = splits["source_train_types"]
+        target_x = splits["target_train_x"]
+        target_types = splits["target_train_types"]
+    elif split == "all":
+        source_x = splits["source_x"]
+        source_types = splits["source_types"]
+        target_x = splits["target_x"]
+        target_types = splits["target_types"]
+    else:
+        raise ValueError(
+            "split must be one of 'heldout', 'train', or 'all', "
+            f"got {split!r}."
+        )
+
+    if source_x.shape[0] == 0 or target_x.shape[0] == 0:
+        raise RuntimeError(f"Maizels endpoint split {split!r} is empty.")
+
+    if pair_mode is None:
+        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    if seed is None:
+        seed = int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997
+
+    paired, stats = _make_pair_pool_from_endpoint_arrays(
+        cfg,
+        source_x,
+        source_types,
+        target_x,
+        target_types,
+        n_pairs=int(n_pairs),
+        rng=np.random.default_rng(int(seed)),
+        pair_mode=str(pair_mode),
+    )
+    stats.update(
+        {
+            "split": split,
+            "source_total_n": int(splits["source_n"]),
+            "target_total_n": int(splits["target_n"]),
+            "source_train_n": int(splits["source_train_n"]),
+            "source_holdout_n": int(splits["source_holdout_n"]),
+            "target_train_n": int(splits["target_train_n"]),
+            "target_holdout_n": int(splits["target_holdout_n"]),
+            "split_source_n": int(source_x.shape[0]),
+            "split_target_n": int(target_x.shape[0]),
+        }
+    )
+    return paired, stats
+
+
 def all_timepoint_data(dataset_location: str | None = None) -> Dict[str, np.ndarray]:
     return load_pca50_dataset(resolve_dataset_path(dataset_location))
 
