@@ -11,13 +11,15 @@ import ml_collections
 
 variants = [
     # ID 0: vanilla flow matching.
-    ("vanilla_flow_matching", "none", 1.0),
+    ("vanilla_flow_matching", "none", 1.0, False),
     # ID 1: vanilla flow map.
-    ("vanilla_flow_map", "none", 0.75),
+    ("vanilla_flow_map", "none", 0.75, False),
     # ID 2: bio-prior flow matching.
-    ("bio_prior_flow_matching", "endpoint_interpolant", 1.0),
+    ("bio_prior_flow_matching", "endpoint_interpolant", 1.0, False),
     # ID 3: bio-prior flow map.
-    ("bio_prior_flow_map", "endpoint_interpolant", 0.75),
+    ("bio_prior_flow_map", "endpoint_interpolant", 0.75, False),
+    # ID 4: bio-prior flow map with differentiable lineage constraint.
+    ("bio_prior_constrained_flow_map", "endpoint_interpolant", 0.75, True),
 ]
 
 
@@ -26,7 +28,9 @@ def get_config(
 ) -> ml_collections.ConfigDict:
     import jax
 
-    variant_name, pair_mode, diag_fraction = variants[slurm_id % len(variants)]
+    variant_name, pair_mode, diag_fraction, use_lineage_constraint = variants[
+        slurm_id % len(variants)
+    ]
     loss_type = "lsd"
     psd_type = None
     stopgrad_type = "convex"
@@ -160,7 +164,19 @@ def get_config(
     config.logging.visual_ema_factor = None
 
     config.constraints = ml_collections.ConfigDict()
-    config.constraints.enabled = False
+    config.constraints.enabled = use_lineage_constraint
+    config.constraints.type = "maizels_lineage_path"
+    config.constraints.path_mode = "loss_points"
+    config.constraints.path_n_times = 10
+    config.constraints.euler_steps = 25
+    config.constraints.constraint_batch_size = 256
+    config.constraints.constraint_batch_fraction = 1.0
+    config.constraints.weight = 1.0
+    config.constraints.lambda_start = 0.0
+    config.constraints.lambda_transition = 1.0
+    config.constraints.lambda_final = 0.0
+    config.constraints.classifier_temperature = 1.0
+    config.constraints.stage2_only = False
 
     # Network config.
     config.network = ml_collections.ConfigDict()

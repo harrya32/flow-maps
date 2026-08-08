@@ -16,6 +16,7 @@ from ml_collections import config_dict
 from . import flow_map as flow_map
 from . import interpolant as interpolant
 from . import loss_args
+from . import maizels
 
 Parameters = Dict[str, Dict]
 
@@ -60,6 +61,14 @@ def uses_box_loss_points(cfg: config_dict.ConfigDict) -> bool:
 
 def uses_flow_map_box_loss_points(cfg: config_dict.ConfigDict) -> bool:
     return uses_box_loss_points(cfg) and _box_constraint_mode(cfg) == "flow_map"
+
+
+def uses_maizels_loss_points(cfg: config_dict.ConfigDict) -> bool:
+    return (
+        has_constraint(cfg)
+        and getattr(cfg.constraints, "type", None) == "maizels_lineage_path"
+        and getattr(cfg.constraints, "path_mode", "flowmap") == "loss_points"
+    )
 
 
 def _box_constraint_mode(cfg: config_dict.ConfigDict) -> str:
@@ -508,6 +517,310 @@ def dive_gate_path_constraint(
         + lambda_hit_b * hit_b_loss
         + lambda_hit_c * hit_c_loss
         + lambda_order * order_loss
+    )
+    return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
+
+
+def _maizels_path_mode(cfg: config_dict.ConfigDict) -> str:
+    mode = getattr(cfg.constraints, "path_mode", "flowmap")
+    if mode in ("auto", "flowmap", "flow_map_sampling", "sampling", "multistep"):
+        return "flowmap"
+    if mode in ("direct", "one_step", "flow_map"):
+        return "direct"
+    if mode in ("euler", "flow_matching", "velocity"):
+        return "euler"
+    raise ValueError(
+        "constraints.path_mode must be one of 'flowmap', 'direct', or 'euler' "
+        f"for maizels_lineage_path, got {mode!r}."
+    )
+
+
+def _maizels_path_times(cfg: config_dict.ConfigDict, dtype) -> jnp.ndarray:
+    path_times = getattr(cfg.constraints, "path_times", None)
+    if path_times is not None:
+        path_times = jnp.asarray(path_times, dtype=dtype)
+        if path_times.shape[0] < 1:
+            raise ValueError("constraints.path_times must contain at least one time")
+        return path_times
+
+    n_times = int(getattr(cfg.constraints, "path_n_times", 10))
+    if n_times < 1:
+        raise ValueError("constraints.path_n_times must be >= 1")
+    return jnp.linspace(0.0, 1.0, n_times + 1, dtype=dtype)[1:]
+
+
+def _flow_map_step_batch(
+    params: Parameters,
+    s: jnp.ndarray,
+    t: jnp.ndarray,
+    x: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+) -> jnp.ndarray:
+    if label is None:
+        return jax.vmap(
+            lambda xi: X.apply(
+                params,
+                s,
+                t,
+                xi,
+                None,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(x)
+
+    return jax.vmap(
+        lambda xi, lbl: X.apply(
+            params,
+            s,
+            t,
+            xi,
+            lbl,
+            train=False,
+            calc_weight=False,
+            return_X_and_phi=False,
+        )
+    )(x, label)
+
+
+def _maizels_direct_path_grid(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    times = _maizels_path_times(cfg, x0.dtype)
+
+    if label is None:
+        return jax.vmap(
+            lambda x: jax.vmap(
+                lambda tau: X.apply(
+                    params,
+                    0.0,
+                    tau,
+                    x,
+                    None,
+                    train=False,
+                    calc_weight=False,
+                    return_X_and_phi=False,
+                )
+            )(times)
+        )(x0)
+
+    return jax.vmap(
+        lambda x, lbl: jax.vmap(
+            lambda tau: X.apply(
+                params,
+                0.0,
+                tau,
+                x,
+                lbl,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(times)
+    )(x0, label)
+
+
+def _maizels_flowmap_sampling_paths(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    times = _maizels_path_times(cfg, x0.dtype)
+
+    def step(carry, t_next):
+        x, t_prev = carry
+        x_next = _flow_map_step_batch(params, t_prev, t_next, x, label, X=X)
+        return (x_next, t_next), x_next
+
+    (_, _), states = jax.lax.scan(
+        step,
+        (x0, jnp.asarray(0.0, dtype=x0.dtype)),
+        times,
+    )
+    return jnp.swapaxes(states, 0, 1)
+
+
+def _maizels_euler_paths(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    n_steps = int(getattr(cfg.constraints, "euler_steps", 25))
+    if n_steps < 1:
+        raise ValueError("constraints.euler_steps must be >= 1")
+    times = jnp.linspace(0.0, 1.0, n_steps + 1, dtype=x0.dtype)
+
+    def step(x, idx):
+        t0 = times[idx]
+        dt = times[idx + 1] - times[idx]
+        x_next = x + dt * _velocity_batch(params, t0, x, label, X=X)
+        return x_next, x_next
+
+    _, states = jax.lax.scan(step, x0, jnp.arange(n_steps))
+    return jnp.swapaxes(states, 0, 1)
+
+
+def _maizels_lineage_constraint_paths(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    mode = _maizels_path_mode(cfg)
+    if mode == "flowmap":
+        return _maizels_flowmap_sampling_paths(params, x0, label, X=X, cfg=cfg)
+    if mode == "direct":
+        return _maizels_direct_path_grid(params, x0, label, X=X, cfg=cfg)
+    return _maizels_euler_paths(params, x0, label, X=X, cfg=cfg)
+
+
+def _setup_maizels_lineage_classifier(cfg: config_dict.ConfigDict):
+    classifier_path = getattr(cfg.problem, "classifier_path", maizels.DEFAULT_CLASSIFIER)
+    params, class_names, scaler_mean, scaler_scale = maizels.load_jax_classifier_params(
+        classifier_path
+    )
+    return {
+        "params": params,
+        "class_names": class_names,
+        "scaler_mean": scaler_mean,
+        "scaler_scale": scaler_scale,
+        "invalid_transition": jnp.asarray(
+            maizels.lineage_invalid_transition_matrix(class_names),
+            dtype=jnp.float32,
+        ),
+        "canonical_to_classifier": jnp.asarray(
+            maizels.classifier_index_lookup(class_names),
+            dtype=jnp.int32,
+        ),
+    }
+
+
+def _maizels_lineage_terms(
+    paths: jnp.ndarray,
+    label: jnp.ndarray,
+    classifier,
+    cfg: config_dict.ConfigDict,
+) -> Dict[str, jnp.ndarray]:
+    if label is None or label.ndim != 2 or label.shape[1] < 2:
+        raise ValueError(
+            "maizels_lineage_path constraints require label[:, 0:2] to contain "
+            "source and target cell-type ids."
+        )
+
+    flat = paths.reshape((-1, paths.shape[-1]))
+    logits = maizels.jax_classifier_logits(
+        classifier["params"],
+        classifier["scaler_mean"],
+        classifier["scaler_scale"],
+        flat,
+    )
+    temperature = float(getattr(cfg.constraints, "classifier_temperature", 1.0))
+    probs = jax.nn.softmax(
+        logits / jnp.maximum(jnp.asarray(temperature, dtype=logits.dtype), 1e-6),
+        axis=-1,
+    ).reshape((paths.shape[0], paths.shape[1], -1))
+
+    lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
+    target_type_ids = label[:, 1] if lambda_final > 0.0 else None
+    terms = maizels.lineage_soft_terms_from_probs(
+        probs,
+        label[:, 0],
+        classifier["invalid_transition"],
+        classifier["canonical_to_classifier"],
+        target_type_ids=target_type_ids,
+    )
+    return terms
+
+
+def maizels_lineage_loss_point_constraint(
+    x_s: jnp.ndarray,
+    x_t: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    cfg: config_dict.ConfigDict,
+    classifier,
+) -> float:
+    """Penalize invalid classifier transitions on an already-computed X_{s,t}(I_s)."""
+    if label is None or label.ndim != 1 or label.shape[0] < 2:
+        raise ValueError(
+            "maizels_lineage_path loss_points constraints require each label to "
+            "contain source and target cell-type ids."
+        )
+
+    states = jnp.stack([x_s, x_t], axis=0)
+    logits = maizels.jax_classifier_logits(
+        classifier["params"],
+        classifier["scaler_mean"],
+        classifier["scaler_scale"],
+        states,
+    )
+    temperature = float(getattr(cfg.constraints, "classifier_temperature", 1.0))
+    probs = jax.nn.softmax(
+        logits / jnp.maximum(jnp.asarray(temperature, dtype=logits.dtype), 1e-6),
+        axis=-1,
+    )[None, :, :]
+
+    lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
+    target_type_ids = label[None, 1] if lambda_final > 0.0 else None
+    terms = maizels.lineage_soft_terms_from_probs(
+        probs,
+        label[None, 0],
+        classifier["invalid_transition"],
+        classifier["canonical_to_classifier"],
+        target_type_ids=target_type_ids,
+    )
+
+    lambda_start = float(getattr(cfg.constraints, "lambda_start", 0.0))
+    lambda_transition = float(getattr(cfg.constraints, "lambda_transition", 1.0))
+    loss = cfg.constraints.weight * (
+        lambda_start * terms["start_invalid_loss"]
+        + lambda_transition * terms["transition_invalid_loss"]
+        + lambda_final * terms["final_invalid_loss"]
+    )
+    return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
+
+
+def maizels_lineage_path_constraint(
+    params: Parameters,
+    x0: jnp.ndarray,
+    label: jnp.ndarray,
+    *,
+    X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
+    classifier,
+) -> float:
+    """Penalize classifier-probability mass on invalid lineage transitions."""
+    constraint_bs = _flow_matching_constraint_batch_size(cfg, x0.shape[0])
+    x0 = x0[:constraint_bs]
+    if label is not None:
+        label = label[:constraint_bs]
+
+    paths = _maizels_lineage_constraint_paths(params, x0, label, X=X, cfg=cfg)
+    terms = _maizels_lineage_terms(paths, label, classifier, cfg)
+
+    lambda_start = float(getattr(cfg.constraints, "lambda_start", 1.0))
+    lambda_transition = float(getattr(cfg.constraints, "lambda_transition", 1.0))
+    lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
+    loss = cfg.constraints.weight * (
+        lambda_start * terms["start_invalid_loss"]
+        + lambda_transition * terms["transition_invalid_loss"]
+        + lambda_final * terms["final_invalid_loss"]
     )
     return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
 
@@ -1125,6 +1438,7 @@ def lsd_term(
     cfg: config_dict.ConfigDict,
     constraint_scale: jnp.ndarray,
     constraint_weight_factor: jnp.ndarray,
+    maizels_lineage_classifier=None,
 ) -> float:
     """Compute the LSD term of the loss."""
     Is = interp.calc_It(s, x0, x1, label)
@@ -1148,6 +1462,19 @@ def lsd_term(
                 rng,
                 X=X,
                 cfg=cfg,
+            )
+        )
+    maizels_loss = 0.0
+    if uses_maizels_loss_points(cfg):
+        maizels_loss = (
+            constraint_scale
+            * constraint_weight_factor
+            * maizels_lineage_loss_point_constraint(
+                Is,
+                Xst_Is,
+                label,
+                cfg=cfg,
+                classifier=maizels_lineage_classifier,
             )
         )
 
@@ -1180,7 +1507,7 @@ def lsd_term(
     weight_st = X.apply(params, s, t, method="calc_weight")
     error = b_eval - dt_Xst
     lsd_loss = jnp.sum(error**2)
-    return jnp.exp(-weight_st) * lsd_loss + weight_st + box_loss
+    return jnp.exp(-weight_st) * lsd_loss + weight_st + box_loss + maizels_loss
 
 
 def esd_term(
@@ -1285,6 +1612,9 @@ def setup_loss(
 
     print(f"Setting up loss: {cfg.training.loss_type}")
     print(f"Stopgrad type: {cfg.training.stopgrad_type}")
+    maizels_lineage_classifier = None
+    if has_constraint(cfg) and cfg.constraints.type == "maizels_lineage_path":
+        maizels_lineage_classifier = _setup_maizels_lineage_classifier(cfg)
 
     # Pure diagonal loss
     @mean_reduce
@@ -1355,6 +1685,7 @@ def setup_loss(
                 cfg=cfg,
                 constraint_scale=constraint_scale,
                 constraint_weight_factor=constraint_weight_factor,
+                maizels_lineage_classifier=maizels_lineage_classifier,
             )
         elif cfg.training.loss_type == "esd":
             return esd_term(
@@ -1424,9 +1755,11 @@ def setup_loss(
             diag_weight * diag_bs + offdiag_weight * offdiag_bs,
             1.0,
         )
-        loss_points_box_factor = 0.0
-        if offdiag_bs > 0 and uses_flow_map_box_loss_points(cfg):
-            loss_points_box_factor = expected_base_normalizer / jnp.maximum(
+        loss_points_constraint_factor = 0.0
+        if offdiag_bs > 0 and (
+            uses_flow_map_box_loss_points(cfg) or uses_maizels_loss_points(cfg)
+        ):
+            loss_points_constraint_factor = expected_base_normalizer / jnp.maximum(
                 offdiag_weight * offdiag_bs,
                 1e-6,
             )
@@ -1463,7 +1796,7 @@ def setup_loss(
                 h_offdiag,
                 dropout_keys[diag_bs:],
                 constraint_scale,
-                loss_points_box_factor,
+                loss_points_constraint_factor,
             )
             weighted_base_loss += offdiag_weight * offdiag_loss * offdiag_bs
             base_normalizer += offdiag_weight * offdiag_bs
@@ -1564,6 +1897,21 @@ def setup_loss(
                     X=net,
                     cfg=cfg,
                 )
+            elif cfg.constraints.type == "maizels_lineage_path":
+                if uses_maizels_loss_points(cfg):
+                    if cfg.training.loss_type != "lsd":
+                        raise ValueError(
+                            "constraints.path_mode='loss_points' requires LSD loss"
+                        )
+                else:
+                    total_loss += constraint_scale * maizels_lineage_path_constraint(
+                        params,
+                        x0,
+                        label,
+                        X=net,
+                        cfg=cfg,
+                        classifier=maizels_lineage_classifier,
+                    )
             else:
                 raise ValueError(f"Unknown constraint type: {cfg.constraints.type}")
 

@@ -24,7 +24,7 @@ from matplotlib.patches import Circle, Ellipse, Rectangle
 from matplotlib import pyplot as plt
 from ml_collections import config_dict
 
-from . import datasets, dist_utils, fid_utils, flow_map, maizels, state_utils
+from . import datasets, dist_utils, fid_utils, flow_map, loss_args, maizels, state_utils
 
 Parameters = Dict[str, Dict]
 
@@ -1053,6 +1053,217 @@ def _euler_paths(
     _, states = jax.lax.scan(step, x0s, jnp.arange(n_steps))
     paths = jnp.concatenate([x0s[None, ...], states], axis=0)
     return np.asarray(jnp.swapaxes(paths, 0, 1), dtype=np.float32)
+
+
+def _maizels_constraint_path_mode(cfg: config_dict.ConfigDict) -> str:
+    mode = getattr(cfg.constraints, "path_mode", "flowmap")
+    if mode in ("auto", "flowmap", "flow_map_sampling", "sampling", "multistep"):
+        return "flowmap"
+    if mode in ("direct", "one_step", "flow_map"):
+        return "direct"
+    if mode in ("euler", "flow_matching", "velocity"):
+        return "euler"
+    raise ValueError(
+        "constraints.path_mode must be one of 'flowmap', 'direct', or 'euler' "
+        f"for maizels_lineage_path, got {mode!r}."
+    )
+
+
+def _maizels_constraint_path_times(
+    cfg: config_dict.ConfigDict,
+    dtype,
+) -> jnp.ndarray:
+    path_times = getattr(cfg.constraints, "path_times", None)
+    if path_times is not None:
+        path_times = jnp.asarray(path_times, dtype=dtype)
+        if path_times.shape[0] < 1:
+            raise ValueError("constraints.path_times must contain at least one time")
+        return path_times
+
+    n_times = int(getattr(cfg.constraints, "path_n_times", 10))
+    if n_times < 1:
+        raise ValueError("constraints.path_n_times must be >= 1")
+    return jnp.linspace(0.0, 1.0, n_times + 1, dtype=dtype)[1:]
+
+
+def _maizels_flow_map_step_batch(
+    apply_fn,
+    params: Dict,
+    s: jnp.ndarray,
+    t: jnp.ndarray,
+    xs: jnp.ndarray,
+    labels: jnp.ndarray,
+) -> jnp.ndarray:
+    if labels is None:
+        return jax.vmap(
+            lambda x: apply_fn(
+                params,
+                s,
+                t,
+                x,
+                label=None,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(xs)
+
+    return jax.vmap(
+        lambda x, lbl: apply_fn(
+            params,
+            s,
+            t,
+            x,
+            label=lbl,
+            train=False,
+            calc_weight=False,
+            return_X_and_phi=False,
+        )
+    )(xs, labels)
+
+
+def _maizels_direct_constraint_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    times = _maizels_constraint_path_times(cfg, x0s.dtype)
+    if labels is None:
+        return jax.vmap(
+            lambda x: jax.vmap(
+                lambda tau: apply_fn(
+                    params,
+                    0.0,
+                    tau,
+                    x,
+                    label=None,
+                    train=False,
+                    calc_weight=False,
+                    return_X_and_phi=False,
+                )
+            )(times)
+        )(x0s)
+
+    return jax.vmap(
+        lambda x, lbl: jax.vmap(
+            lambda tau: apply_fn(
+                params,
+                0.0,
+                tau,
+                x,
+                label=lbl,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(times)
+    )(x0s, labels)
+
+
+def _maizels_flowmap_constraint_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    times = _maizels_constraint_path_times(cfg, x0s.dtype)
+
+    def step(carry, t_next):
+        xs, t_prev = carry
+        xs_next = _maizels_flow_map_step_batch(
+            apply_fn,
+            params,
+            t_prev,
+            t_next,
+            xs,
+            labels,
+        )
+        return (xs_next, t_next), xs_next
+
+    (_, _), states = jax.lax.scan(
+        step,
+        (x0s, jnp.asarray(0.0, dtype=x0s.dtype)),
+        times,
+    )
+    return jnp.swapaxes(states, 0, 1)
+
+
+def _maizels_euler_constraint_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    n_steps = int(getattr(cfg.constraints, "euler_steps", 25))
+    if n_steps < 1:
+        raise ValueError("constraints.euler_steps must be >= 1")
+    if labels is None:
+        labels = -jnp.ones((x0s.shape[0],), dtype=jnp.int32)
+    return jnp.asarray(
+        _euler_paths(apply_fn, params, x0s, labels, n_steps)[:, 1:, :],
+        dtype=x0s.dtype,
+    )
+
+
+def _maizels_lineage_constraint_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+) -> jnp.ndarray:
+    mode = _maizels_constraint_path_mode(cfg)
+    if mode == "flowmap":
+        return _maizels_flowmap_constraint_paths(apply_fn, params, x0s, labels, cfg)
+    if mode == "direct":
+        return _maizels_direct_constraint_paths(apply_fn, params, x0s, labels, cfg)
+    return _maizels_euler_constraint_paths(apply_fn, params, x0s, labels, cfg)
+
+
+def _maizels_lineage_constraint_terms(
+    paths: jnp.ndarray,
+    labels: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+) -> Dict[str, jnp.ndarray]:
+    if labels is None or labels.ndim != 2 or labels.shape[1] < 2:
+        raise ValueError(
+            "maizels_lineage_path metrics require label[:, 0:2] to contain "
+            "source and target cell-type ids."
+        )
+
+    classifier_path = getattr(cfg.problem, "classifier_path", maizels.DEFAULT_CLASSIFIER)
+    classifier_params, class_names, scaler_mean, scaler_scale = (
+        maizels.load_jax_classifier_params(classifier_path)
+    )
+    flat = paths.reshape((-1, paths.shape[-1]))
+    logits = maizels.jax_classifier_logits(
+        classifier_params,
+        scaler_mean,
+        scaler_scale,
+        flat,
+    )
+    temperature = float(getattr(cfg.constraints, "classifier_temperature", 1.0))
+    probs = jax.nn.softmax(
+        logits / jnp.maximum(jnp.asarray(temperature, dtype=logits.dtype), 1e-6),
+        axis=-1,
+    ).reshape((paths.shape[0], paths.shape[1], -1))
+
+    lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
+    target_type_ids = labels[:, 1] if lambda_final > 0.0 else None
+    return maizels.lineage_soft_terms_from_probs(
+        probs,
+        labels[:, 0],
+        jnp.asarray(
+            maizels.lineage_invalid_transition_matrix(class_names),
+            dtype=probs.dtype,
+        ),
+        jnp.asarray(maizels.classifier_index_lookup(class_names), dtype=jnp.int32),
+        target_type_ids=target_type_ids,
+    )
 
 
 def _trajectory_segments(paths: np.ndarray) -> np.ndarray:
@@ -2610,6 +2821,124 @@ def compute_constraint_metrics(
                 }
             )
         return metrics
+
+    if ctype == "maizels_lineage_path":
+        params = dist_utils.safe_unreplicate(cfg, train_state.params)
+        constraint_bs = int(getattr(cfg.constraints, "constraint_batch_size", 0))
+        if getattr(cfg.constraints, "path_mode", "flowmap") == "loss_points":
+            if statics is None or getattr(statics, "interp", None) is None:
+                raise ValueError(
+                    "maizels_lineage_path loss_points metrics require statics.interp"
+                )
+
+            diag_bs, offdiag_bs = loss_args._get_diag_offdiag_bs(cfg, x0batch.shape[0])
+            if offdiag_bs <= 0:
+                zero = jnp.asarray(0.0, dtype=x0batch.dtype)
+                return {
+                    "constraint/maizels_lineage_start_invalid_loss": zero,
+                    "constraint/maizels_lineage_transition_invalid_loss": zero,
+                    "constraint/maizels_lineage_final_invalid_loss": zero,
+                    "constraint/maizels_lineage_path_invalid_loss": zero,
+                    "constraint/maizels_lineage_total": zero,
+                    "constraint/maizels_lineage_start_invalid_mass": zero,
+                    "constraint/maizels_lineage_transition_invalid_mass": zero,
+                    "constraint/maizels_lineage_final_invalid_mass": zero,
+                    "constraint/maizels_lineage_constraint_batch_size": 0,
+                    "constraint/anneal_scale": constraint_scale,
+                    "stage/two_stage_scale": stage2_scale,
+                }
+
+            x0_available = x0batch[diag_bs:]
+            x1_available = x1batch[diag_bs:]
+            label_available = None if label_batch is None else label_batch[diag_bs:]
+            s_available = sbatch[diag_bs:]
+            t_available = tbatch[diag_bs:]
+            if constraint_bs <= 0:
+                constraint_fraction = float(
+                    getattr(cfg.constraints, "constraint_batch_fraction", 1.0)
+                )
+                constraint_bs = max(1, int(x0_available.shape[0] * constraint_fraction))
+            constraint_bs = min(x0_available.shape[0], constraint_bs)
+
+            x0_constraint = x0_available[:constraint_bs]
+            x1_constraint = x1_available[:constraint_bs]
+            label_constraint = (
+                None if label_available is None else label_available[:constraint_bs]
+            )
+            s_constraint = s_available[:constraint_bs]
+            t_constraint = t_available[:constraint_bs]
+            x_s = statics.interp.batch_calc_It(
+                s_constraint,
+                x0_constraint,
+                x1_constraint,
+                label_constraint,
+            )
+            x_t = _map_between_positions(
+                params,
+                train_state.apply_fn,
+                s_constraint,
+                t_constraint,
+                x_s,
+                label_constraint,
+            )
+            paths = jnp.stack([x_s, x_t], axis=1)
+        else:
+            if constraint_bs <= 0:
+                constraint_fraction = float(
+                    getattr(cfg.constraints, "constraint_batch_fraction", 1.0)
+                )
+                constraint_bs = max(1, int(x0batch.shape[0] * constraint_fraction))
+            constraint_bs = min(x0batch.shape[0], constraint_bs)
+
+            x0_constraint = x0batch[:constraint_bs]
+            label_constraint = (
+                None if label_batch is None else label_batch[:constraint_bs]
+            )
+            paths = _maizels_lineage_constraint_paths(
+                train_state.apply_fn,
+                params,
+                x0_constraint,
+                label_constraint,
+                cfg,
+            )
+        terms = _maizels_lineage_constraint_terms(paths, label_constraint, cfg)
+
+        lambda_start = float(getattr(cfg.constraints, "lambda_start", 1.0))
+        lambda_transition = float(getattr(cfg.constraints, "lambda_transition", 1.0))
+        lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
+        weighted = constraint_scale * cfg.constraints.weight * (
+            lambda_start * terms["start_invalid_loss"]
+            + lambda_transition * terms["transition_invalid_loss"]
+            + lambda_final * terms["final_invalid_loss"]
+        )
+
+        return {
+            "constraint/maizels_lineage_start_invalid_loss": terms[
+                "start_invalid_loss"
+            ],
+            "constraint/maizels_lineage_transition_invalid_loss": terms[
+                "transition_invalid_loss"
+            ],
+            "constraint/maizels_lineage_final_invalid_loss": terms[
+                "final_invalid_loss"
+            ],
+            "constraint/maizels_lineage_path_invalid_loss": terms[
+                "path_invalid_loss"
+            ],
+            "constraint/maizels_lineage_total": weighted,
+            "constraint/maizels_lineage_start_invalid_mass": terms[
+                "start_invalid_mass"
+            ],
+            "constraint/maizels_lineage_transition_invalid_mass": terms[
+                "transition_invalid_mass"
+            ],
+            "constraint/maizels_lineage_final_invalid_mass": terms[
+                "final_invalid_mass"
+            ],
+            "constraint/maizels_lineage_constraint_batch_size": constraint_bs,
+            "constraint/anneal_scale": constraint_scale,
+            "stage/two_stage_scale": stage2_scale,
+        }
 
     return {}
 

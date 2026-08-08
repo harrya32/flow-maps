@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Set, Tuple
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 DEFAULT_DATASET = (
@@ -44,6 +46,7 @@ TRANSITION_EDGES = [
 
 _DATA_CACHE: Dict[str, Dict[str, np.ndarray]] = {}
 _CLASSIFIER_CACHE: Dict[str, Tuple[Any, List[str], np.ndarray, np.ndarray]] = {}
+_JAX_CLASSIFIER_CACHE: Dict[str, Tuple[Dict[str, jnp.ndarray], List[str], jnp.ndarray, jnp.ndarray]] = {}
 
 
 class NumpyCellTypeMLP:
@@ -268,6 +271,146 @@ def load_classifier(
     result = (model, class_names, scaler_mean, scaler_scale)
     _CLASSIFIER_CACHE[cache_key] = result
     return result
+
+
+def load_jax_classifier_params(
+    classifier_path: str | Path,
+) -> Tuple[Dict[str, jnp.ndarray], List[str], jnp.ndarray, jnp.ndarray]:
+    """Load frozen PCA50 classifier weights for differentiable JAX inference."""
+    path = Path(classifier_path).expanduser().resolve()
+    npz_path = path if path.suffix == ".npz" else path.with_suffix(".npz")
+    if not npz_path.exists():
+        raise FileNotFoundError(
+            "Maizels differentiable constraints require the exported NumPy "
+            f"classifier checkpoint at {npz_path}."
+        )
+
+    cache_key = str(npz_path)
+    if cache_key in _JAX_CLASSIFIER_CACHE:
+        return _JAX_CLASSIFIER_CACHE[cache_key]
+
+    with np.load(npz_path, allow_pickle=False) as raw:
+        params = {
+            key: jnp.asarray(raw[key].astype(np.float32))
+            for key in raw.files
+            if key.startswith("net.")
+        }
+        class_names = [str(x) for x in raw["class_names"].tolist()]
+        scaler_mean = jnp.asarray(raw["scaler_mean"].astype(np.float32))
+        scaler_scale = jnp.asarray(raw["scaler_scale"].astype(np.float32))
+
+    result = (params, class_names, scaler_mean, scaler_scale)
+    _JAX_CLASSIFIER_CACHE[cache_key] = result
+    return result
+
+
+def jax_classifier_logits(
+    params: Dict[str, jnp.ndarray],
+    scaler_mean: jnp.ndarray,
+    scaler_scale: jnp.ndarray,
+    x: jnp.ndarray,
+) -> jnp.ndarray:
+    """Differentiable JAX copy of the PCA50 cell-type MLP classifier."""
+    x = (x - scaler_mean) / scaler_scale
+
+    def linear(h, prefix):
+        return h @ params[f"{prefix}.weight"].T + params[f"{prefix}.bias"]
+
+    def batch_norm(h, prefix):
+        mean = params[f"{prefix}.running_mean"]
+        var = params[f"{prefix}.running_var"]
+        weight = params[f"{prefix}.weight"]
+        bias = params[f"{prefix}.bias"]
+        return (h - mean) / jnp.sqrt(var + 1e-5) * weight + bias
+
+    h = linear(x, "net.0")
+    h = batch_norm(h, "net.1")
+    h = jax.nn.relu(h)
+    h = linear(h, "net.4")
+    h = batch_norm(h, "net.5")
+    h = jax.nn.relu(h)
+    return linear(h, "net.8")
+
+
+def classifier_index_lookup(class_names: Sequence[str]) -> np.ndarray:
+    """Map canonical Maizels class ids to a classifier-specific class order."""
+    by_name = {str(name): idx for idx, name in enumerate(class_names)}
+    missing = [name for name in CLASS_NAMES if name not in by_name]
+    if missing:
+        raise KeyError(
+            "Classifier is missing Maizels classes required for constraints: "
+            f"{missing}"
+        )
+    return np.asarray([by_name[name] for name in CLASS_NAMES], dtype=np.int32)
+
+
+def lineage_invalid_transition_matrix(class_names: Sequence[str]) -> np.ndarray:
+    """Return matrix M where M[i, j]=1 iff i -> j is biologically invalid."""
+    reachable = build_reachable()
+    invalid = np.zeros((len(class_names), len(class_names)), dtype=np.float32)
+    for ii, src in enumerate(class_names):
+        for jj, dst in enumerate(class_names):
+            invalid[ii, jj] = 0.0 if endpoint_valid(str(src), str(dst), reachable) else 1.0
+    return invalid
+
+
+def lineage_soft_terms_from_probs(
+    probs: jnp.ndarray,
+    source_type_ids: jnp.ndarray,
+    invalid_transition: jnp.ndarray,
+    canonical_to_classifier: jnp.ndarray,
+    target_type_ids: jnp.ndarray | None = None,
+) -> Dict[str, jnp.ndarray]:
+    """Differentiable lineage-validity terms from path classifier probabilities."""
+    source_cls = jnp.take(canonical_to_classifier, source_type_ids.astype(jnp.int32))
+    source_probs = jax.nn.one_hot(source_cls, probs.shape[-1], dtype=probs.dtype)
+    invalid_transition = invalid_transition.astype(probs.dtype)
+
+    start_invalid = jnp.einsum(
+        "bi,ij,bj->b",
+        source_probs,
+        invalid_transition,
+        probs[:, 0, :],
+    )
+    if probs.shape[1] > 1:
+        transition_invalid = jnp.einsum(
+            "bti,ij,btj->bt",
+            probs[:, :-1, :],
+            invalid_transition,
+            probs[:, 1:, :],
+        )
+        transition_invalid_per_path = jnp.mean(transition_invalid, axis=1)
+    else:
+        transition_invalid = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
+        transition_invalid_per_path = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
+
+    if target_type_ids is None:
+        final_invalid = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
+    else:
+        target_cls = jnp.take(canonical_to_classifier, target_type_ids.astype(jnp.int32))
+        target_probs = jax.nn.one_hot(target_cls, probs.shape[-1], dtype=probs.dtype)
+        final_invalid = jnp.einsum(
+            "bi,ij,bj->b",
+            probs[:, -1, :],
+            invalid_transition,
+            target_probs,
+        )
+
+    return {
+        "start_invalid_loss": jnp.mean(start_invalid),
+        "transition_invalid_loss": jnp.mean(transition_invalid_per_path),
+        "final_invalid_loss": jnp.mean(final_invalid),
+        "path_invalid_loss": jnp.mean(
+            start_invalid + transition_invalid_per_path + final_invalid
+        ),
+        "start_invalid_mass": jnp.mean(start_invalid),
+        "transition_invalid_mass": (
+            jnp.mean(transition_invalid)
+            if transition_invalid.size > 0
+            else jnp.asarray(0.0, dtype=probs.dtype)
+        ),
+        "final_invalid_mass": jnp.mean(final_invalid),
+    }
 
 
 def classifier_predictions(
