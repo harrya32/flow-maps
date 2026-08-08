@@ -87,7 +87,7 @@ def get_config(
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 1.0
-    config.optimization.total_steps = 50000
+    config.optimization.total_steps = 50_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
@@ -121,7 +121,7 @@ def get_config(
     config.logging.maizels.plot_bs = 128
     config.logging.maizels.path_n_times = 50
     config.logging.maizels.euler_n_steps = 50
-    config.logging.maizels.flowmap_n_steps = 25
+    config.logging.maizels.flowmap_n_steps = 50
     config.logging.maizels.check_n_times = 50
     config.logging.maizels.pair_mode = "same_as_training"
     config.logging.maizels.plot_seed = 997
@@ -140,7 +140,7 @@ def get_config(
     config.logging.maizels.distribution_eval_euler_n_steps = (
         config.logging.maizels.euler_n_steps
     )
-    config.logging.maizels.distribution_eval_flowmap_n_steps = 25
+    config.logging.maizels.distribution_eval_flowmap_n_steps = 50
     config.logging.maizels.distribution_eval_mmd_bandwidths = []
     config.logging.maizels.distribution_eval_mmd_bandwidth_multipliers = [
         0.25,
