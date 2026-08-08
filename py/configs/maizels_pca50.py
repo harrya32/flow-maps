@@ -47,7 +47,7 @@ def get_config(
     config.training.loss_type = loss_type
     config.training.tmin = 0.0
     config.training.tmax = 1.0
-    config.training.seed = 0
+    config.training.seed = 1
     config.training.ema_facs = [0.999, 0.9999]
     config.training.ndevices = jax.device_count()
 
@@ -91,7 +91,7 @@ def get_config(
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 1.0
-    config.optimization.total_steps = 50_000
+    config.optimization.total_steps = 10_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
@@ -114,7 +114,7 @@ def get_config(
     config.logging.save_freq = 5_000
     config.logging.wandb_project = "self-distill-flow-maps"
 
-    config.logging.wandb_name = f"maizels_pca50_{variant_name}_lsd"
+    config.logging.wandb_name = f"maizels_pca50_{variant_name}"
     config.logging.wandb_entity = os.getenv("WANDB_ENTITY", "your-username")
     config.logging.output_folder = output_folder
     config.logging.output_name = config.logging.wandb_name
@@ -122,7 +122,7 @@ def get_config(
 
     config.logging.maizels = ml_collections.ConfigDict()
     config.logging.maizels.enabled = True
-    config.logging.maizels.plot_bs = 128
+    config.logging.maizels.plot_bs = 512
     config.logging.maizels.path_n_times = 50
     config.logging.maizels.euler_n_steps = 50
     config.logging.maizels.flowmap_n_steps = 50
@@ -130,15 +130,11 @@ def get_config(
     config.logging.maizels.pair_mode = "same_as_training"
     config.logging.maizels.plot_seed = 997
     config.logging.maizels.prob_threshold = config.problem.classifier_prob_threshold
-    #config.logging.maizels.prob_threshold = 0.5
-
     config.logging.maizels.margin_threshold = config.problem.classifier_margin_threshold
-    #config.logging.maizels.margin_threshold = 0
-
     config.logging.maizels.classifier_batch_size = config.problem.classifier_batch_size
     config.logging.maizels.distribution_eval_enabled = True
     config.logging.maizels.distribution_eval_source_pool = "auto"
-    config.logging.maizels.distribution_eval_points_per_time = 512
+    config.logging.maizels.distribution_eval_points_per_time = 1024
     config.logging.maizels.distribution_eval_max_timepoints = 0
     config.logging.maizels.distribution_eval_wasserstein_projections = 256
     config.logging.maizels.distribution_eval_euler_n_steps = (
@@ -166,12 +162,12 @@ def get_config(
     config.constraints = ml_collections.ConfigDict()
     config.constraints.enabled = use_lineage_constraint
     config.constraints.type = "maizels_lineage_path"
-    config.constraints.path_mode = "loss_points"
+    config.constraints.path_mode = "direct"
     config.constraints.path_n_times = 10
     config.constraints.euler_steps = 25
     config.constraints.constraint_batch_size = 256
     config.constraints.constraint_batch_fraction = 1.0
-    config.constraints.weight = 1.0
+    config.constraints.weight = 100.0
     config.constraints.lambda_start = 0.0
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
