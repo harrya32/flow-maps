@@ -132,6 +132,10 @@ def get_config(
     config.logging.maizels.prob_threshold = config.problem.classifier_prob_threshold
     config.logging.maizels.margin_threshold = config.problem.classifier_margin_threshold
     config.logging.maizels.classifier_batch_size = config.problem.classifier_batch_size
+    config.logging.maizels.validation_enabled = True
+    config.logging.maizels.validation_bs = 1024
+    config.logging.maizels.validation_seed = 2701
+    config.logging.maizels.validation_pair_mode = "same_as_training"
     config.logging.maizels.distribution_eval_enabled = True
     config.logging.maizels.distribution_eval_source_pool = "auto"
     config.logging.maizels.distribution_eval_points_per_time = 1024

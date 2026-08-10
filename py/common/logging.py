@@ -27,6 +27,7 @@ from ml_collections import config_dict
 from . import datasets, dist_utils, fid_utils, flow_map, loss_args, maizels, state_utils
 
 Parameters = Dict[str, Dict]
+_MAIZELS_VALIDATION_CACHE = {}
 
 
 def is_lowd_problem(cfg: config_dict.ConfigDict) -> bool:
@@ -1704,7 +1705,7 @@ def _log_maizels_distribution_eval(
         points_per_time,
         dataset_location,
     )
-    eval_pairs, eval_stats = maizels.make_endpoint_split_pair_pool(
+    eval_pairs, _ = maizels.make_endpoint_split_pair_pool(
         cfg,
         points_per_time,
         split=eval_split,
@@ -1743,20 +1744,7 @@ def _log_maizels_distribution_eval(
         )
     )
 
-    split_code = {"heldout": 0, "train": 1, "all": 2}.get(eval_split, -1)
-    metrics = {
-        "maizels/dist_eval/source_pool_code": split_code,
-        "maizels/dist_eval/source_pool_is_heldout": float(eval_split == "heldout"),
-        "maizels/dist_eval/source_pool_is_train": float(eval_split == "train"),
-        "maizels/dist_eval/source_pool_is_all": float(eval_split == "all"),
-        "maizels/dist_eval/split_source_n": int(eval_stats["split_source_n"]),
-        "maizels/dist_eval/split_target_n": int(eval_stats["split_target_n"]),
-        "maizels/dist_eval/source_holdout_n": int(eval_stats["source_holdout_n"]),
-        "maizels/dist_eval/target_holdout_n": int(eval_stats["target_holdout_n"]),
-        "maizels/dist_eval/pair_acceptance_rate": float(
-            eval_stats["candidate_acceptance_rate"]
-        ),
-    }
+    metrics = {}
     aggregate = {
         "direct_rbf_mmd2": [],
         "direct_sliced_w2": [],
@@ -1821,8 +1809,6 @@ def _log_maizels_distribution_eval(
         linear = ((1.0 - tau) * x0_eval + tau * x1_eval).astype(np.float32)
 
         tag = _maizels_time_tag(timepoint)
-        metrics[f"maizels/dist_eval/{tag}_tau"] = tau
-        metrics[f"maizels/dist_eval/{tag}_n"] = int(n_compare)
         for name, pred in [
             ("direct", direct),
             ("flowmap", flowmap_sample),
@@ -1842,16 +1828,16 @@ def _log_maizels_distribution_eval(
                 n_projections=n_proj,
                 rng=rng,
             )
-            metrics[f"maizels/dist_eval/{tag}_{name}_rbf_mmd2"] = mmd2
-            metrics[f"maizels/dist_eval/{tag}_{name}_sliced_w2"] = sw2
+            metrics[f"distribution_eval/{tag}_{name}_rbf_mmd2"] = mmd2
+            metrics[f"distribution_eval/{tag}_{name}_sliced_w2"] = sw2
             aggregate[f"{name}_rbf_mmd2"].append(mmd2)
             aggregate[f"{name}_sliced_w2"].append(sw2)
 
     for key, values in aggregate.items():
         if values:
-            metrics[f"maizels/dist_eval/{key}_mean"] = float(np.mean(values))
+            metrics[f"distribution_eval/{key}_mean"] = float(np.mean(values))
 
-    if len(metrics) > 3:
+    if metrics:
         wandb.log(metrics)
 
 
@@ -1889,7 +1875,7 @@ def _log_maizels_trajectory_diagnostics(
             int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997,
         )
     )
-    heldout_pairs, heldout_stats = maizels.make_heldout_pair_pool(
+    heldout_pairs, _ = maizels.make_heldout_pair_pool(
         cfg,
         n_plot,
         dataset_location=getattr(cfg.problem, "dataset_location", None),
@@ -2081,13 +2067,9 @@ def _log_maizels_trajectory_diagnostics(
     )
     axs[0].legend(loc="upper right", fontsize=9, markerscale=3, frameon=True)
 
-    direct_point_den = max(int(direct_validity["n_points"]), 1)
-    flowmap_point_den = max(int(flowmap_validity["n_points"]), 1)
-    euler_point_den = max(int(euler_validity["n_points"]), 1)
-    gt_point_den = max(int(gt_validity["n_points"]), 1)
     wandb.log(
         {
-            "maizels/classifier_validity_paths": wandb.Image(fig),
+            "plots/maizels_classifier_validity_paths": wandb.Image(fig),
             "maizels/model_direct_invalid_trajectory_pct": 100.0
             * float(np.mean(~direct_valid)),
             "maizels/model_flowmap_invalid_trajectory_pct": 100.0
@@ -2096,24 +2078,6 @@ def _log_maizels_trajectory_diagnostics(
             * float(np.mean(~euler_valid)),
             "maizels/interpolant_invalid_trajectory_pct": 100.0
             * float(np.mean(~gt_valid)),
-            "maizels/model_direct_confident_point_pct": 100.0
-            * float(int(direct_validity["n_confident"]))
-            / direct_point_den,
-            "maizels/model_flowmap_confident_point_pct": 100.0
-            * float(int(flowmap_validity["n_confident"]))
-            / flowmap_point_den,
-            "maizels/model_euler_confident_point_pct": 100.0
-            * float(int(euler_validity["n_confident"]))
-            / euler_point_den,
-            "maizels/interpolant_confident_point_pct": 100.0
-            * float(int(gt_validity["n_confident"]))
-            / gt_point_den,
-            "maizels/heldout_source_n": int(heldout_stats["source_holdout_n"]),
-            "maizels/heldout_target_n": int(heldout_stats["target_holdout_n"]),
-            "maizels/heldout_plot_pairs": int(heldout_pairs["x0"].shape[0]),
-            "maizels/heldout_candidate_acceptance_rate": float(
-                heldout_stats["candidate_acceptance_rate"]
-            ),
         }
     )
 
@@ -2665,7 +2629,6 @@ def compute_constraint_metrics(
             "constraint/mid_mean_x": mean_vec[0],
             "constraint/mid_mean_y": mean_vec[1],
             "constraint/anneal_scale": constraint_scale,
-            "stage/two_stage_scale": stage2_scale,
         }
 
     if ctype == "kde_path":
@@ -2701,7 +2664,6 @@ def compute_constraint_metrics(
             "constraint/kde_total": weighted,
             "constraint/kde_tau_mean": jnp.mean(tau),
             "constraint/anneal_scale": constraint_scale,
-            "stage/two_stage_scale": stage2_scale,
         }
 
     if ctype == "box_path":
@@ -2801,7 +2763,6 @@ def compute_constraint_metrics(
             "constraint/dive_gate_soft_b_occupancy": terms["soft_b_occupancy"],
             "constraint/dive_gate_soft_c_occupancy": terms["soft_c_occupancy"],
             "constraint/anneal_scale": constraint_scale,
-            "stage/two_stage_scale": stage2_scale,
         }
 
         hard_details = _dive_gate_violation_details(np.asarray(paths), cfg)
@@ -2834,19 +2795,7 @@ def compute_constraint_metrics(
             diag_bs, offdiag_bs = loss_args._get_diag_offdiag_bs(cfg, x0batch.shape[0])
             if offdiag_bs <= 0:
                 zero = jnp.asarray(0.0, dtype=x0batch.dtype)
-                return {
-                    "constraint/maizels_lineage_start_invalid_loss": zero,
-                    "constraint/maizels_lineage_transition_invalid_loss": zero,
-                    "constraint/maizels_lineage_final_invalid_loss": zero,
-                    "constraint/maizels_lineage_path_invalid_loss": zero,
-                    "constraint/maizels_lineage_total": zero,
-                    "constraint/maizels_lineage_start_invalid_mass": zero,
-                    "constraint/maizels_lineage_transition_invalid_mass": zero,
-                    "constraint/maizels_lineage_final_invalid_mass": zero,
-                    "constraint/maizels_lineage_constraint_batch_size": 0,
-                    "constraint/anneal_scale": constraint_scale,
-                    "stage/two_stage_scale": stage2_scale,
-                }
+                return {"constraint/lineage_total": zero}
 
             x0_available = x0batch[diag_bs:]
             x1_available = x1batch[diag_bs:]
@@ -2912,33 +2861,7 @@ def compute_constraint_metrics(
             + lambda_final * terms["final_invalid_loss"]
         )
 
-        return {
-            "constraint/maizels_lineage_start_invalid_loss": terms[
-                "start_invalid_loss"
-            ],
-            "constraint/maizels_lineage_transition_invalid_loss": terms[
-                "transition_invalid_loss"
-            ],
-            "constraint/maizels_lineage_final_invalid_loss": terms[
-                "final_invalid_loss"
-            ],
-            "constraint/maizels_lineage_path_invalid_loss": terms[
-                "path_invalid_loss"
-            ],
-            "constraint/maizels_lineage_total": weighted,
-            "constraint/maizels_lineage_start_invalid_mass": terms[
-                "start_invalid_mass"
-            ],
-            "constraint/maizels_lineage_transition_invalid_mass": terms[
-                "transition_invalid_mass"
-            ],
-            "constraint/maizels_lineage_final_invalid_mass": terms[
-                "final_invalid_mass"
-            ],
-            "constraint/maizels_lineage_constraint_batch_size": constraint_bs,
-            "constraint/anneal_scale": constraint_scale,
-            "stage/two_stage_scale": stage2_scale,
-        }
+        return {"constraint/lineage_total": weighted}
 
     return {}
 
@@ -3071,6 +2994,151 @@ def compute_forbidden_box_metrics(
     return metrics
 
 
+def _resolve_maizels_logging_pair_mode(cfg: config_dict.ConfigDict, maizels_cfg):
+    pair_mode = getattr(
+        maizels_cfg,
+        "validation_pair_mode",
+        getattr(
+            maizels_cfg,
+            "pair_mode",
+            getattr(cfg.problem, "maizels_pair_mode", "none"),
+        ),
+    )
+    if pair_mode == "same_as_training":
+        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    return str(pair_mode)
+
+
+def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndarray]:
+    maizels_cfg = cfg.logging.maizels
+    dataset_location = getattr(cfg.problem, "dataset_location", None)
+    n_val = max(1, int(getattr(maizels_cfg, "validation_bs", 1024)))
+    seed = int(
+        getattr(
+            maizels_cfg,
+            "validation_seed",
+            int(getattr(getattr(cfg, "training", None), "seed", 0)) + 2701,
+        )
+    )
+    pair_mode = _resolve_maizels_logging_pair_mode(cfg, maizels_cfg)
+    cache_key = (
+        str(dataset_location),
+        str(getattr(cfg.problem, "source_time", "D3")),
+        str(getattr(cfg.problem, "target_time", "D8")),
+        pair_mode,
+        n_val,
+        seed,
+        int(getattr(cfg.training, "seed", 0)),
+        int(getattr(cfg.problem, "maizels_holdout_seed", 701)),
+        float(getattr(cfg.problem, "maizels_holdout_fraction", 0.0)),
+        int(getattr(cfg.problem, "maizels_holdout_n", 0)),
+    )
+    if cache_key in _MAIZELS_VALIDATION_CACHE:
+        return _MAIZELS_VALIDATION_CACHE[cache_key]
+
+    pairs, _ = maizels.make_heldout_pair_pool(
+        cfg,
+        n_val,
+        dataset_location=dataset_location,
+        pair_mode=pair_mode,
+        seed=seed,
+    )
+    x0 = jnp.asarray(pairs["x0"], dtype=jnp.float32)
+    x1 = jnp.asarray(pairs["x1"], dtype=jnp.float32)
+    label = jnp.asarray(pairs["label"])
+    bs = x0.shape[0]
+    diag_bs, offdiag_bs = loss_args._get_diag_offdiag_bs(cfg, bs)
+
+    keys = jax.random.split(jax.random.PRNGKey(seed + 31), 5)
+    if offdiag_bs == 0:
+        sbatch, tbatch = loss_args._sample_diagonal(
+            keys[0], bs, cfg.training.tmin, cfg.training.tmax
+        )
+    else:
+        s_diag, t_diag = loss_args._sample_diagonal(
+            keys[0], diag_bs, cfg.training.tmin, cfg.training.tmax
+        )
+        s_offdiag, t_offdiag = loss_args._sample_triangle(
+            keys[1],
+            keys[2],
+            offdiag_bs,
+            cfg.training.tmin,
+            cfg.training.tmax,
+        )
+        sbatch, tbatch = loss_args._concat_diag_offdiag(
+            s_diag,
+            t_diag,
+            s_offdiag,
+            t_offdiag,
+        )
+
+    if cfg.training.psd_type == "midpoint":
+        ubatch = 0.5 * (sbatch + tbatch)
+        hbatch = None
+    elif cfg.training.psd_type == "uniform":
+        hbatch = jax.random.uniform(keys[3], shape=(bs,), minval=0.0, maxval=1.0)
+        ubatch = hbatch * sbatch + (1 - hbatch) * tbatch
+    elif cfg.training.psd_type is None:
+        ubatch = None
+        hbatch = None
+    else:
+        raise ValueError(f"Unknown psd_type: {cfg.training.psd_type}")
+
+    batch = {
+        "x0": x0,
+        "x1": x1,
+        "label": label,
+        "s": sbatch,
+        "t": tbatch,
+        "u": ubatch,
+        "h": hbatch,
+        "dropout_keys": jax.random.split(keys[4], bs),
+    }
+    _MAIZELS_VALIDATION_CACHE[cache_key] = batch
+    return batch
+
+
+def compute_maizels_validation_metrics(
+    cfg: config_dict.ConfigDict,
+    statics: state_utils.StaticArgs,
+    train_state: state_utils.EMATrainState,
+    step: jnp.ndarray,
+) -> Dict[str, float]:
+    """Evaluate the current objective on held-out Maizels D3/D8 endpoint pairs."""
+    if getattr(cfg.problem, "target", None) != "maizels_pca50":
+        return {}
+    maizels_cfg = getattr(cfg.logging, "maizels", None)
+    if maizels_cfg is None or not bool(getattr(maizels_cfg, "validation_enabled", False)):
+        return {}
+
+    batch = _maizels_validation_batch(cfg)
+    params = dist_utils.safe_unreplicate(cfg, train_state.params)
+    teacher_params = dist_utils.safe_unreplicate(
+        cfg, loss_args.select_teacher_params(cfg, train_state)
+    )
+    constraint_scale = loss_args.compute_constraint_anneal_scale(cfg, step)
+    stage2_scale = loss_args.compute_two_stage_scale(cfg, step)
+    bs = batch["x0"].shape[0]
+    constraint_scale_batch = jnp.full((bs,), constraint_scale, dtype=jnp.float32)
+    stage2_scale_batch = jnp.full((bs,), stage2_scale, dtype=jnp.float32)
+
+    val_loss = statics.loss(
+        params,
+        teacher_params,
+        batch["x0"],
+        batch["x1"],
+        batch["label"],
+        batch["s"],
+        batch["t"],
+        batch["u"],
+        batch["h"],
+        batch["dropout_keys"],
+        constraint_scale_batch,
+        stage2_scale_batch,
+    )
+    return {"validation_loss": val_loss}
+
+
 def log_metrics(
     cfg: config_dict.ConfigDict,
     statics: state_utils.StaticArgs,
@@ -3104,6 +3172,14 @@ def log_metrics(
     except Exception as e:
         print(f"Warning: Constraint metric computation failed: {e}")
 
+    # Log held-out Maizels validation loss if configured.
+    try:
+        metrics.update(
+            compute_maizels_validation_metrics(cfg, statics, train_state, step)
+        )
+    except Exception as e:
+        print(f"Warning: Maizels validation metric computation failed: {e}")
+
     # Log endpoint distribution matching errors if configured.
     try:
         metrics.update(
@@ -3123,16 +3199,6 @@ def log_metrics(
             )
     except Exception as e:
         print(f"Warning: Forbidden-box metric computation failed: {e}")
-
-    # Log stage-2 schedule scale when present.
-    try:
-        data_args = loss_fn_args[1:]
-        (_, _, _, _, _, _, _, _, _, stage2_scale_batch) = (
-            dist_utils.unreplicate_loss_fn_args(cfg, data_args)
-        )
-        metrics["stage/two_stage_scale"] = jnp.mean(jnp.squeeze(stage2_scale_batch))
-    except Exception:
-        pass
 
     # Compute FID on-the-fly if enabled and at the right frequency
     if (
