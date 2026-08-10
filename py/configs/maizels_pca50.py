@@ -90,7 +90,7 @@ def get_config(
     config.optimization.bs = 4096
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
-    config.optimization.clip = 1.0
+    config.optimization.clip = 10.0
     config.optimization.total_steps = 10_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
@@ -157,17 +157,17 @@ def get_config(
     config.logging.fid_batch_size = None
     config.logging.fid_n_steps_flow = None
     config.logging.fid_ema_factor = None
-    config.logging.visual_ema_factor = None
+    config.logging.visual_ema_factor = 0.999
 
     config.constraints = ml_collections.ConfigDict()
     config.constraints.enabled = use_lineage_constraint
     config.constraints.type = "maizels_lineage_path"
     config.constraints.path_mode = "direct"
     config.constraints.path_n_times = 10
-    config.constraints.euler_steps = 25
-    config.constraints.constraint_batch_size = 256
+    config.constraints.euler_steps = 10
+    config.constraints.constraint_batch_size = 1024
     config.constraints.constraint_batch_fraction = 1.0
-    config.constraints.weight = 100.0
+    config.constraints.weight = 1000.0
     config.constraints.lambda_start = 0.0
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
@@ -178,7 +178,7 @@ def get_config(
     config.network = ml_collections.ConfigDict()
     config.network.network_type = "mlp"
     config.network.n_hidden = 4
-    config.network.n_neurons = 512
+    config.network.n_neurons = 1024
     config.network.output_dim = 50
     config.network.act = "gelu"
     config.network.use_residual = False

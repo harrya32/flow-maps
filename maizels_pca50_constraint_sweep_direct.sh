@@ -10,9 +10,8 @@ DATASET_LOCATION="${DATASET_LOCATION:-/mnt/pdata/hmka3/flow-maps/celltype_classi
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/pdata/hmka3/flow-maps/outputs/maizels_pca50_constraint_sweep}"
 SEEDS="${SEEDS:-1 2 3 4 5}"
 
-MODE_IDS=(2 3)
+MODE_IDS=(4)
 MODE_NAMES=(
-  "bio_prior_flow_map_constrained_direct_w100"
   "bio_prior_flow_map_constrained_direct_w1000"
 )
 
