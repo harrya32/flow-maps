@@ -74,6 +74,10 @@ def get_config(
     config.problem.maizels_holdout_n = 0
     config.problem.maizels_holdout_seed = 701
     config.problem.maizels_pair_mode = pair_mode
+    config.problem.lineage_transition_mode = os.getenv(
+        "MAIZELS_LINEAGE_TRANSITION_MODE",
+        "descendant",
+    )
     config.problem.classifier_path = (
         "/mnt/pdata/hmka3/flow-maps/"
         "celltype_classifier_pca50.pt"
@@ -133,6 +137,7 @@ def get_config(
     config.logging.maizels.prob_threshold = config.problem.classifier_prob_threshold
     config.logging.maizels.margin_threshold = config.problem.classifier_margin_threshold
     config.logging.maizels.classifier_batch_size = config.problem.classifier_batch_size
+    config.logging.maizels.lineage_transition_mode = "same_as_problem"
     config.logging.maizels.validation_enabled = True
     config.logging.maizels.validation_bs = 1024
     config.logging.maizels.validation_seed = 2701
@@ -177,6 +182,7 @@ def get_config(
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
     config.constraints.classifier_temperature = 1.0
+    config.constraints.lineage_transition_mode = "same_as_problem"
     config.constraints.stage2_only = False
 
     # Network config.

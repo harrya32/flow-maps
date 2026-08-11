@@ -695,19 +695,24 @@ def _setup_maizels_lineage_classifier(cfg: config_dict.ConfigDict):
     params, class_names, scaler_mean, scaler_scale = maizels.load_jax_classifier_params(
         classifier_path
     )
+    lineage_transition_mode = maizels.lineage_transition_mode_from_config(cfg)
     return {
         "params": params,
         "class_names": class_names,
         "scaler_mean": scaler_mean,
         "scaler_scale": scaler_scale,
         "invalid_transition": jnp.asarray(
-            maizels.lineage_invalid_transition_matrix(class_names),
+            maizels.lineage_invalid_transition_matrix(
+                class_names,
+                transition_mode=lineage_transition_mode,
+            ),
             dtype=jnp.float32,
         ),
         "canonical_to_classifier": jnp.asarray(
             maizels.classifier_index_lookup(class_names),
             dtype=jnp.int32,
         ),
+        "lineage_transition_mode": lineage_transition_mode,
     }
 
 

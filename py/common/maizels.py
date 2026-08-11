@@ -139,6 +139,73 @@ def build_reachable(edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES) -> Dict
     return reachable
 
 
+def build_direct_reachable(edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES) -> Dict[str, Set[str]]:
+    """Return reflexive one-edge reachability for strict stepwise checks."""
+    nodes = set(CLASS_NAMES)
+    for src, dst in edges:
+        nodes.add(src)
+        nodes.add(dst)
+
+    reachable: Dict[str, Set[str]] = {node: {node} for node in nodes}
+    for src, dst in edges:
+        reachable[src].add(dst)
+    return reachable
+
+
+def resolve_lineage_transition_mode(mode: str | None) -> str:
+    """Normalize lineage validity mode names."""
+    if mode in (None, "", "same_as_problem", "same_as_training"):
+        return "descendant"
+    mode = str(mode).lower()
+    if mode in (
+        "descendant",
+        "descendants",
+        "descendent",
+        "descendents",
+        "reachable",
+        "transitive",
+        "transitive_closure",
+        "closure",
+    ):
+        return "descendant"
+    if mode in (
+        "direct",
+        "direct_child",
+        "direct_children",
+        "edge",
+        "immediate",
+        "one_step",
+        "strict",
+    ):
+        return "direct"
+    raise ValueError(
+        "lineage_transition_mode must be 'descendant' or 'direct', "
+        f"got {mode!r}."
+    )
+
+
+def lineage_transition_mode_from_config(cfg, *, default: str = "descendant") -> str:
+    """Resolve the lineage transition mode shared by pair filters and constraints."""
+    problem_cfg = getattr(cfg, "problem", None)
+    mode = getattr(problem_cfg, "lineage_transition_mode", default)
+    constraints_cfg = getattr(cfg, "constraints", None)
+    constraint_mode = getattr(constraints_cfg, "lineage_transition_mode", None)
+    if constraint_mode not in (None, "", "same_as_problem", "same_as_training"):
+        mode = constraint_mode
+    return resolve_lineage_transition_mode(mode)
+
+
+def build_transition_reachable(
+    mode: str | None = "descendant",
+    edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+) -> Dict[str, Set[str]]:
+    """Return the reachability relation for the configured lineage mode."""
+    mode = resolve_lineage_transition_mode(mode)
+    if mode == "direct":
+        return build_direct_reachable(edges)
+    return build_reachable(edges)
+
+
 def endpoint_valid(src_type: str, dst_type: str, reachable: Dict[str, Set[str]]) -> bool:
     return dst_type in reachable.get(src_type, {src_type})
 
@@ -344,9 +411,12 @@ def classifier_index_lookup(class_names: Sequence[str]) -> np.ndarray:
     return np.asarray([by_name[name] for name in CLASS_NAMES], dtype=np.int32)
 
 
-def lineage_invalid_transition_matrix(class_names: Sequence[str]) -> np.ndarray:
+def lineage_invalid_transition_matrix(
+    class_names: Sequence[str],
+    transition_mode: str | None = "descendant",
+) -> np.ndarray:
     """Return matrix M where M[i, j]=1 iff i -> j is biologically invalid."""
-    reachable = build_reachable()
+    reachable = build_transition_reachable(transition_mode)
     invalid = np.zeros((len(class_names), len(class_names)), dtype=np.float32)
     for ii, src in enumerate(class_names):
         for jj, dst in enumerate(class_names):
@@ -531,10 +601,11 @@ def check_paths_with_classifier(
     margin_threshold: float,
     final_type_ids: np.ndarray | None = None,
     classifier_batch_size: int = 8192,
+    lineage_transition_mode: str | None = "descendant",
 ) -> Dict[str, np.ndarray | int]:
     """Classify path points and apply the Maizels transition prior."""
     model, class_names, scaler_mean, scaler_scale = load_classifier(classifier_path)
-    reachable = build_reachable()
+    reachable = build_transition_reachable(lineage_transition_mode)
     flat = np.asarray(paths, dtype=np.float32).reshape((-1, paths.shape[-1]))
     pred_flat, prob_flat, margin_flat = classifier_predictions(
         model,
@@ -570,6 +641,7 @@ def _check_candidate_interpolants(
     prob_threshold: float,
     margin_threshold: float,
     classifier_batch_size: int,
+    lineage_transition_mode: str,
 ) -> Dict[str, np.ndarray | int]:
     taus = np.linspace(0.0, 1.0, n_check_times + 2, dtype=np.float32)[1:-1]
     paths = np.stack([(1.0 - tau) * source_x + tau * target_x for tau in taus], axis=1)
@@ -581,6 +653,7 @@ def _check_candidate_interpolants(
         margin_threshold=margin_threshold,
         final_type_ids=target_type_ids,
         classifier_batch_size=classifier_batch_size,
+        lineage_transition_mode=lineage_transition_mode,
     )
 
 
@@ -697,7 +770,8 @@ def _make_pair_pool_from_endpoint_arrays(
     class_to_id = class_to_id_map(CLASS_NAMES)
     source_type_ids_all = np.asarray([class_to_id[str(ct)] for ct in source_types], dtype=np.int32)
     target_type_ids_all = np.asarray([class_to_id[str(ct)] for ct in target_types], dtype=np.int32)
-    reachable = build_reachable()
+    lineage_transition_mode = lineage_transition_mode_from_config(cfg)
+    endpoint_reachable = build_transition_reachable("descendant")
 
     accepted_source_idx: List[np.ndarray] = []
     accepted_target_idx: List[np.ndarray] = []
@@ -740,7 +814,11 @@ def _make_pair_pool_from_endpoint_arrays(
             stats["candidate_pairs"] += curr_chunk
             src_types = source_types[sidx]
             dst_types = target_types[tidx]
-            endpoint_ok = _filter_endpoint_pairs(src_types, dst_types, reachable)
+            endpoint_ok = _filter_endpoint_pairs(
+                src_types,
+                dst_types,
+                endpoint_reachable,
+            )
             stats["endpoint_rejected"] += int((~endpoint_ok).sum())
             if not endpoint_ok.any():
                 continue
@@ -759,6 +837,7 @@ def _make_pair_pool_from_endpoint_arrays(
                     prob_threshold=prob_threshold,
                     margin_threshold=margin_threshold,
                     classifier_batch_size=classifier_batch_size,
+                    lineage_transition_mode=lineage_transition_mode,
                 )
                 keep = np.asarray(validity["valid"], dtype=bool)
                 stats["interpolant_rejected"] += int((~keep).sum())
@@ -806,6 +885,8 @@ def _make_pair_pool_from_endpoint_arrays(
     stats["target_n"] = int(target_x.shape[0])
     stats["source_counts"] = dict(Counter(source_types.tolist()))
     stats["target_counts"] = dict(Counter(target_types.tolist()))
+    stats["endpoint_transition_mode"] = "descendant"
+    stats["lineage_transition_mode"] = lineage_transition_mode
     return paired, stats
 
 

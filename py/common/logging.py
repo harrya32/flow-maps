@@ -1252,6 +1252,7 @@ def _maizels_lineage_constraint_terms(
         logits / jnp.maximum(jnp.asarray(temperature, dtype=logits.dtype), 1e-6),
         axis=-1,
     ).reshape((paths.shape[0], paths.shape[1], -1))
+    lineage_transition_mode = maizels.lineage_transition_mode_from_config(cfg)
 
     lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
     target_type_ids = labels[:, 1] if lambda_final > 0.0 else None
@@ -1259,7 +1260,10 @@ def _maizels_lineage_constraint_terms(
         probs,
         labels[:, 0],
         jnp.asarray(
-            maizels.lineage_invalid_transition_matrix(class_names),
+            maizels.lineage_invalid_transition_matrix(
+                class_names,
+                transition_mode=lineage_transition_mode,
+            ),
             dtype=probs.dtype,
         ),
         jnp.asarray(maizels.classifier_index_lookup(class_names), dtype=jnp.int32),
@@ -1903,6 +1907,20 @@ def _log_maizels_trajectory_diagnostics(
     margin_threshold = float(getattr(maizels_cfg, "margin_threshold", 1.0))
     classifier_batch_size = int(getattr(maizels_cfg, "classifier_batch_size", 8192))
     classifier_path = getattr(cfg.problem, "classifier_path", maizels.DEFAULT_CLASSIFIER)
+    lineage_transition_mode = getattr(
+        maizels_cfg,
+        "lineage_transition_mode",
+        "same_as_problem",
+    )
+    if lineage_transition_mode in (None, "", "same_as_problem", "same_as_training"):
+        lineage_transition_mode = getattr(
+            cfg.problem,
+            "lineage_transition_mode",
+            "descendant",
+        )
+    lineage_transition_mode = maizels.resolve_lineage_transition_mode(
+        lineage_transition_mode
+    )
 
     direct_paths = _one_step_paths(
         train_state.apply_fn,
@@ -1970,6 +1988,7 @@ def _log_maizels_trajectory_diagnostics(
         margin_threshold=margin_threshold,
         final_type_ids=None,
         classifier_batch_size=classifier_batch_size,
+        lineage_transition_mode=lineage_transition_mode,
     )
     flowmap_validity = maizels.check_paths_with_classifier(
         paths=flowmap_check_paths,
@@ -1979,6 +1998,7 @@ def _log_maizels_trajectory_diagnostics(
         margin_threshold=margin_threshold,
         final_type_ids=None,
         classifier_batch_size=classifier_batch_size,
+        lineage_transition_mode=lineage_transition_mode,
     )
     euler_validity = maizels.check_paths_with_classifier(
         paths=euler_check_paths,
@@ -1988,6 +2008,7 @@ def _log_maizels_trajectory_diagnostics(
         margin_threshold=margin_threshold,
         final_type_ids=None,
         classifier_batch_size=classifier_batch_size,
+        lineage_transition_mode=lineage_transition_mode,
     )
     gt_validity = maizels.check_paths_with_classifier(
         paths=gt_check_paths,
@@ -1997,6 +2018,7 @@ def _log_maizels_trajectory_diagnostics(
         margin_threshold=margin_threshold,
         final_type_ids=target_type_ids,
         classifier_batch_size=classifier_batch_size,
+        lineage_transition_mode=lineage_transition_mode,
     )
 
     direct_valid = np.asarray(direct_validity["valid"], dtype=bool)

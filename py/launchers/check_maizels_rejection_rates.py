@@ -16,7 +16,7 @@ import csv
 import gzip
 import os
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Set, Tuple
 
@@ -36,32 +36,6 @@ DEFAULT_CLASSIFIER = (
     "/Users/harryamad/Desktop/Maizels2023aa/models/"
     "celltype_classifier_pca50.pt"
 )
-
-TRANSITION_EDGES = maizels_common.TRANSITION_EDGES
-
-
-def build_reachable(edges: Sequence[Tuple[str, str]]) -> Dict[str, Set[str]]:
-    """Return reflexive transitive closure for the transition graph."""
-    nodes = set()
-    children = defaultdict(set)
-    for src, dst in edges:
-        nodes.add(src)
-        nodes.add(dst)
-        children[src].add(dst)
-
-    reachable: Dict[str, Set[str]] = {}
-    for node in nodes:
-        seen = {node}
-        stack = list(children[node])
-        while stack:
-            curr = stack.pop()
-            if curr in seen:
-                continue
-            seen.add(curr)
-            stack.extend(children[curr])
-        reachable[node] = seen
-    return reachable
-
 
 def load_endpoint_arrays(
     dataset_path: Path,
@@ -179,7 +153,8 @@ def check_interpolants(
     target_types: np.ndarray,
     source_idx: np.ndarray,
     target_idx: np.ndarray,
-    reachable: Dict[str, Set[str]],
+    endpoint_reachable: Dict[str, Set[str]],
+    lineage_reachable: Dict[str, Set[str]],
     model: Any,
     class_names: Sequence[str],
     scaler_mean: np.ndarray,
@@ -194,7 +169,7 @@ def check_interpolants(
     dst_types = target_types[target_idx]
     endpoint_ok = np.asarray(
         [
-            endpoint_valid(str(src), str(dst), reachable)
+            endpoint_valid(str(src), str(dst), endpoint_reachable)
             for src, dst in zip(src_types, dst_types)
         ],
         dtype=bool,
@@ -259,7 +234,7 @@ def check_interpolants(
             if not confident[ii, jj]:
                 continue
             pred = str(pred_types[ii, jj])
-            if not endpoint_valid(curr, pred, reachable):
+            if not endpoint_valid(curr, pred, lineage_reachable):
                 rejected[ii] = True
                 rejected_at_checkpoint[ii] = True
                 break
@@ -268,7 +243,7 @@ def check_interpolants(
         if rejected[ii]:
             continue
         final_target = str(endpoint_target_types[ii])
-        if not endpoint_valid(curr, final_target, reachable):
+        if not endpoint_valid(curr, final_target, lineage_reachable):
             rejected[ii] = True
             rejected_at_final[ii] = True
 
@@ -305,9 +280,18 @@ def main() -> None:
     parser.add_argument("--prob_threshold", type=float, default=0.85)
     parser.add_argument("--margin_threshold", type=float, default=1.0)
     parser.add_argument("--classifier_batch_size", type=int, default=8192)
+    parser.add_argument(
+        "--lineage_transition_mode",
+        default="descendant",
+        help="'descendant' keeps transitive reachability; 'direct' allows only same-type or one-edge transitions.",
+    )
     args = parser.parse_args()
 
-    reachable = build_reachable(TRANSITION_EDGES)
+    lineage_transition_mode = maizels_common.resolve_lineage_transition_mode(
+        args.lineage_transition_mode
+    )
+    endpoint_reachable = maizels_common.build_transition_reachable("descendant")
+    lineage_reachable = maizels_common.build_transition_reachable(lineage_transition_mode)
     source_x, source_types, target_x, target_types = load_endpoint_arrays(
         args.dataset,
         args.source_time,
@@ -317,8 +301,8 @@ def main() -> None:
 
     missing_types = (
         set(source_types.tolist()) | set(target_types.tolist())
-    ) - set(reachable.keys())
-    missing_classes = set(class_names) - set(reachable.keys())
+    ) - set(endpoint_reachable.keys())
+    missing_classes = set(class_names) - set(lineage_reachable.keys())
     if missing_types:
         raise KeyError(f"Endpoint cell types missing from transition graph: {sorted(missing_types)}")
     if missing_classes:
@@ -329,7 +313,7 @@ def main() -> None:
     exact_endpoint_valid, exact_endpoint_total = exact_endpoint_counts(
         source_types,
         target_types,
-        reachable,
+        endpoint_reachable,
     )
     exact_endpoint_rejected = exact_endpoint_total - exact_endpoint_valid
 
@@ -346,7 +330,8 @@ def main() -> None:
         target_types=target_types,
         source_idx=source_idx,
         target_idx=target_idx,
-        reachable=reachable,
+        endpoint_reachable=endpoint_reachable,
+        lineage_reachable=lineage_reachable,
         model=model,
         class_names=class_names,
         scaler_mean=scaler_mean,
@@ -361,9 +346,11 @@ def main() -> None:
     print(f"Classifier: {args.classifier}")
     print(f"Source time: {args.source_time} (n={source_x.shape[0]})")
     print(f"Target time: {args.target_time} (n={target_x.shape[0]})")
+    print("Endpoint transition mode: descendant")
+    print(f"Path/checkpoint transition mode: {lineage_transition_mode}")
     print(f"Source counts: {dict(sorted(source_counts.items()))}")
     print(f"Target counts: {dict(sorted(target_counts.items()))}")
-    print_reachable(reachable)
+    print_reachable(lineage_reachable)
     print()
     print("Endpoint/coupling filter, exact over all independent source-target pairs:")
     print(f"  total pairs: {exact_endpoint_total}")
