@@ -8,7 +8,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 CFG_PATH="${CFG_PATH:-configs.maizels_pca50_constraint_sweep}"
 DATASET_LOCATION="${DATASET_LOCATION:-/mnt/pdata/hmka3/flow-maps/celltype_classification_pca50_dataset.csv.gz}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/pdata/hmka3/flow-maps/outputs/maizels_pca50_constraint_sweep}"
-SEEDS="${SEEDS:-1 2 3 4 5}"
+SEEDS="${SEEDS:-2 3 4 5}"
 
 MODE_IDS=(4)
 MODE_NAMES=(

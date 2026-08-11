@@ -50,6 +50,7 @@ def get_config(
     config.training.seed = 1
     config.training.ema_facs = [0.999, 0.9999]
     config.training.ndevices = jax.device_count()
+    #config.training.teacher_ema_factor = 0.999
 
     # Problem config.
     config.problem = ml_collections.ConfigDict()
@@ -78,7 +79,7 @@ def get_config(
         "celltype_classifier_pca50.pt"
     )
     config.problem.n_interpolant_check_times = 50
-    config.problem.classifier_prob_threshold = 0.5
+    config.problem.classifier_prob_threshold = 0
     config.problem.classifier_margin_threshold = 0
     config.problem.classifier_batch_size = 8192
     config.problem.rejection_chunk_size = 50_000
@@ -91,7 +92,7 @@ def get_config(
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 10.0
-    config.optimization.total_steps = 10_000
+    config.optimization.total_steps = 50_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
@@ -182,7 +183,7 @@ def get_config(
     config.network = ml_collections.ConfigDict()
     config.network.network_type = "mlp"
     config.network.n_hidden = 4
-    config.network.n_neurons = 1024
+    config.network.n_neurons = 256
     config.network.output_dim = 50
     config.network.act = "gelu"
     config.network.use_residual = False

@@ -44,8 +44,8 @@ VARIANTS = [
         "base_slurm_id": 4,
         "constraints_enabled": True,
         "path_mode": "direct",
-        "weight": 100.0,
-        "diag_fraction": 0.7
+        "weight": 1000.0,
+        "diag_fraction": 0.75
     },
     {
         "mode": "bio_prior_flow_map_constrained_direct_w1000_diag_085",
