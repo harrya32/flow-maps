@@ -64,6 +64,14 @@ VARIANTS = [
         "weight": 10.0,
         "diag_fraction": 0.8
     },
+    {
+        "mode": "bio_prior_flow_map_constrained_loss_points_nll_w1000",
+        "base_slurm_id": 4,
+        "constraints_enabled": True,
+        "path_mode": "loss_points_nll",
+        "weight": 1000.0,
+        "loss_point_entropy_weight": 0.01,
+    },
 ]
 
 
@@ -76,6 +84,9 @@ def get_config(slurm_id: int, dataset_location: str = "", output_folder: str = "
     cfg.constraints.enabled = variant["constraints_enabled"]
     cfg.constraints.path_mode = variant["path_mode"]
     cfg.constraints.weight = variant["weight"]
+    cfg.constraints.loss_point_entropy_weight = variant.get(
+        "loss_point_entropy_weight", 0.0
+    )
     cfg.optimization.diag_fraction = variant.get("diag_fraction", 0.75)
 
     mode = variant["mode"]

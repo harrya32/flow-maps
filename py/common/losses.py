@@ -63,11 +63,18 @@ def uses_flow_map_box_loss_points(cfg: config_dict.ConfigDict) -> bool:
     return uses_box_loss_points(cfg) and _box_constraint_mode(cfg) == "flow_map"
 
 
+def _maizels_loss_point_mode(cfg: config_dict.ConfigDict):
+    mode = getattr(cfg.constraints, "path_mode", "flowmap")
+    if mode in ("loss_points", "loss_points_nll"):
+        return mode
+    return None
+
+
 def uses_maizels_loss_points(cfg: config_dict.ConfigDict) -> bool:
     return (
         has_constraint(cfg)
         and getattr(cfg.constraints, "type", None) == "maizels_lineage_path"
-        and getattr(cfg.constraints, "path_mode", "flowmap") == "loss_points"
+        and _maizels_loss_point_mode(cfg) is not None
     )
 
 
@@ -793,11 +800,23 @@ def maizels_lineage_loss_point_constraint(
 
     lambda_start = float(getattr(cfg.constraints, "lambda_start", 0.0))
     lambda_transition = float(getattr(cfg.constraints, "lambda_transition", 1.0))
-    loss = cfg.constraints.weight * (
-        lambda_start * terms["start_invalid_loss"]
-        + lambda_transition * terms["transition_invalid_loss"]
-        + lambda_final * terms["final_invalid_loss"]
-    )
+    mode = _maizels_loss_point_mode(cfg)
+    if mode == "loss_points_nll":
+        entropy_weight = float(
+            getattr(cfg.constraints, "loss_point_entropy_weight", 0.0)
+        )
+        loss = cfg.constraints.weight * (
+            lambda_start * terms["start_valid_nll_loss"]
+            + lambda_transition * terms["transition_valid_nll_loss"]
+            + lambda_final * terms["final_valid_nll_loss"]
+            + entropy_weight * terms["final_entropy_loss"]
+        )
+    else:
+        loss = cfg.constraints.weight * (
+            lambda_start * terms["start_invalid_loss"]
+            + lambda_transition * terms["transition_invalid_loss"]
+            + lambda_final * terms["final_invalid_loss"]
+        )
     return jnp.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=1e6)
 
 
@@ -1906,7 +1925,8 @@ def setup_loss(
                 if uses_maizels_loss_points(cfg):
                     if cfg.training.loss_type != "lsd":
                         raise ValueError(
-                            "constraints.path_mode='loss_points' requires LSD loss"
+                            "constraints.path_mode='loss_points' or "
+                            "'loss_points_nll' requires LSD loss"
                         )
                 else:
                     total_loss += constraint_scale * maizels_lineage_path_constraint(

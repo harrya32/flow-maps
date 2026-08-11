@@ -435,6 +435,8 @@ def lineage_soft_terms_from_probs(
     source_cls = jnp.take(canonical_to_classifier, source_type_ids.astype(jnp.int32))
     source_probs = jax.nn.one_hot(source_cls, probs.shape[-1], dtype=probs.dtype)
     invalid_transition = invalid_transition.astype(probs.dtype)
+    valid_transition = 1.0 - invalid_transition
+    eps = jnp.asarray(1e-6, dtype=probs.dtype)
 
     start_invalid = jnp.einsum(
         "bi,ij,bj->b",
@@ -442,6 +444,13 @@ def lineage_soft_terms_from_probs(
         invalid_transition,
         probs[:, 0, :],
     )
+    start_valid = jnp.einsum(
+        "bi,ij,bj->b",
+        source_probs,
+        valid_transition,
+        probs[:, 0, :],
+    )
+    start_valid_nll = -jnp.log(jnp.clip(start_valid, eps, 1.0))
     if probs.shape[1] > 1:
         transition_invalid = jnp.einsum(
             "bti,ij,btj->bt",
@@ -449,13 +458,30 @@ def lineage_soft_terms_from_probs(
             invalid_transition,
             probs[:, 1:, :],
         )
+        transition_valid = jnp.einsum(
+            "bti,ij,btj->bt",
+            probs[:, :-1, :],
+            valid_transition,
+            probs[:, 1:, :],
+        )
         transition_invalid_per_path = jnp.mean(transition_invalid, axis=1)
+        transition_valid_nll = -jnp.log(jnp.clip(transition_valid, eps, 1.0))
+        transition_valid_nll_per_path = jnp.mean(transition_valid_nll, axis=1)
+        transition_valid_per_path = jnp.mean(transition_valid, axis=1)
     else:
         transition_invalid = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
+        transition_valid = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
         transition_invalid_per_path = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
+        transition_valid_nll = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
+        transition_valid_nll_per_path = jnp.zeros(
+            (probs.shape[0],), dtype=probs.dtype
+        )
+        transition_valid_per_path = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
 
     if target_type_ids is None:
         final_invalid = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
+        final_valid = jnp.ones((probs.shape[0],), dtype=probs.dtype)
+        final_valid_nll = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
     else:
         target_cls = jnp.take(canonical_to_classifier, target_type_ids.astype(jnp.int32))
         target_probs = jax.nn.one_hot(target_cls, probs.shape[-1], dtype=probs.dtype)
@@ -465,6 +491,18 @@ def lineage_soft_terms_from_probs(
             invalid_transition,
             target_probs,
         )
+        final_valid = jnp.einsum(
+            "bi,ij,bj->b",
+            probs[:, -1, :],
+            valid_transition,
+            target_probs,
+        )
+        final_valid_nll = -jnp.log(jnp.clip(final_valid, eps, 1.0))
+
+    final_entropy = -jnp.sum(
+        probs[:, -1, :] * jnp.log(jnp.clip(probs[:, -1, :], eps, 1.0)),
+        axis=-1,
+    )
 
     return {
         "start_invalid_loss": jnp.mean(start_invalid),
@@ -474,12 +512,26 @@ def lineage_soft_terms_from_probs(
             start_invalid + transition_invalid_per_path + final_invalid
         ),
         "start_invalid_mass": jnp.mean(start_invalid),
+        "start_valid_mass": jnp.mean(start_valid),
+        "start_valid_nll_loss": jnp.mean(start_valid_nll),
         "transition_invalid_mass": (
             jnp.mean(transition_invalid)
             if transition_invalid.size > 0
             else jnp.asarray(0.0, dtype=probs.dtype)
         ),
+        "transition_valid_mass": (
+            jnp.mean(transition_valid)
+            if transition_valid.size > 0
+            else jnp.asarray(0.0, dtype=probs.dtype)
+        ),
+        "transition_valid_nll_loss": jnp.mean(transition_valid_nll_per_path),
         "final_invalid_mass": jnp.mean(final_invalid),
+        "final_valid_mass": jnp.mean(final_valid),
+        "final_valid_nll_loss": jnp.mean(final_valid_nll),
+        "path_valid_nll_loss": jnp.mean(
+            start_valid_nll + transition_valid_nll_per_path + final_valid_nll
+        ),
+        "final_entropy_loss": jnp.mean(final_entropy),
     }
 
 

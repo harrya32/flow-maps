@@ -182,6 +182,7 @@ def get_config(
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
     config.constraints.classifier_temperature = 1.0
+    config.constraints.loss_point_entropy_weight = 0.0
     config.constraints.lineage_transition_mode = "same_as_problem"
     config.constraints.stage2_only = False
 

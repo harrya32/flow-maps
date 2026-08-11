@@ -2808,7 +2808,8 @@ def compute_constraint_metrics(
     if ctype == "maizels_lineage_path":
         params = dist_utils.safe_unreplicate(cfg, train_state.params)
         constraint_bs = int(getattr(cfg.constraints, "constraint_batch_size", 0))
-        if getattr(cfg.constraints, "path_mode", "flowmap") == "loss_points":
+        path_mode = getattr(cfg.constraints, "path_mode", "flowmap")
+        if path_mode in ("loss_points", "loss_points_nll"):
             if statics is None or getattr(statics, "interp", None) is None:
                 raise ValueError(
                     "maizels_lineage_path loss_points metrics require statics.interp"
@@ -2877,13 +2878,33 @@ def compute_constraint_metrics(
         lambda_start = float(getattr(cfg.constraints, "lambda_start", 1.0))
         lambda_transition = float(getattr(cfg.constraints, "lambda_transition", 1.0))
         lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
-        weighted = constraint_scale * cfg.constraints.weight * (
-            lambda_start * terms["start_invalid_loss"]
-            + lambda_transition * terms["transition_invalid_loss"]
-            + lambda_final * terms["final_invalid_loss"]
-        )
+        if path_mode == "loss_points_nll":
+            entropy_weight = float(
+                getattr(cfg.constraints, "loss_point_entropy_weight", 0.0)
+            )
+            weighted = constraint_scale * cfg.constraints.weight * (
+                lambda_start * terms["start_valid_nll_loss"]
+                + lambda_transition * terms["transition_valid_nll_loss"]
+                + lambda_final * terms["final_valid_nll_loss"]
+                + entropy_weight * terms["final_entropy_loss"]
+            )
+        else:
+            weighted = constraint_scale * cfg.constraints.weight * (
+                lambda_start * terms["start_invalid_loss"]
+                + lambda_transition * terms["transition_invalid_loss"]
+                + lambda_final * terms["final_invalid_loss"]
+            )
 
-        return {"constraint/lineage_total": weighted}
+        return {
+            "constraint/lineage_total": weighted,
+            "constraint/lineage_transition_invalid": terms[
+                "transition_invalid_loss"
+            ],
+            "constraint/lineage_transition_valid_nll": terms[
+                "transition_valid_nll_loss"
+            ],
+            "constraint/lineage_final_entropy": terms["final_entropy_loss"],
+        }
 
     return {}
 
