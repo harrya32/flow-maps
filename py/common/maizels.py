@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
+import json
+import os
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Set, Tuple
@@ -721,6 +724,166 @@ def _sample_pair_indices(
     )
 
 
+def _hash_array(array: np.ndarray) -> str:
+    hasher = hashlib.sha256()
+    array = np.asarray(array)
+    hasher.update(str(array.shape).encode("utf-8"))
+    hasher.update(str(array.dtype).encode("utf-8"))
+    if array.dtype == object:
+        for item in array.tolist():
+            hasher.update(str(item).encode("utf-8"))
+            hasher.update(b"\0")
+    else:
+        hasher.update(np.ascontiguousarray(array).view(np.uint8))
+    return hasher.hexdigest()
+
+
+def _file_fingerprint(path: Path) -> Dict[str, Any]:
+    path = path.expanduser().resolve()
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return {"path": str(path), "exists": False}
+    return {
+        "path": str(path),
+        "exists": True,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+def _ot_cache_metadata(
+    cfg,
+    source_x: np.ndarray,
+    source_types: np.ndarray,
+    target_x: np.ndarray,
+    target_types: np.ndarray,
+    *,
+    pair_mode: str,
+    lineage_transition_mode: str,
+) -> Dict[str, Any]:
+    metadata = {
+        "cache_version": str(getattr(cfg.problem, "ot_cache_version", "v1")),
+        "pair_mode": str(pair_mode),
+        "source_time": str(getattr(cfg.problem, "source_time", "D3")),
+        "target_time": str(getattr(cfg.problem, "target_time", "D8")),
+        "dataset_location": str(getattr(cfg.problem, "dataset_location", "")),
+        "endpoint_transition_mode": "descendant",
+        "lineage_transition_mode": str(lineage_transition_mode),
+        "cost": "whitened_sqeuclidean_global_std_v1",
+        "ot_mass_tolerance": float(getattr(cfg.problem, "ot_mass_tolerance", 1e-12)),
+        "ot_drop_orphan_cells": bool(
+            getattr(cfg.problem, "ot_drop_orphan_cells", True)
+        ),
+        "source_x_hash": _hash_array(source_x.astype(np.float32, copy=False)),
+        "target_x_hash": _hash_array(target_x.astype(np.float32, copy=False)),
+        "source_types_hash": _hash_array(source_types.astype(object, copy=False)),
+        "target_types_hash": _hash_array(target_types.astype(object, copy=False)),
+        "source_n": int(source_x.shape[0]),
+        "target_n": int(target_x.shape[0]),
+        "dim": int(source_x.shape[1]),
+    }
+    if pair_mode == "ot_endpoint_interpolant":
+        classifier_path = resolve_classifier_path(
+            getattr(cfg.problem, "classifier_path", None)
+        )
+        metadata.update(
+            {
+                "classifier": _file_fingerprint(classifier_path),
+                "n_interpolant_check_times": int(
+                    getattr(cfg.problem, "n_interpolant_check_times", 5)
+                ),
+                "classifier_prob_threshold": float(
+                    getattr(cfg.problem, "classifier_prob_threshold", 0.85)
+                ),
+                "classifier_margin_threshold": float(
+                    getattr(cfg.problem, "classifier_margin_threshold", 1.0)
+                ),
+            }
+        )
+    return metadata
+
+
+def _ot_cache_path(cfg, metadata: Dict[str, Any]) -> Path | None:
+    if not bool(getattr(cfg.problem, "ot_cache_enabled", True)):
+        return None
+
+    cache_dir = str(getattr(cfg.problem, "ot_cache_dir", "") or "")
+    if cache_dir:
+        root = Path(cache_dir).expanduser()
+    else:
+        output_folder = str(getattr(getattr(cfg, "logging", None), "output_folder", "") or "")
+        if output_folder:
+            root = Path(output_folder).expanduser() / "maizels_ot_cache"
+        else:
+            dataset_path = resolve_dataset_path(getattr(cfg.problem, "dataset_location", None))
+            root = dataset_path.parent / ".maizels_ot_cache"
+
+    key = hashlib.sha256(
+        json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    version = str(metadata.get("cache_version", "v1")).replace(os.sep, "_")
+    return root / f"maizels_exact_ot_{version}_{key}.npz"
+
+
+def _load_cached_ot_plan(cache_path: Path):
+    if not cache_path.exists():
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as raw:
+            source_idx = raw["source_idx"].astype(np.int64, copy=False)
+            target_idx = raw["target_idx"].astype(np.int64, copy=False)
+            mass = raw["mass"].astype(np.float64, copy=False)
+            stats = json.loads(str(raw["stats_json"]))
+    except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Ignoring unreadable Maizels OT cache {cache_path}: {exc}")
+        return None
+
+    mass_sum = float(mass.sum())
+    if mass_sum <= 0.0:
+        print(f"Ignoring empty Maizels OT cache {cache_path}.")
+        return None
+    mass = mass / mass_sum
+    stats["ot_cache_hit"] = True
+    stats["ot_cache_path"] = str(cache_path)
+    return source_idx, target_idx, mass, stats
+
+
+def _save_cached_ot_plan(
+    cache_path: Path,
+    source_idx: np.ndarray,
+    target_idx: np.ndarray,
+    mass: np.ndarray,
+    stats: Dict[str, Any],
+    metadata: Dict[str, Any],
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_name(cache_path.name + ".tmp")
+    stats_to_save = dict(stats)
+    stats_to_save["ot_cache_hit"] = False
+    stats_to_save["ot_cache_path"] = str(cache_path)
+    with open(tmp_path, "wb") as f:
+        np.savez_compressed(
+            f,
+            source_idx=source_idx.astype(np.int64, copy=False),
+            target_idx=target_idx.astype(np.int64, copy=False),
+            mass=mass.astype(np.float64, copy=False),
+            stats_json=json.dumps(stats_to_save, sort_keys=True),
+            metadata_json=json.dumps(metadata, sort_keys=True),
+        )
+    os.replace(tmp_path, cache_path)
+
+
+def _progress_bar(total: int, desc: str, enabled: bool):
+    if not enabled:
+        return None
+    try:
+        from tqdm.auto import tqdm
+    except ModuleNotFoundError:
+        return None
+    return tqdm(total=total, desc=desc, unit="pair")
+
+
 def _type_index_groups(types: np.ndarray) -> Dict[str, np.ndarray]:
     groups = {}
     for cell_type in np.unique(types):
@@ -805,58 +968,73 @@ def _collect_masked_ot_edges(
     edge_source_idx: List[np.ndarray] = []
     edge_target_idx: List[np.ndarray] = []
     edge_costs: List[np.ndarray] = []
+    total_pairs = int(source_x.shape[0] * target_x.shape[0])
     stats = {
-        "candidate_pairs": int(source_x.shape[0] * target_x.shape[0]),
+        "candidate_pairs": total_pairs,
         "endpoint_rejected": 0,
         "interpolant_rejected": 0,
         "accepted_pairs": 0,
     }
 
-    for src_type, sidx_group in source_groups.items():
-        for dst_type, tidx_group in target_groups.items():
-            n_block = int(sidx_group.shape[0] * tidx_group.shape[0])
-            if n_block == 0:
-                continue
-            if not endpoint_valid(src_type, dst_type, endpoint_reachable):
-                stats["endpoint_rejected"] += n_block
-                continue
+    progress = _progress_bar(
+        total_pairs,
+        "Maizels OT hard mask",
+        bool(getattr(cfg.problem, "ot_progress_enabled", True)),
+    )
+    try:
+        for src_type, sidx_group in source_groups.items():
+            for dst_type, tidx_group in target_groups.items():
+                n_block = int(sidx_group.shape[0] * tidx_group.shape[0])
+                if n_block == 0:
+                    continue
+                if not endpoint_valid(src_type, dst_type, endpoint_reachable):
+                    stats["endpoint_rejected"] += n_block
+                    if progress is not None:
+                        progress.update(n_block)
+                    continue
 
-            n_target_group = tidx_group.shape[0]
-            for start in range(0, n_block, chunk_size):
-                end = min(start + chunk_size, n_block)
-                flat = np.arange(start, end, dtype=np.int64)
-                source_idx = sidx_group[flat // n_target_group]
-                target_idx = tidx_group[flat % n_target_group]
+                n_target_group = tidx_group.shape[0]
+                for start in range(0, n_block, chunk_size):
+                    end = min(start + chunk_size, n_block)
+                    flat = np.arange(start, end, dtype=np.int64)
+                    source_idx = sidx_group[flat // n_target_group]
+                    target_idx = tidx_group[flat % n_target_group]
 
-                keep = np.ones(source_idx.shape[0], dtype=bool)
-                if pair_mode == "ot_endpoint_interpolant":
-                    validity = _check_candidate_interpolants(
-                        source_x=source_x[source_idx],
-                        source_type_ids=source_type_ids_all[source_idx],
-                        target_x=target_x[target_idx],
-                        target_type_ids=target_type_ids_all[target_idx],
-                        classifier_path=classifier_path,
-                        n_check_times=n_check_times,
-                        prob_threshold=prob_threshold,
-                        margin_threshold=margin_threshold,
-                        classifier_batch_size=classifier_batch_size,
-                        lineage_transition_mode=lineage_transition_mode,
-                    )
-                    keep = np.asarray(validity["valid"], dtype=bool)
-                    stats["interpolant_rejected"] += int((~keep).sum())
+                    keep = np.ones(source_idx.shape[0], dtype=bool)
+                    if pair_mode == "ot_endpoint_interpolant":
+                        validity = _check_candidate_interpolants(
+                            source_x=source_x[source_idx],
+                            source_type_ids=source_type_ids_all[source_idx],
+                            target_x=target_x[target_idx],
+                            target_type_ids=target_type_ids_all[target_idx],
+                            classifier_path=classifier_path,
+                            n_check_times=n_check_times,
+                            prob_threshold=prob_threshold,
+                            margin_threshold=margin_threshold,
+                            classifier_batch_size=classifier_batch_size,
+                            lineage_transition_mode=lineage_transition_mode,
+                        )
+                        keep = np.asarray(validity["valid"], dtype=bool)
+                        stats["interpolant_rejected"] += int((~keep).sum())
 
-                if keep.any():
-                    _append_ot_edges(
-                        edge_source_idx,
-                        edge_target_idx,
-                        edge_costs,
-                        source_x,
-                        target_x,
-                        source_idx[keep],
-                        target_idx[keep],
-                        cost_scale,
-                    )
-                    stats["accepted_pairs"] += int(keep.sum())
+                    if keep.any():
+                        _append_ot_edges(
+                            edge_source_idx,
+                            edge_target_idx,
+                            edge_costs,
+                            source_x,
+                            target_x,
+                            source_idx[keep],
+                            target_idx[keep],
+                            cost_scale,
+                        )
+                        stats["accepted_pairs"] += int(keep.sum())
+
+                    if progress is not None:
+                        progress.update(end - start)
+    finally:
+        if progress is not None:
+            progress.close()
 
     if not edge_source_idx:
         raise RuntimeError(
@@ -969,49 +1147,135 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
     lineage_transition_mode = lineage_transition_mode_from_config(cfg)
     endpoint_reachable = build_transition_reachable("descendant")
     mass_tol = float(getattr(cfg.problem, "ot_mass_tolerance", 1e-12))
-
-    source_idx_edges, target_idx_edges, costs, stats = _collect_masked_ot_edges(
+    verbose = bool(getattr(cfg.problem, "ot_verbose", True))
+    metadata = _ot_cache_metadata(
         cfg,
         source_x,
         source_types,
-        source_type_ids_all,
         target_x,
         target_types,
-        target_type_ids_all,
         pair_mode=pair_mode,
-        endpoint_reachable=endpoint_reachable,
         lineage_transition_mode=lineage_transition_mode,
     )
-    source_has_edge = np.bincount(
-        source_idx_edges,
-        minlength=source_x.shape[0],
-    ) > 0
-    target_has_edge = np.bincount(
-        target_idx_edges,
-        minlength=target_x.shape[0],
-    ) > 0
-    if not source_has_edge.all() or not target_has_edge.all():
-        raise RuntimeError(
-            "Masked Maizels OT is infeasible before solving: "
-            f"{int((~source_has_edge).sum())} source cells and "
-            f"{int((~target_has_edge).sum())} target cells have no valid edges."
+    cache_path = _ot_cache_path(cfg, metadata)
+    cached = _load_cached_ot_plan(cache_path) if cache_path is not None else None
+
+    if cached is not None:
+        positive_source_idx, positive_target_idx, positive_mass, stats = cached
+        if verbose:
+            print(
+                "Loaded cached Maizels exact OT plan: "
+                f"{cache_path} "
+                f"(positive_edges={positive_mass.shape[0]})"
+            )
+    else:
+        if verbose and cache_path is not None:
+            print(f"Maizels exact OT cache miss: {cache_path}")
+
+        source_idx_edges, target_idx_edges, costs, stats = _collect_masked_ot_edges(
+            cfg,
+            source_x,
+            source_types,
+            source_type_ids_all,
+            target_x,
+            target_types,
+            target_type_ids_all,
+            pair_mode=pair_mode,
+            endpoint_reachable=endpoint_reachable,
+            lineage_transition_mode=lineage_transition_mode,
         )
+        source_has_edge = np.bincount(
+            source_idx_edges,
+            minlength=source_x.shape[0],
+        ) > 0
+        target_has_edge = np.bincount(
+            target_idx_edges,
+            minlength=target_x.shape[0],
+        ) > 0
+        n_orphan_source = int((~source_has_edge).sum())
+        n_orphan_target = int((~target_has_edge).sum())
+        drop_orphans = bool(getattr(cfg.problem, "ot_drop_orphan_cells", True))
+        if not source_has_edge.all() or not target_has_edge.all():
+            if not drop_orphans:
+                raise RuntimeError(
+                    "Masked Maizels OT is infeasible before solving: "
+                    f"{n_orphan_source} source cells and {n_orphan_target} "
+                    "target cells have no valid edges. Set "
+                    "problem.ot_drop_orphan_cells=True to solve exact OT on "
+                    "the non-orphan hard-valid subproblem."
+                )
+            if verbose:
+                print(
+                    "Dropping Maizels OT orphan cells with no hard-valid partners: "
+                    f"sources={n_orphan_source}, targets={n_orphan_target}"
+                )
 
-    plan_mass, ot_stats = _solve_sparse_exact_ot(
-        source_x.shape[0],
-        target_x.shape[0],
-        source_idx_edges,
-        target_idx_edges,
-        costs,
-        mass_tol=mass_tol,
-    )
-    stats.update(ot_stats)
+        active_source_idx = np.flatnonzero(source_has_edge).astype(np.int64)
+        active_target_idx = np.flatnonzero(target_has_edge).astype(np.int64)
+        source_remap = -np.ones(source_x.shape[0], dtype=np.int64)
+        target_remap = -np.ones(target_x.shape[0], dtype=np.int64)
+        source_remap[active_source_idx] = np.arange(active_source_idx.shape[0])
+        target_remap[active_target_idx] = np.arange(active_target_idx.shape[0])
+        remapped_source_edges = source_remap[source_idx_edges]
+        remapped_target_edges = target_remap[target_idx_edges]
+        active_edge_mask = (remapped_source_edges >= 0) & (remapped_target_edges >= 0)
+        source_idx_edges = source_idx_edges[active_edge_mask]
+        target_idx_edges = target_idx_edges[active_edge_mask]
+        costs = costs[active_edge_mask]
+        remapped_source_edges = remapped_source_edges[active_edge_mask]
+        remapped_target_edges = remapped_target_edges[active_edge_mask]
+        stats["ot_dropped_source_cells"] = n_orphan_source
+        stats["ot_dropped_target_cells"] = n_orphan_target
+        stats["ot_active_source_cells"] = int(active_source_idx.shape[0])
+        stats["ot_active_target_cells"] = int(active_target_idx.shape[0])
 
-    positive = plan_mass > 0.0
-    positive_source_idx = source_idx_edges[positive]
-    positive_target_idx = target_idx_edges[positive]
-    positive_mass = plan_mass[positive]
-    positive_mass = positive_mass / positive_mass.sum()
+        if verbose:
+            print(
+                "Solving Maizels exact OT LP: "
+                f"sources={active_source_idx.shape[0]}, "
+                f"targets={active_target_idx.shape[0]}, "
+                f"valid_edges={source_idx_edges.shape[0]}"
+            )
+        plan_mass, ot_stats = _solve_sparse_exact_ot(
+            active_source_idx.shape[0],
+            active_target_idx.shape[0],
+            remapped_source_edges,
+            remapped_target_edges,
+            costs,
+            mass_tol=mass_tol,
+        )
+        stats.update(ot_stats)
+
+        positive = plan_mass > 0.0
+        positive_source_idx = source_idx_edges[positive]
+        positive_target_idx = target_idx_edges[positive]
+        positive_mass = plan_mass[positive]
+        positive_mass = positive_mass / positive_mass.sum()
+        stats["ot_cache_hit"] = False
+        stats["ot_cache_path"] = "" if cache_path is None else str(cache_path)
+
+        if verbose:
+            print(
+                "Solved Maizels exact OT LP: "
+                f"objective={stats['ot_objective']:.6g}, "
+                f"positive_edges={stats['ot_positive_edges']}"
+            )
+
+        if cache_path is not None:
+            try:
+                _save_cached_ot_plan(
+                    cache_path,
+                    positive_source_idx,
+                    positive_target_idx,
+                    positive_mass,
+                    stats,
+                    metadata,
+                )
+                if verbose:
+                    print(f"Saved Maizels exact OT plan cache: {cache_path}")
+            except OSError as exc:
+                print(f"Failed to save Maizels exact OT cache {cache_path}: {exc}")
+
     sampled_edge_idx = rng.choice(
         positive_mass.shape[0],
         size=n_pairs,
@@ -1030,14 +1294,17 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
         "x1": target_x[target_idx].astype(np.float32),
         "label": labels,
     }
+    stats["ot_cache_enabled"] = cache_path is not None
+    stats["ot_cache_path"] = "" if cache_path is None else str(cache_path)
     stats["sampled_pairs"] = int(paired["x0"].shape[0])
-    stats["collected_accepted_pairs"] = int(stats["accepted_pairs"])
+    stats["collected_accepted_pairs"] = int(stats.get("accepted_pairs", 0))
     stats["truncated_accepted_pairs"] = 0
-    stats["candidate_acceptance_rate"] = (
-        stats["accepted_pairs"] / stats["candidate_pairs"]
-        if stats["candidate_pairs"] > 0
-        else 0.0
-    )
+    if "candidate_acceptance_rate" not in stats:
+        stats["candidate_acceptance_rate"] = (
+            stats["accepted_pairs"] / stats["candidate_pairs"]
+            if stats["candidate_pairs"] > 0
+            else 0.0
+        )
     stats["source_n"] = int(source_x.shape[0])
     stats["target_n"] = int(target_x.shape[0])
     stats["source_counts"] = dict(Counter(source_types.tolist()))

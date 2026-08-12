@@ -90,6 +90,12 @@ def get_config(
     config.problem.rejection_max_candidates = 5_000_000
     config.problem.ot_candidate_chunk_size = 50_000
     config.problem.ot_mass_tolerance = 1e-12
+    config.problem.ot_drop_orphan_cells = True
+    config.problem.ot_cache_enabled = True
+    config.problem.ot_cache_dir = ""
+    config.problem.ot_cache_version = "v1"
+    config.problem.ot_progress_enabled = True
+    config.problem.ot_verbose = True
     config.problem.device_batching = True
 
     # Optimization config.
