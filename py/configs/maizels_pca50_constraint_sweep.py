@@ -80,6 +80,15 @@ VARIANTS = [
         "weight": 1000.0,
         "loss_point_entropy_weight": 0.1,
     },
+    {
+        "mode": "bio_prior_ot_endpoint_interpolant_constrained_loss_points_nll_w1000_e01",
+        "base_slurm_id": 4,
+        "pair_mode": "ot_endpoint_interpolant",
+        "constraints_enabled": True,
+        "path_mode": "loss_points_nll",
+        "weight": 1000.0,
+        "loss_point_entropy_weight": 0.1,
+    },
 ]
 
 
@@ -89,6 +98,9 @@ def get_config(slurm_id: int, dataset_location: str = "", output_folder: str = "
     seed = int(os.getenv("MAIZELS_SEED", str(cfg.training.seed)))
 
     cfg.training.seed = seed
+    cfg.problem.maizels_pair_mode = variant.get(
+        "pair_mode", cfg.problem.maizels_pair_mode
+    )
     cfg.constraints.enabled = variant["constraints_enabled"]
     cfg.constraints.path_mode = variant["path_mode"]
     cfg.constraints.weight = variant["weight"]

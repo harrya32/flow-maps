@@ -10,11 +10,13 @@ DATASET_LOCATION="${DATASET_LOCATION:-/mnt/pdata/hmka3/flow-maps/celltype_classi
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/pdata/hmka3/flow-maps/outputs/maizels_pca50_constraint_sweep}"
 SEEDS="${SEEDS:-1 2 3 4 5}"
 
-MODE_IDS=(0 1 7)
+MODE_IDS=(0 1 7 8 9)
 MODE_NAMES=(
   "bio_prior_flow_map_unconstrained"
   "bio_prior_flow_map_constrained_loss_points_w1000"
-  "bio_prior_flow_map_constrained_loss_points_nll_w1000"
+  "bio_prior_flow_map_constrained_loss_points_nll_w100"
+  "bio_prior_flow_map_constrained_loss_points_nll_w1000_e01"
+  "bio_prior_ot_endpoint_interpolant_constrained_loss_points_nll_w1000_e01"
 )
 
 cd "${REPO_ROOT}"

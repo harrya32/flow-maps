@@ -721,6 +721,333 @@ def _sample_pair_indices(
     )
 
 
+def _type_index_groups(types: np.ndarray) -> Dict[str, np.ndarray]:
+    groups = {}
+    for cell_type in np.unique(types):
+        groups[str(cell_type)] = np.flatnonzero(types == cell_type).astype(np.int64)
+    return groups
+
+
+def _pairwise_whitened_sqeuclidean(
+    source_x: np.ndarray,
+    target_x: np.ndarray,
+    source_idx: np.ndarray,
+    target_idx: np.ndarray,
+    scale: np.ndarray,
+) -> np.ndarray:
+    diff = (
+        source_x[source_idx].astype(np.float64)
+        - target_x[target_idx].astype(np.float64)
+    ) / scale
+    return np.sum(diff * diff, axis=1)
+
+
+def _append_ot_edges(
+    edge_source_idx: List[np.ndarray],
+    edge_target_idx: List[np.ndarray],
+    edge_costs: List[np.ndarray],
+    source_x: np.ndarray,
+    target_x: np.ndarray,
+    source_idx: np.ndarray,
+    target_idx: np.ndarray,
+    scale: np.ndarray,
+) -> None:
+    if source_idx.shape[0] == 0:
+        return
+    edge_source_idx.append(source_idx.astype(np.int64, copy=False))
+    edge_target_idx.append(target_idx.astype(np.int64, copy=False))
+    edge_costs.append(
+        _pairwise_whitened_sqeuclidean(
+            source_x,
+            target_x,
+            source_idx,
+            target_idx,
+            scale,
+        ).astype(np.float64, copy=False)
+    )
+
+
+def _collect_masked_ot_edges(
+    cfg,
+    source_x: np.ndarray,
+    source_types: np.ndarray,
+    source_type_ids_all: np.ndarray,
+    target_x: np.ndarray,
+    target_types: np.ndarray,
+    target_type_ids_all: np.ndarray,
+    *,
+    pair_mode: str,
+    endpoint_reachable: Dict[str, Set[str]],
+    lineage_transition_mode: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
+    """Enumerate hard-valid endpoint edges for exact Maizels OT coupling."""
+    classifier_path = resolve_classifier_path(
+        getattr(cfg.problem, "classifier_path", None)
+    )
+    chunk_size = int(
+        getattr(
+            cfg.problem,
+            "ot_candidate_chunk_size",
+            getattr(cfg.problem, "rejection_chunk_size", 50_000),
+        )
+    )
+    chunk_size = max(1, chunk_size)
+    n_check_times = int(getattr(cfg.problem, "n_interpolant_check_times", 5))
+    prob_threshold = float(getattr(cfg.problem, "classifier_prob_threshold", 0.85))
+    margin_threshold = float(getattr(cfg.problem, "classifier_margin_threshold", 1.0))
+    classifier_batch_size = int(getattr(cfg.problem, "classifier_batch_size", 8192))
+
+    source_groups = _type_index_groups(source_types)
+    target_groups = _type_index_groups(target_types)
+    all_x = np.concatenate([source_x, target_x], axis=0).astype(np.float64)
+    cost_scale = np.std(all_x, axis=0)
+    cost_scale = np.where(cost_scale > 1e-6, cost_scale, 1.0)
+    edge_source_idx: List[np.ndarray] = []
+    edge_target_idx: List[np.ndarray] = []
+    edge_costs: List[np.ndarray] = []
+    stats = {
+        "candidate_pairs": int(source_x.shape[0] * target_x.shape[0]),
+        "endpoint_rejected": 0,
+        "interpolant_rejected": 0,
+        "accepted_pairs": 0,
+    }
+
+    for src_type, sidx_group in source_groups.items():
+        for dst_type, tidx_group in target_groups.items():
+            n_block = int(sidx_group.shape[0] * tidx_group.shape[0])
+            if n_block == 0:
+                continue
+            if not endpoint_valid(src_type, dst_type, endpoint_reachable):
+                stats["endpoint_rejected"] += n_block
+                continue
+
+            n_target_group = tidx_group.shape[0]
+            for start in range(0, n_block, chunk_size):
+                end = min(start + chunk_size, n_block)
+                flat = np.arange(start, end, dtype=np.int64)
+                source_idx = sidx_group[flat // n_target_group]
+                target_idx = tidx_group[flat % n_target_group]
+
+                keep = np.ones(source_idx.shape[0], dtype=bool)
+                if pair_mode == "ot_endpoint_interpolant":
+                    validity = _check_candidate_interpolants(
+                        source_x=source_x[source_idx],
+                        source_type_ids=source_type_ids_all[source_idx],
+                        target_x=target_x[target_idx],
+                        target_type_ids=target_type_ids_all[target_idx],
+                        classifier_path=classifier_path,
+                        n_check_times=n_check_times,
+                        prob_threshold=prob_threshold,
+                        margin_threshold=margin_threshold,
+                        classifier_batch_size=classifier_batch_size,
+                        lineage_transition_mode=lineage_transition_mode,
+                    )
+                    keep = np.asarray(validity["valid"], dtype=bool)
+                    stats["interpolant_rejected"] += int((~keep).sum())
+
+                if keep.any():
+                    _append_ot_edges(
+                        edge_source_idx,
+                        edge_target_idx,
+                        edge_costs,
+                        source_x,
+                        target_x,
+                        source_idx[keep],
+                        target_idx[keep],
+                        cost_scale,
+                    )
+                    stats["accepted_pairs"] += int(keep.sum())
+
+    if not edge_source_idx:
+        raise RuntimeError(
+            "Masked Maizels OT found no valid edges after endpoint/path filters."
+        )
+
+    return (
+        np.concatenate(edge_source_idx),
+        np.concatenate(edge_target_idx),
+        np.concatenate(edge_costs),
+        stats,
+    )
+
+
+def _solve_sparse_exact_ot(
+    n_source: int,
+    n_target: int,
+    source_idx: np.ndarray,
+    target_idx: np.ndarray,
+    costs: np.ndarray,
+    *,
+    mass_tol: float,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """Solve exact balanced OT on a sparse hard-valid edge set with HiGHS."""
+    try:
+        from scipy.optimize import linprog
+        from scipy import sparse
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Exact Maizels OT coupling requires scipy.optimize.linprog."
+        ) from exc
+
+    n_edges = int(source_idx.shape[0])
+    edge_ids = np.arange(n_edges, dtype=np.int64)
+    rows = np.concatenate([source_idx, n_source + target_idx])
+    cols = np.concatenate([edge_ids, edge_ids])
+    data = np.ones(2 * n_edges, dtype=np.float64)
+    a_eq = sparse.coo_matrix(
+        (data, (rows, cols)),
+        shape=(n_source + n_target, n_edges),
+    ).tocsr()
+    b_eq = np.concatenate(
+        [
+            np.full(n_source, 1.0 / float(n_source), dtype=np.float64),
+            np.full(n_target, 1.0 / float(n_target), dtype=np.float64),
+        ]
+    )
+
+    result = linprog(
+        costs.astype(np.float64, copy=False),
+        A_eq=a_eq,
+        b_eq=b_eq,
+        bounds=(0.0, None),
+        method="highs",
+    )
+    if not result.success:
+        raise RuntimeError(
+            "Exact masked Maizels OT was infeasible or failed to solve: "
+            f"{result.message}"
+        )
+
+    plan_mass = np.asarray(result.x, dtype=np.float64)
+    plan_mass = np.where(plan_mass > mass_tol, plan_mass, 0.0)
+    total_mass = float(plan_mass.sum())
+    if total_mass <= 0.0:
+        raise RuntimeError("Exact masked Maizels OT returned zero positive mass.")
+    if abs(total_mass - 1.0) > 1e-6:
+        plan_mass = plan_mass / total_mass
+
+    source_mass = np.bincount(source_idx, weights=plan_mass, minlength=n_source)
+    target_mass = np.bincount(target_idx, weights=plan_mass, minlength=n_target)
+    source_target = np.full(n_source, 1.0 / float(n_source), dtype=np.float64)
+    target_target = np.full(n_target, 1.0 / float(n_target), dtype=np.float64)
+    stats = {
+        "ot_edges": n_edges,
+        "ot_positive_edges": int(np.count_nonzero(plan_mass)),
+        "ot_objective": float(np.dot(plan_mass, costs)),
+        "ot_total_mass": float(plan_mass.sum()),
+        "ot_source_max_abs_residual": float(
+            np.max(np.abs(source_mass - source_target))
+        ),
+        "ot_target_max_abs_residual": float(
+            np.max(np.abs(target_mass - target_target))
+        ),
+    }
+    return plan_mass, stats
+
+
+def _make_exact_ot_pair_pool_from_endpoint_arrays(
+    cfg,
+    source_x: np.ndarray,
+    source_types: np.ndarray,
+    target_x: np.ndarray,
+    target_types: np.ndarray,
+    *,
+    n_pairs: int,
+    rng: np.random.Generator,
+    pair_mode: str,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
+    """Create a pair pool by sampling from hard-masked exact OT."""
+    class_to_id = class_to_id_map(CLASS_NAMES)
+    source_type_ids_all = np.asarray(
+        [class_to_id[str(ct)] for ct in source_types],
+        dtype=np.int32,
+    )
+    target_type_ids_all = np.asarray(
+        [class_to_id[str(ct)] for ct in target_types],
+        dtype=np.int32,
+    )
+    lineage_transition_mode = lineage_transition_mode_from_config(cfg)
+    endpoint_reachable = build_transition_reachable("descendant")
+    mass_tol = float(getattr(cfg.problem, "ot_mass_tolerance", 1e-12))
+
+    source_idx_edges, target_idx_edges, costs, stats = _collect_masked_ot_edges(
+        cfg,
+        source_x,
+        source_types,
+        source_type_ids_all,
+        target_x,
+        target_types,
+        target_type_ids_all,
+        pair_mode=pair_mode,
+        endpoint_reachable=endpoint_reachable,
+        lineage_transition_mode=lineage_transition_mode,
+    )
+    source_has_edge = np.bincount(
+        source_idx_edges,
+        minlength=source_x.shape[0],
+    ) > 0
+    target_has_edge = np.bincount(
+        target_idx_edges,
+        minlength=target_x.shape[0],
+    ) > 0
+    if not source_has_edge.all() or not target_has_edge.all():
+        raise RuntimeError(
+            "Masked Maizels OT is infeasible before solving: "
+            f"{int((~source_has_edge).sum())} source cells and "
+            f"{int((~target_has_edge).sum())} target cells have no valid edges."
+        )
+
+    plan_mass, ot_stats = _solve_sparse_exact_ot(
+        source_x.shape[0],
+        target_x.shape[0],
+        source_idx_edges,
+        target_idx_edges,
+        costs,
+        mass_tol=mass_tol,
+    )
+    stats.update(ot_stats)
+
+    positive = plan_mass > 0.0
+    positive_source_idx = source_idx_edges[positive]
+    positive_target_idx = target_idx_edges[positive]
+    positive_mass = plan_mass[positive]
+    positive_mass = positive_mass / positive_mass.sum()
+    sampled_edge_idx = rng.choice(
+        positive_mass.shape[0],
+        size=n_pairs,
+        replace=True,
+        p=positive_mass,
+    )
+    source_idx = positive_source_idx[sampled_edge_idx]
+    target_idx = positive_target_idx[sampled_edge_idx]
+    labels = np.stack(
+        [source_type_ids_all[source_idx], target_type_ids_all[target_idx]],
+        axis=1,
+    ).astype(np.int32)
+
+    paired = {
+        "x0": source_x[source_idx].astype(np.float32),
+        "x1": target_x[target_idx].astype(np.float32),
+        "label": labels,
+    }
+    stats["sampled_pairs"] = int(paired["x0"].shape[0])
+    stats["collected_accepted_pairs"] = int(stats["accepted_pairs"])
+    stats["truncated_accepted_pairs"] = 0
+    stats["candidate_acceptance_rate"] = (
+        stats["accepted_pairs"] / stats["candidate_pairs"]
+        if stats["candidate_pairs"] > 0
+        else 0.0
+    )
+    stats["source_n"] = int(source_x.shape[0])
+    stats["target_n"] = int(target_x.shape[0])
+    stats["source_counts"] = dict(Counter(source_types.tolist()))
+    stats["target_counts"] = dict(Counter(target_types.tolist()))
+    stats["endpoint_transition_mode"] = "descendant"
+    stats["lineage_transition_mode"] = lineage_transition_mode
+    stats["ot_cost"] = "whitened_sqeuclidean"
+    return paired, stats
+
+
 def _split_train_holdout_indices(
     n_items: int,
     *,
@@ -819,6 +1146,18 @@ def _make_pair_pool_from_endpoint_arrays(
     if source_x.shape[0] == 0 or target_x.shape[0] == 0:
         raise RuntimeError("Maizels source/target pair pools must both be non-empty.")
 
+    if pair_mode in ("ot_endpoint", "ot_endpoint_interpolant"):
+        return _make_exact_ot_pair_pool_from_endpoint_arrays(
+            cfg,
+            source_x,
+            source_types,
+            target_x,
+            target_types,
+            n_pairs=n_pairs,
+            rng=rng,
+            pair_mode=pair_mode,
+        )
+
     class_to_id = class_to_id_map(CLASS_NAMES)
     source_type_ids_all = np.asarray([class_to_id[str(ct)] for ct in source_types], dtype=np.int32)
     target_type_ids_all = np.asarray([class_to_id[str(ct)] for ct in target_types], dtype=np.int32)
@@ -907,7 +1246,8 @@ def _make_pair_pool_from_endpoint_arrays(
     else:
         raise ValueError(
             "problem.maizels_pair_mode must be one of 'none', 'endpoint', "
-            f"or 'endpoint_interpolant', got {pair_mode!r}."
+            "'endpoint_interpolant', 'ot_endpoint', or "
+            f"'ot_endpoint_interpolant', got {pair_mode!r}."
         )
 
     collected_source_idx = np.concatenate(accepted_source_idx)

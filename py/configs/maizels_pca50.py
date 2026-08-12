@@ -88,6 +88,8 @@ def get_config(
     config.problem.classifier_batch_size = 8192
     config.problem.rejection_chunk_size = 50_000
     config.problem.rejection_max_candidates = 5_000_000
+    config.problem.ot_candidate_chunk_size = 50_000
+    config.problem.ot_mass_tolerance = 1e-12
     config.problem.device_batching = True
 
     # Optimization config.
