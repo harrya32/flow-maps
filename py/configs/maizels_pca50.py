@@ -96,7 +96,7 @@ def get_config(
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 10.0
-    config.optimization.total_steps = 50_000
+    config.optimization.total_steps = 10_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
@@ -182,7 +182,7 @@ def get_config(
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
     config.constraints.classifier_temperature = 1.0
-    config.constraints.loss_point_entropy_weight = 0.0
+    config.constraints.loss_point_entropy_weight = 0.01
     config.constraints.lineage_transition_mode = "same_as_problem"
     config.constraints.stage2_only = False
 

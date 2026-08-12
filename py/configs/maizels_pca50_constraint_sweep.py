@@ -65,12 +65,20 @@ VARIANTS = [
         "diag_fraction": 0.8
     },
     {
-        "mode": "bio_prior_flow_map_constrained_loss_points_nll_w1000",
+        "mode": "bio_prior_flow_map_constrained_loss_points_nll_w100",
+        "base_slurm_id": 4,
+        "constraints_enabled": True,
+        "path_mode": "loss_points_nll",
+        "weight": 100.0,
+        "loss_point_entropy_weight": 0.01,
+    },
+    {
+        "mode": "bio_prior_flow_map_constrained_loss_points_nll_w1000_e01",
         "base_slurm_id": 4,
         "constraints_enabled": True,
         "path_mode": "loss_points_nll",
         "weight": 1000.0,
-        "loss_point_entropy_weight": 0.01,
+        "loss_point_entropy_weight": 0.1,
     },
 ]
 
