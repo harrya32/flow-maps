@@ -81,7 +81,15 @@ VARIANTS = [
         "loss_point_entropy_weight": 0.1,
     },
     {
-        "mode": "bio_prior_ot_endpoint_interpolant_constrained_loss_points_nll_w1000_e01",
+        "mode": "bio_prior_ot_endpoint_interpolant_unconstrained",
+        "base_slurm_id": 3,
+        "pair_mode": "ot_endpoint_interpolant",
+        "constraints_enabled": False,
+        "path_mode": "loss_points_nll",
+        "weight": 0.0,
+    },
+    {
+        "mode": "bio_prior_ot_constrained_loss_points_nll_w1000_e01",
         "base_slurm_id": 4,
         "pair_mode": "ot_endpoint_interpolant",
         "constraints_enabled": True,
