@@ -106,8 +106,9 @@ VARIANTS = [
         "weight": 0.0,
     },
     {
-        "mode": "bio_prior_flow_matching_velocity_endpoint_nll_w1000_e01",
+        "mode": "bio_prior_ot_flow_matching_velocity_endpoint_nll_w1000_e01",
         "base_slurm_id": 2,
+        "pair_mode": "ot_endpoint_interpolant",
         "constraints_enabled": True,
         "path_mode": "velocity_loss_points_nll",
         "weight": 1000.0,

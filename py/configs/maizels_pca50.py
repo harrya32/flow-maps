@@ -180,7 +180,7 @@ def get_config(
     config.constraints = ml_collections.ConfigDict()
     config.constraints.enabled = use_lineage_constraint
     config.constraints.type = "maizels_lineage_path"
-    config.constraints.path_mode = "direct"
+    config.constraints.path_mode = "direct" #velocity_loss_points_nll, loss_points_nll
     config.constraints.path_n_times = 10
     config.constraints.euler_steps = 10
     config.constraints.constraint_batch_size = 1024
@@ -195,7 +195,7 @@ def get_config(
     config.constraints.velocity_rollout_reference_diag_fraction = 0.75
     config.constraints.velocity_rollout_max_step = 0.05
     config.constraints.velocity_rollout_max_steps = 0
-    config.constraints.velocity_rollout_loss_scope = "endpoints"
+    config.constraints.velocity_rollout_loss_scope = "endpoints" #path, endpoints
     config.constraints.lineage_transition_mode = "same_as_problem"
     config.constraints.stage2_only = False
 

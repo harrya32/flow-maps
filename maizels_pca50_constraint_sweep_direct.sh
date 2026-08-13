@@ -10,9 +10,9 @@ DATASET_LOCATION="${DATASET_LOCATION:-/mnt/pdata/hmka3/flow-maps/celltype_classi
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/pdata/hmka3/flow-maps/outputs/maizels_pca50_constraint_sweep}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
 
-MODE_IDS=(11)
+MODE_IDS=(12)
 MODE_NAMES=(
-  "ot_plain_unconstrained"
+  "bio_prior_ot_flow_matching_velocity_endpoint_nll_w1000_e01"
 )
 
 cd "${REPO_ROOT}"
