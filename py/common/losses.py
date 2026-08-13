@@ -7,7 +7,7 @@ Loss functions for learning.
 
 import functools
 import math
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -775,7 +775,7 @@ def _maizels_lineage_terms(
     label: jnp.ndarray,
     classifier,
     cfg: config_dict.ConfigDict,
-    transition_mask: jnp.ndarray | None = None,
+    transition_mask: Optional[jnp.ndarray] = None,
 ) -> Dict[str, jnp.ndarray]:
     if label is None or label.ndim != 2 or label.shape[1] < 2:
         raise ValueError(

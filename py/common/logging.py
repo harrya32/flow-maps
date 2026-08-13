@@ -10,7 +10,7 @@ import math
 import os
 import signal
 import sys
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -1390,7 +1390,7 @@ def _maizels_lineage_constraint_terms(
     paths: jnp.ndarray,
     labels: jnp.ndarray,
     cfg: config_dict.ConfigDict,
-    transition_mask: jnp.ndarray | None = None,
+    transition_mask: Optional[jnp.ndarray] = None,
 ) -> Dict[str, jnp.ndarray]:
     if labels is None or labels.ndim != 2 or labels.shape[1] < 2:
         raise ValueError(
