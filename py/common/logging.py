@@ -6,6 +6,7 @@ Code for basic wandb visualization and logging.
 """
 
 import functools
+import math
 import os
 import signal
 import sys
@@ -1070,6 +1071,78 @@ def _maizels_constraint_path_mode(cfg: config_dict.ConfigDict) -> str:
     )
 
 
+def _maizels_velocity_loss_point_mode(cfg: config_dict.ConfigDict):
+    mode = getattr(cfg.constraints, "path_mode", "flowmap")
+    if mode in (
+        "fm_loss_points_nll",
+        "velocity_loss_points_nll",
+        "velocity_rollout_nll",
+        "velocity_rollout_loss_points_nll",
+        "velocity_rollout_endpoint_nll",
+        "velocity_rollout_endpoints_nll",
+        "velocity_path_loss_points_nll",
+        "velocity_rollout_path_nll",
+        "fm_path_loss_points_nll",
+    ):
+        return mode
+    return None
+
+
+def _uses_maizels_velocity_loss_points(cfg: config_dict.ConfigDict) -> bool:
+    return _maizels_velocity_loss_point_mode(cfg) is not None
+
+
+def _maizels_velocity_rollout_loss_scope(cfg: config_dict.ConfigDict) -> str:
+    mode = _maizels_velocity_loss_point_mode(cfg)
+    if mode in (
+        "velocity_path_loss_points_nll",
+        "velocity_rollout_path_nll",
+        "fm_path_loss_points_nll",
+    ):
+        return "path"
+
+    scope = getattr(cfg.constraints, "velocity_rollout_loss_scope", "endpoints")
+    scope = str(scope).lower()
+    if scope in ("endpoint", "endpoints", "start_end", "start-end", "final"):
+        return "endpoints"
+    if scope in ("path", "all", "all_steps", "all-states", "all_states"):
+        return "path"
+    raise ValueError(
+        "constraints.velocity_rollout_loss_scope must be 'endpoints' or 'path', "
+        f"got {scope!r}."
+    )
+
+
+def _maizels_velocity_rollout_max_steps(cfg: config_dict.ConfigDict) -> int:
+    max_steps = int(getattr(cfg.constraints, "velocity_rollout_max_steps", 0))
+    if max_steps > 0:
+        return max_steps
+
+    max_step = float(getattr(cfg.constraints, "velocity_rollout_max_step", 0.05))
+    if max_step <= 0:
+        raise ValueError("constraints.velocity_rollout_max_step must be positive")
+    horizon = float(cfg.training.tmax) - float(cfg.training.tmin)
+    return max(1, int(math.ceil(horizon / max_step)))
+
+
+def _maizels_velocity_constraint_batch_size(
+    cfg: config_dict.ConfigDict,
+    total_bs: int,
+) -> int:
+    explicit_bs = int(getattr(cfg.constraints, "velocity_rollout_batch_size", 0))
+    if explicit_bs > 0:
+        return min(total_bs, explicit_bs)
+
+    reference_diag_fraction = getattr(
+        cfg.constraints,
+        "velocity_rollout_reference_diag_fraction",
+        getattr(cfg.constraints, "constraint_reference_diag_fraction", 0.75),
+    )
+    diag_bs = max(1, int(total_bs * float(reference_diag_fraction)))
+    reference_offdiag_bs = total_bs - diag_bs
+    return max(1, min(total_bs, reference_offdiag_bs))
+
+
 def _maizels_constraint_path_times(
     cfg: config_dict.ConfigDict,
     dtype,
@@ -1225,10 +1298,99 @@ def _maizels_lineage_constraint_paths(
     return _maizels_euler_constraint_paths(apply_fn, params, x0s, labels, cfg)
 
 
+def _sample_maizels_velocity_rollout_times(
+    rng: jnp.ndarray,
+    cfg: config_dict.ConfigDict,
+    dtype,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    times = jax.random.uniform(
+        rng,
+        shape=(2,),
+        minval=float(cfg.training.tmin),
+        maxval=float(cfg.training.tmax),
+        dtype=dtype,
+    )
+    return jnp.minimum(times[0], times[1]), jnp.maximum(times[0], times[1])
+
+
+def _maizels_velocity_rollout_paths(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    x1s: jnp.ndarray,
+    labels: jnp.ndarray,
+    rngs: jnp.ndarray,
+    interp,
+    cfg: config_dict.ConfigDict,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    if labels is None or labels.ndim != 2 or labels.shape[1] < 2:
+        raise ValueError(
+            "maizels_lineage_path velocity loss-point metrics require "
+            "label[:, 0:2] to contain source and target cell-type ids."
+        )
+
+    max_steps = _maizels_velocity_rollout_max_steps(cfg)
+    max_step = float(getattr(cfg.constraints, "velocity_rollout_max_step", 0.05))
+    if max_step <= 0:
+        raise ValueError("constraints.velocity_rollout_max_step must be positive")
+
+    def single_path(x0, x1, label, rng):
+        time_rng = jax.random.fold_in(rng, 17)
+        t_start, t_end = _sample_maizels_velocity_rollout_times(
+            time_rng,
+            cfg,
+            x0.dtype,
+        )
+        x_start = interp.calc_It(t_start, x0, x1, label)
+
+        eps = jnp.asarray(1e-6, dtype=x0.dtype)
+        horizon = jnp.maximum(t_end - t_start, eps)
+        n_steps = jnp.ceil(
+            horizon / jnp.asarray(max_step, dtype=x0.dtype)
+        ).astype(jnp.int32)
+        n_steps = jnp.clip(n_steps, 1, max_steps)
+        dt = horizon / n_steps.astype(x0.dtype)
+
+        def step(x_curr, idx):
+            active = idx < n_steps
+            tau = t_start + idx.astype(x0.dtype) * dt
+            velocity = apply_fn(
+                params,
+                tau,
+                x_curr,
+                label=label,
+                train=False,
+                calc_weight=False,
+                method="calc_b",
+            )
+            x_next = x_curr + dt * velocity
+            x_next = jnp.where(active, x_next, x_curr)
+            return x_next, x_next
+
+        _, states = jax.lax.scan(step, x_start, jnp.arange(max_steps))
+        path = jnp.concatenate([x_start[None, :], states], axis=0)
+        transition_mask = (jnp.arange(max_steps) < n_steps).astype(x0.dtype)
+        return path, transition_mask
+
+    paths, transition_mask = jax.vmap(single_path)(x0s, x1s, labels, rngs)
+    if _maizels_velocity_rollout_loss_scope(cfg) == "endpoints":
+        final_idx = jnp.sum(transition_mask.astype(jnp.int32), axis=1)
+        final_state = jnp.take_along_axis(
+            paths,
+            final_idx[:, None, None],
+            axis=1,
+        )[:, 0, :]
+        paths = jnp.stack([paths[:, 0, :], final_state], axis=1)
+        transition_mask = jnp.ones((paths.shape[0], 1), dtype=paths.dtype)
+
+    return paths, transition_mask
+
+
 def _maizels_lineage_constraint_terms(
     paths: jnp.ndarray,
     labels: jnp.ndarray,
     cfg: config_dict.ConfigDict,
+    transition_mask: jnp.ndarray | None = None,
 ) -> Dict[str, jnp.ndarray]:
     if labels is None or labels.ndim != 2 or labels.shape[1] < 2:
         raise ValueError(
@@ -1268,6 +1430,7 @@ def _maizels_lineage_constraint_terms(
         ),
         jnp.asarray(maizels.classifier_index_lookup(class_names), dtype=jnp.int32),
         target_type_ids=target_type_ids,
+        transition_mask=transition_mask,
     )
 
 
@@ -2608,7 +2771,7 @@ def compute_constraint_metrics(
         tbatch,
         _,
         _,
-        _,
+        dropout_keys,
         constraint_scale_batch,
         stage2_scale_batch,
     ) = dist_utils.unreplicate_loss_fn_args(cfg, data_args)
@@ -2616,6 +2779,7 @@ def compute_constraint_metrics(
     x1batch = jnp.squeeze(x1batch)
     sbatch = jnp.squeeze(sbatch)
     tbatch = jnp.squeeze(tbatch)
+    dropout_keys = jnp.squeeze(dropout_keys)
     constraint_scale = jnp.mean(jnp.squeeze(constraint_scale_batch))
     stage2_scale = jnp.mean(jnp.squeeze(stage2_scale_batch))
     if bool(getattr(cfg.constraints, "stage2_only", False)):
@@ -2809,6 +2973,7 @@ def compute_constraint_metrics(
         params = dist_utils.safe_unreplicate(cfg, train_state.params)
         constraint_bs = int(getattr(cfg.constraints, "constraint_batch_size", 0))
         path_mode = getattr(cfg.constraints, "path_mode", "flowmap")
+        transition_mask = None
         if path_mode in ("loss_points", "loss_points_nll"):
             if statics is None or getattr(statics, "interp", None) is None:
                 raise ValueError(
@@ -2854,6 +3019,42 @@ def compute_constraint_metrics(
                 label_constraint,
             )
             paths = jnp.stack([x_s, x_t], axis=1)
+        elif _uses_maizels_velocity_loss_points(cfg):
+            if statics is None or getattr(statics, "interp", None) is None:
+                raise ValueError(
+                    "maizels_lineage_path velocity loss-point metrics require "
+                    "statics.interp"
+                )
+
+            diag_bs, offdiag_bs = loss_args._get_diag_offdiag_bs(cfg, x0batch.shape[0])
+            if offdiag_bs > 0:
+                raise ValueError(
+                    "Maizels velocity loss-point constraints require pure flow "
+                    "matching with optimization.diag_fraction=1.0 or "
+                    "optimization.diag_bs equal to the full batch size."
+                )
+
+            constraint_bs = _maizels_velocity_constraint_batch_size(
+                cfg,
+                x0batch.shape[0],
+            )
+
+            x0_constraint = x0batch[-constraint_bs:]
+            x1_constraint = x1batch[-constraint_bs:]
+            label_constraint = (
+                None if label_batch is None else label_batch[-constraint_bs:]
+            )
+            rng_constraint = dropout_keys[-constraint_bs:]
+            paths, transition_mask = _maizels_velocity_rollout_paths(
+                train_state.apply_fn,
+                params,
+                x0_constraint,
+                x1_constraint,
+                label_constraint,
+                rng_constraint,
+                statics.interp,
+                cfg,
+            )
         else:
             if constraint_bs <= 0:
                 constraint_fraction = float(
@@ -2873,12 +3074,17 @@ def compute_constraint_metrics(
                 label_constraint,
                 cfg,
             )
-        terms = _maizels_lineage_constraint_terms(paths, label_constraint, cfg)
+        terms = _maizels_lineage_constraint_terms(
+            paths,
+            label_constraint,
+            cfg,
+            transition_mask=transition_mask,
+        )
 
         lambda_start = float(getattr(cfg.constraints, "lambda_start", 1.0))
         lambda_transition = float(getattr(cfg.constraints, "lambda_transition", 1.0))
         lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
-        if path_mode == "loss_points_nll":
+        if path_mode == "loss_points_nll" or _uses_maizels_velocity_loss_points(cfg):
             entropy_weight = float(
                 getattr(cfg.constraints, "loss_point_entropy_weight", 0.0)
             )

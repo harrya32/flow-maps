@@ -105,6 +105,26 @@ VARIANTS = [
         "path_mode": "loss_points_nll",
         "weight": 0.0,
     },
+    {
+        "mode": "bio_prior_flow_matching_velocity_endpoint_nll_w1000_e01",
+        "base_slurm_id": 2,
+        "constraints_enabled": True,
+        "path_mode": "velocity_loss_points_nll",
+        "weight": 1000.0,
+        "loss_point_entropy_weight": 0.1,
+        "diag_fraction": 1.0,
+        "velocity_rollout_loss_scope": "endpoints",
+    },
+    {
+        "mode": "bio_prior_flow_matching_velocity_path_nll_w1000_e01",
+        "base_slurm_id": 2,
+        "constraints_enabled": True,
+        "path_mode": "velocity_loss_points_nll",
+        "weight": 1000.0,
+        "loss_point_entropy_weight": 0.1,
+        "diag_fraction": 1.0,
+        "velocity_rollout_loss_scope": "path",
+    },
 ]
 
 
@@ -122,6 +142,26 @@ def get_config(slurm_id: int, dataset_location: str = "", output_folder: str = "
     cfg.constraints.weight = variant["weight"]
     cfg.constraints.loss_point_entropy_weight = variant.get(
         "loss_point_entropy_weight", 0.0
+    )
+    cfg.constraints.velocity_rollout_loss_scope = variant.get(
+        "velocity_rollout_loss_scope",
+        getattr(cfg.constraints, "velocity_rollout_loss_scope", "endpoints"),
+    )
+    cfg.constraints.velocity_rollout_batch_size = variant.get(
+        "velocity_rollout_batch_size",
+        getattr(cfg.constraints, "velocity_rollout_batch_size", 0),
+    )
+    cfg.constraints.velocity_rollout_reference_diag_fraction = variant.get(
+        "velocity_rollout_reference_diag_fraction",
+        getattr(cfg.constraints, "velocity_rollout_reference_diag_fraction", 0.75),
+    )
+    cfg.constraints.velocity_rollout_max_step = variant.get(
+        "velocity_rollout_max_step",
+        getattr(cfg.constraints, "velocity_rollout_max_step", 0.05),
+    )
+    cfg.constraints.velocity_rollout_max_steps = variant.get(
+        "velocity_rollout_max_steps",
+        getattr(cfg.constraints, "velocity_rollout_max_steps", 0),
     )
     cfg.optimization.diag_fraction = variant.get("diag_fraction", 0.75)
 

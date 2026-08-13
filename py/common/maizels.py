@@ -440,6 +440,7 @@ def lineage_soft_terms_from_probs(
     invalid_transition: jnp.ndarray,
     canonical_to_classifier: jnp.ndarray,
     target_type_ids: jnp.ndarray | None = None,
+    transition_mask: jnp.ndarray | None = None,
 ) -> Dict[str, jnp.ndarray]:
     """Differentiable lineage-validity terms from path classifier probabilities."""
     source_cls = jnp.take(canonical_to_classifier, source_type_ids.astype(jnp.int32))
@@ -447,6 +448,17 @@ def lineage_soft_terms_from_probs(
     invalid_transition = invalid_transition.astype(probs.dtype)
     valid_transition = 1.0 - invalid_transition
     eps = jnp.asarray(1e-6, dtype=probs.dtype)
+    if transition_mask is not None:
+        transition_mask = transition_mask.astype(probs.dtype)
+        mask_denom = jnp.maximum(jnp.sum(transition_mask, axis=1), eps)
+        final_idx = jnp.sum(transition_mask.astype(jnp.int32), axis=1)
+        final_probs = jnp.take_along_axis(
+            probs,
+            final_idx[:, None, None],
+            axis=1,
+        )[:, 0, :]
+    else:
+        final_probs = probs[:, -1, :]
 
     start_invalid = jnp.einsum(
         "bi,ij,bj->b",
@@ -478,6 +490,16 @@ def lineage_soft_terms_from_probs(
         transition_valid_nll = -jnp.log(jnp.clip(transition_valid, eps, 1.0))
         transition_valid_nll_per_path = jnp.mean(transition_valid_nll, axis=1)
         transition_valid_per_path = jnp.mean(transition_valid, axis=1)
+        if transition_mask is not None:
+            transition_invalid_per_path = (
+                jnp.sum(transition_invalid * transition_mask, axis=1) / mask_denom
+            )
+            transition_valid_nll_per_path = (
+                jnp.sum(transition_valid_nll * transition_mask, axis=1) / mask_denom
+            )
+            transition_valid_per_path = (
+                jnp.sum(transition_valid * transition_mask, axis=1) / mask_denom
+            )
     else:
         transition_invalid = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
         transition_valid = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
@@ -497,22 +519,41 @@ def lineage_soft_terms_from_probs(
         target_probs = jax.nn.one_hot(target_cls, probs.shape[-1], dtype=probs.dtype)
         final_invalid = jnp.einsum(
             "bi,ij,bj->b",
-            probs[:, -1, :],
+            final_probs,
             invalid_transition,
             target_probs,
         )
         final_valid = jnp.einsum(
             "bi,ij,bj->b",
-            probs[:, -1, :],
+            final_probs,
             valid_transition,
             target_probs,
         )
         final_valid_nll = -jnp.log(jnp.clip(final_valid, eps, 1.0))
 
     final_entropy = -jnp.sum(
-        probs[:, -1, :] * jnp.log(jnp.clip(probs[:, -1, :], eps, 1.0)),
+        final_probs * jnp.log(jnp.clip(final_probs, eps, 1.0)),
         axis=-1,
     )
+    if transition_mask is not None and probs.shape[1] > 1:
+        active_transition_denom = jnp.maximum(jnp.sum(transition_mask), eps)
+        transition_invalid_mass = (
+            jnp.sum(transition_invalid * transition_mask) / active_transition_denom
+        )
+        transition_valid_mass = (
+            jnp.sum(transition_valid * transition_mask) / active_transition_denom
+        )
+    else:
+        transition_invalid_mass = (
+            jnp.mean(transition_invalid)
+            if transition_invalid.size > 0
+            else jnp.asarray(0.0, dtype=probs.dtype)
+        )
+        transition_valid_mass = (
+            jnp.mean(transition_valid)
+            if transition_valid.size > 0
+            else jnp.asarray(0.0, dtype=probs.dtype)
+        )
 
     return {
         "start_invalid_loss": jnp.mean(start_invalid),
@@ -524,16 +565,8 @@ def lineage_soft_terms_from_probs(
         "start_invalid_mass": jnp.mean(start_invalid),
         "start_valid_mass": jnp.mean(start_valid),
         "start_valid_nll_loss": jnp.mean(start_valid_nll),
-        "transition_invalid_mass": (
-            jnp.mean(transition_invalid)
-            if transition_invalid.size > 0
-            else jnp.asarray(0.0, dtype=probs.dtype)
-        ),
-        "transition_valid_mass": (
-            jnp.mean(transition_valid)
-            if transition_valid.size > 0
-            else jnp.asarray(0.0, dtype=probs.dtype)
-        ),
+        "transition_invalid_mass": transition_invalid_mass,
+        "transition_valid_mass": transition_valid_mass,
         "transition_valid_nll_loss": jnp.mean(transition_valid_nll_per_path),
         "final_invalid_mass": jnp.mean(final_invalid),
         "final_valid_mass": jnp.mean(final_valid),
