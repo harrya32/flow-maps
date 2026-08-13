@@ -104,7 +104,7 @@ def get_config(
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 10.0
-    config.optimization.total_steps = 30_000
+    config.optimization.total_steps = 10_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
