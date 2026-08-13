@@ -12,7 +12,7 @@ SEEDS="${SEEDS:-0 1 2 3 4}"
 
 MODE_IDS=(12)
 MODE_NAMES=(
-  "bio_prior_ot_flow_matching_velocity_endpoint_nll_w1000_e01"
+  "bio_prior_flow_matching_velocity_nll_w1000_e001"
 )
 
 cd "${REPO_ROOT}"
