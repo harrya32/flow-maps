@@ -97,6 +97,14 @@ VARIANTS = [
         "weight": 1000.0,
         "loss_point_entropy_weight": 0.1,
     },
+    {
+        "mode": "ot_plain_unconstrained",
+        "base_slurm_id": 3,
+        "pair_mode": "ot_plain",
+        "constraints_enabled": False,
+        "path_mode": "loss_points_nll",
+        "weight": 0.0,
+    },
 ]
 
 

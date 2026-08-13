@@ -52,6 +52,13 @@ _CLASSIFIER_CACHE: Dict[str, Tuple[Any, List[str], np.ndarray, np.ndarray]] = {}
 _JAX_CLASSIFIER_CACHE: Dict[str, Tuple[Dict[str, jnp.ndarray], List[str], jnp.ndarray, jnp.ndarray]] = {}
 
 
+def _canonical_maizels_pair_mode(pair_mode: str) -> str:
+    pair_mode = str(pair_mode)
+    if pair_mode in ("ot", "plain_ot"):
+        return "ot_plain"
+    return pair_mode
+
+
 class NumpyCellTypeMLP:
     """NumPy inference copy of the PyTorch PCA50 cell-type classifier."""
 
@@ -762,14 +769,19 @@ def _ot_cache_metadata(
     pair_mode: str,
     lineage_transition_mode: str,
 ) -> Dict[str, Any]:
+    pair_mode = _canonical_maizels_pair_mode(pair_mode)
     metadata = {
         "cache_version": str(getattr(cfg.problem, "ot_cache_version", "v1")),
         "pair_mode": str(pair_mode),
         "source_time": str(getattr(cfg.problem, "source_time", "D3")),
         "target_time": str(getattr(cfg.problem, "target_time", "D8")),
         "dataset_location": str(getattr(cfg.problem, "dataset_location", "")),
-        "endpoint_transition_mode": "descendant",
-        "lineage_transition_mode": str(lineage_transition_mode),
+        "endpoint_transition_mode": (
+            "none" if pair_mode == "ot_plain" else "descendant"
+        ),
+        "lineage_transition_mode": (
+            "none" if pair_mode == "ot_plain" else str(lineage_transition_mode)
+        ),
         "cost": "whitened_sqeuclidean_global_std_v1",
         "ot_mass_tolerance": float(getattr(cfg.problem, "ot_mass_tolerance", 1e-12)),
         "ot_drop_orphan_cells": bool(
@@ -930,7 +942,7 @@ def _append_ot_edges(
     )
 
 
-def _collect_masked_ot_edges(
+def _collect_exact_ot_edges(
     cfg,
     source_x: np.ndarray,
     source_types: np.ndarray,
@@ -943,10 +955,14 @@ def _collect_masked_ot_edges(
     endpoint_reachable: Dict[str, Set[str]],
     lineage_transition_mode: str,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
-    """Enumerate hard-valid endpoint edges for exact Maizels OT coupling."""
-    classifier_path = resolve_classifier_path(
-        getattr(cfg.problem, "classifier_path", None)
-    )
+    """Enumerate candidate edges for exact Maizels OT coupling."""
+    pair_mode = _canonical_maizels_pair_mode(pair_mode)
+    plain_ot = pair_mode == "ot_plain"
+    classifier_path = None
+    if pair_mode == "ot_endpoint_interpolant":
+        classifier_path = resolve_classifier_path(
+            getattr(cfg.problem, "classifier_path", None)
+        )
     chunk_size = int(
         getattr(
             cfg.problem,
@@ -960,8 +976,16 @@ def _collect_masked_ot_edges(
     margin_threshold = float(getattr(cfg.problem, "classifier_margin_threshold", 1.0))
     classifier_batch_size = int(getattr(cfg.problem, "classifier_batch_size", 8192))
 
-    source_groups = _type_index_groups(source_types)
-    target_groups = _type_index_groups(target_types)
+    if plain_ot:
+        source_groups = {
+            "__all__": np.arange(source_x.shape[0], dtype=np.int64),
+        }
+        target_groups = {
+            "__all__": np.arange(target_x.shape[0], dtype=np.int64),
+        }
+    else:
+        source_groups = _type_index_groups(source_types)
+        target_groups = _type_index_groups(target_types)
     all_x = np.concatenate([source_x, target_x], axis=0).astype(np.float64)
     cost_scale = np.std(all_x, axis=0)
     cost_scale = np.where(cost_scale > 1e-6, cost_scale, 1.0)
@@ -974,11 +998,12 @@ def _collect_masked_ot_edges(
         "endpoint_rejected": 0,
         "interpolant_rejected": 0,
         "accepted_pairs": 0,
+        "ot_edge_mode": "full_support" if plain_ot else "hard_mask",
     }
 
     progress = _progress_bar(
         total_pairs,
-        "Maizels OT hard mask",
+        "Maizels OT full support" if plain_ot else "Maizels OT hard mask",
         bool(getattr(cfg.problem, "ot_progress_enabled", True)),
     )
     try:
@@ -987,7 +1012,10 @@ def _collect_masked_ot_edges(
                 n_block = int(sidx_group.shape[0] * tidx_group.shape[0])
                 if n_block == 0:
                     continue
-                if not endpoint_valid(src_type, dst_type, endpoint_reachable):
+                if (
+                    not plain_ot
+                    and not endpoint_valid(src_type, dst_type, endpoint_reachable)
+                ):
                     stats["endpoint_rejected"] += n_block
                     if progress is not None:
                         progress.update(n_block)
@@ -1038,7 +1066,7 @@ def _collect_masked_ot_edges(
 
     if not edge_source_idx:
         raise RuntimeError(
-            "Masked Maizels OT found no valid edges after endpoint/path filters."
+            "Maizels exact OT found no candidate edges."
         )
 
     return (
@@ -1134,7 +1162,9 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
     rng: np.random.Generator,
     pair_mode: str,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
-    """Create a pair pool by sampling from hard-masked exact OT."""
+    """Create a pair pool by sampling from an exact OT plan."""
+    pair_mode = _canonical_maizels_pair_mode(pair_mode)
+    plain_ot = pair_mode == "ot_plain"
     class_to_id = class_to_id_map(CLASS_NAMES)
     source_type_ids_all = np.asarray(
         [class_to_id[str(ct)] for ct in source_types],
@@ -1172,7 +1202,7 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
         if verbose and cache_path is not None:
             print(f"Maizels exact OT cache miss: {cache_path}")
 
-        source_idx_edges, target_idx_edges, costs, stats = _collect_masked_ot_edges(
+        source_idx_edges, target_idx_edges, costs, stats = _collect_exact_ot_edges(
             cfg,
             source_x,
             source_types,
@@ -1198,15 +1228,18 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
         if not source_has_edge.all() or not target_has_edge.all():
             if not drop_orphans:
                 raise RuntimeError(
-                    "Masked Maizels OT is infeasible before solving: "
+                    "Maizels exact OT is infeasible before solving: "
                     f"{n_orphan_source} source cells and {n_orphan_target} "
-                    "target cells have no valid edges. Set "
+                    "target cells have no candidate edges. Set "
                     "problem.ot_drop_orphan_cells=True to solve exact OT on "
-                    "the non-orphan hard-valid subproblem."
+                    "the non-orphan subproblem."
                 )
             if verbose:
+                orphan_reason = (
+                    "OT partners" if plain_ot else "hard-valid partners"
+                )
                 print(
-                    "Dropping Maizels OT orphan cells with no hard-valid partners: "
+                    f"Dropping Maizels OT orphan cells with no {orphan_reason}: "
                     f"sources={n_orphan_source}, targets={n_orphan_target}"
                 )
 
@@ -1309,7 +1342,7 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
     stats["target_n"] = int(target_x.shape[0])
     stats["source_counts"] = dict(Counter(source_types.tolist()))
     stats["target_counts"] = dict(Counter(target_types.tolist()))
-    stats["endpoint_transition_mode"] = "descendant"
+    stats["endpoint_transition_mode"] = "none" if plain_ot else "descendant"
     stats["lineage_transition_mode"] = lineage_transition_mode
     stats["ot_cost"] = "whitened_sqeuclidean"
     return paired, stats
@@ -1410,10 +1443,11 @@ def _make_pair_pool_from_endpoint_arrays(
     pair_mode: str,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     """Create independent or prior-filtered pairs from provided endpoint arrays."""
+    pair_mode = _canonical_maizels_pair_mode(pair_mode)
     if source_x.shape[0] == 0 or target_x.shape[0] == 0:
         raise RuntimeError("Maizels source/target pair pools must both be non-empty.")
 
-    if pair_mode in ("ot_endpoint", "ot_endpoint_interpolant"):
+    if pair_mode in ("ot_plain", "ot_endpoint", "ot_endpoint_interpolant"):
         return _make_exact_ot_pair_pool_from_endpoint_arrays(
             cfg,
             source_x,
@@ -1513,7 +1547,7 @@ def _make_pair_pool_from_endpoint_arrays(
     else:
         raise ValueError(
             "problem.maizels_pair_mode must be one of 'none', 'endpoint', "
-            "'endpoint_interpolant', 'ot_endpoint', or "
+            "'endpoint_interpolant', 'ot'/'ot_plain', 'ot_endpoint', or "
             f"'ot_endpoint_interpolant', got {pair_mode!r}."
         )
 
