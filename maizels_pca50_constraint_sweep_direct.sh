@@ -8,11 +8,11 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 CFG_PATH="${CFG_PATH:-configs.maizels_pca50_constraint_sweep}"
 DATASET_LOCATION="${DATASET_LOCATION:-/mnt/pdata/hmka3/flow-maps/celltype_classification_pca50_dataset.csv.gz}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/pdata/hmka3/flow-maps/outputs/maizels_pca50_constraint_sweep}"
-SEEDS="${SEEDS:-0 1 2 3 4}"
+SEEDS="${SEEDS:-5 6 7 8 9}"
 
-MODE_IDS=(12)
+MODE_IDS=(13)
 MODE_NAMES=(
-  "bio_prior_flow_matching_velocity_nll_w1000_e001"
+  "bio_prior_flow_matching_velocity_endpoint_nll_w350_e001"
 )
 
 cd "${REPO_ROOT}"
