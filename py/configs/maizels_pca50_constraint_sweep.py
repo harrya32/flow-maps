@@ -89,13 +89,13 @@ VARIANTS = [
         "weight": 0.0,
     },
     {
-        "mode": "bio_prior_ot_constrained_loss_points_nll_w100_e001",
+        "mode": "bio_prior_ot_constrained_loss_points_nll_w700_e01",
         "base_slurm_id": 4,
         "pair_mode": "ot_endpoint_interpolant",
         "constraints_enabled": True,
         "path_mode": "loss_points_nll",
-        "weight": 100.0,
-        "loss_point_entropy_weight": 0.01,
+        "weight": 700.0,
+        "loss_point_entropy_weight": 0.1,
     },
     {
         "mode": "ot_plain_unconstrained",
@@ -127,6 +127,43 @@ VARIANTS = [
         "diag_fraction": 1.0,
         "velocity_rollout_loss_scope": "endpoints",
     },
+    {
+        "mode": "vanilla_flow_map",
+        "base_slurm_id": 1,
+        "constraints_enabled": False,
+        "path_mode": "loss_points",
+        "weight": 0.0,
+    },
+    {
+        "mode": "vanilla_flow_matching",
+        "base_slurm_id": 0,
+        "constraints_enabled": False,
+        "path_mode": "loss_points",
+        "weight": 0.0,
+    },
+    {
+        "mode": "bio_prior_flow_matching",
+        "base_slurm_id": 2,
+        "constraints_enabled": False,
+        "path_mode": "loss_points",
+        "weight": 0.0,
+    },
+    {
+        "mode": "bio_prior_ot_flow_matching",
+        "base_slurm_id": 2,
+        "pair_mode": "ot_endpoint_interpolant",
+        "constraints_enabled": False,
+        "path_mode": "loss_points",
+        "weight": 0.0,
+    },
+    {
+        "mode": "ot_plain_flow_matching",
+        "base_slurm_id": 2,
+        "pair_mode": "ot_plain",
+        "constraints_enabled": False,
+        "path_mode": "loss_points_nll",
+        "weight": 0.0,
+    }
 ]
 
 
