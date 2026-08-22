@@ -123,7 +123,7 @@ def get_config(
     config.logging.euler_line_steps = [10, 25, 100]
     config.logging.scalar_freq = 1
     config.logging.progress_freq = 1
-    config.logging.visual_freq = 500
+    config.logging.visual_freq = 1000
     config.logging.save_freq = 5_000
     config.logging.wandb_project = "self-distill-flow-maps"
 

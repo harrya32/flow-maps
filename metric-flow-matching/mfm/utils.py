@@ -1,17 +1,10 @@
 import numpy as np
 import torch
 import random
-import matplotlib
 import matplotlib.pyplot as plt
 import math
-import umap
-import phate
-import scprep
-import scanpy as sc
-from sklearn.decomposition import PCA
 
 import ot as pot
-from tqdm import tqdm
 from functools import partial
 from typing import Optional
 
@@ -115,9 +108,7 @@ def plot_arch(
                 first = False
                 traj_label_added = False
 
-                line_indices = np.random.choice(
-                    indices, size=len(indices) // 2, replace=False
-                )
+                line_indices = np.random.choice(indices, size=len(indices) // 2, replace=False)
 
                 for idx in line_indices:
                     if not traj_label_added:
@@ -168,18 +159,14 @@ def plot_sphere(true_datasets, traj, time_steps, fname, n_samples=200):
         x = np.outer(np.cos(u), np.sin(v))
         y = np.outer(np.sin(u), np.sin(v))
         z = np.outer(np.ones(np.size(u)), np.cos(v))
-        ax.plot_surface(
-            x, y, z, color="y", rstride=10, cstride=10, alpha=0.05, edgecolor="black"
-        )
+        ax.plot_surface(x, y, z, color="y", rstride=10, cstride=10, alpha=0.05, edgecolor="black")
 
         first = True
         for i, dataset in enumerate(true_datasets):
             dataset = dataset.cpu().numpy() if torch.is_tensor(dataset) else dataset
             if i in time_steps:
                 if len(dataset) > n_samples:
-                    indices = np.random.choice(
-                        len(dataset), size=n_samples, replace=False
-                    )
+                    indices = np.random.choice(len(dataset), size=n_samples, replace=False)
                 else:
                     indices = range(len(dataset))
                 color = source_color if i == time_steps[0] else target_color
@@ -194,9 +181,7 @@ def plot_sphere(true_datasets, traj, time_steps, fname, n_samples=200):
                 if first:
                     first = False
                     traj_label_added = False
-                    line_indices = np.random.choice(
-                        indices, size=len(indices) // 2, replace=False
-                    )
+                    line_indices = np.random.choice(indices, size=len(indices) // 2, replace=False)
                     for idx in line_indices:
                         ax.plot(
                             traj[:, idx, dimensions[0]],
@@ -222,9 +207,7 @@ def plot_lidar(ax, dataset, xs=None, S=25):
     combined_sizes = []
 
     # Normalize the z-coordinates for alpha scaling
-    z_coords = (
-        dataset[:, 2].numpy() if torch.is_tensor(dataset[:, 2]) else dataset[:, 2]
-    )
+    z_coords = dataset[:, 2].numpy() if torch.is_tensor(dataset[:, 2]) else dataset[:, 2]
     z_min, z_max = z_coords.min(), z_coords.max()
     z_norm = (z_coords - z_min) / (z_max - z_min)
 
@@ -249,9 +232,7 @@ def plot_lidar(ax, dataset, xs=None, S=25):
         xs = xs.cpu().detach().clone()
         for idx, step in enumerate(steps_to_log):
             for point in xs[:512, step]:
-                combined_points.append(
-                    point.numpy() if torch.is_tensor(point) else point
-                )
+                combined_points.append(point.numpy() if torch.is_tensor(point) else point)
                 combined_colors.append(cmap(idx / (len(steps_to_log) - 1)))
                 combined_sizes.append(0.8)
 
@@ -297,9 +278,7 @@ def plot_images_trajectory(trajectories, vae, processor, num_steps):
     decoded_images = [
         [
             processor.postprocess(
-                vae.decode(
-                    trajectories[i_image, traj_step].unsqueeze(0)
-                ).sample.detach()
+                vae.decode(trajectories[i_image, traj_step].unsqueeze(0)).sample.detach()
             )[0]
             for traj_step in t_span
         ]
@@ -307,17 +286,13 @@ def plot_images_trajectory(trajectories, vae, processor, num_steps):
     ]
 
     # Plotting
-    fig, axes = plt.subplots(
-        num_images, num_steps, figsize=(num_steps * 2, num_images * 2)
-    )
+    fig, axes = plt.subplots(num_images, num_steps, figsize=(num_steps * 2, num_images * 2))
     if num_images == 1:
         axes = [axes]  # Ensure axes is iterable
     for img_idx, img_traj in enumerate(decoded_images):
         for step_idx, img in enumerate(img_traj):
             ax = axes[img_idx][step_idx] if num_images > 1 else axes[step_idx]
-            if (
-                isinstance(img, np.ndarray) and img.shape[0] == 3
-            ):  # Assuming 3 channels (RGB)
+            if isinstance(img, np.ndarray) and img.shape[0] == 3:  # Assuming 3 channels (RGB)
                 img = img.transpose(1, 2, 0)
             ax.imshow(img)
             ax.axis("off")

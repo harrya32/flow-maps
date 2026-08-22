@@ -14,6 +14,7 @@ from ml_collections import config_dict
 
 from . import state_utils
 from . import dist_utils
+from . import pair_times
 
 
 def compute_constraint_anneal_scale(
@@ -286,6 +287,25 @@ def get_loss_fn_args(
     paired_x0batch, x1batch, label_batch, prng_key = get_batch(cfg, statics, prng_key)
     if paired_x0batch is not None:
         x0batch = paired_x0batch
+
+    # Multi-timepoint datasets store each pair's absolute interval in label
+    # columns 2:4. Randomness above is sampled in pair-local [0, 1]
+    # coordinates; map it into the global experiment clock before evaluating
+    # the flow map. The time-aware interpolant performs the inverse mapping
+    # when constructing I_t(x0, x1).
+    if pair_times.enabled(cfg):
+        if label_batch is None:
+            raise ValueError("Time-aware pair training requires pair labels.")
+        sbatch = pair_times.local_to_global(
+            sbatch, label_batch, dtype=x1batch.dtype
+        )
+        tbatch = pair_times.local_to_global(
+            tbatch, label_batch, dtype=x1batch.dtype
+        )
+        if ubatch is not None:
+            ubatch = pair_times.local_to_global(
+                ubatch, label_batch, dtype=x1batch.dtype
+            )
 
     # set up the teacher (uses current params for self-distillation)
     teacher_params = select_teacher_params(cfg, train_state)

@@ -16,7 +16,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from ml_collections import config_dict
 
-from . import maizels
+from . import cite_multi, maizels
 
 _SCHIEBINGER_SERUM_URLS = [
     "https://figshare.com/ndownloader/files/35858033",
@@ -840,6 +840,25 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
             )
             return source_pool[idx]
 
+    elif cfg.problem.base == "cite_multi_day2":
+        splits = cite_multi.endpoint_pool_splits(
+            cfg,
+            dataset_location=getattr(cfg.problem, "dataset_location", None),
+        )
+        source_pool = jnp.asarray(splits["source_train_x"], dtype=jnp.float32)
+        if source_pool.shape[0] == 0:
+            raise RuntimeError("CITE/Multi day-2 source pool is empty.")
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            idx = jax.random.randint(
+                key,
+                shape=(bs,),
+                minval=0,
+                maxval=source_pool.shape[0],
+            )
+            return source_pool[idx]
+
     elif cfg.problem.base == "four_gaussians_source":
         std = float(getattr(cfg.problem, "four_gaussians_std", 0.35))
         source_means = jnp.asarray(
@@ -1210,6 +1229,34 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             f"pairs={cfg.problem.n}, "
             f"candidate_acceptance={stats['candidate_acceptance_rate']:.4f}, "
             f"dim={cfg.problem.d}"
+        )
+
+    elif cfg.problem.target == "cite_multi_pca100":
+        paired, stats = cite_multi.make_pair_pool(
+            cfg,
+            dataset_location=getattr(cfg.problem, "dataset_location", None),
+        )
+        x0s = paired["x0"]
+        x1s = paired["x1"]
+        cfg.problem.n = int(x1s.shape[0])
+        cfg.problem.d = int(x1s.shape[1])
+        cfg.problem.cite_multi_pair_stats = stats
+        rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
+        ds = paired_np_to_dataset(cfg, paired)
+        interval_summary = ", ".join(
+            (
+                f"{item['source_time']}->{item['target_time']}: "
+                f"{item['sampled_pairs']} pairs, "
+                f"acceptance={item['candidate_acceptance_rate']:.4f}"
+            )
+            for item in stats["intervals"].values()
+        )
+        print(
+            "Loaded CITE/Multi PCA100 pairs: "
+            f"dataset={stats['dataset_name']}, "
+            f"heldout_day={stats['heldout_timepoint']}, "
+            f"mode={stats['pair_mode']}, total_pairs={cfg.problem.n}, "
+            f"dim={cfg.problem.d}; {interval_summary}"
         )
 
     elif (

@@ -12,6 +12,8 @@ import jax
 import jax.numpy as jnp
 from ml_collections import config_dict
 
+from . import pair_times
+
 
 @dataclasses.dataclass
 class Interpolant:
@@ -77,6 +79,49 @@ class Interpolant:
 
     def __eq__(self, other):
         return self.alpha == other.alpha and self.beta == other.beta
+
+
+class TimeRescaledLinearInterpolant(Interpolant):
+    """Linear interpolation on the absolute interval stored in each pair label."""
+
+    def __init__(self):
+        super().__init__(
+            alpha=lambda t: 1.0 - t,
+            beta=lambda t: t,
+            alpha_dot=lambda _: -1.0,
+            beta_dot=lambda _: 1.0,
+        )
+
+    def calc_It(
+        self,
+        t: float,
+        x0: jnp.ndarray,
+        x1: jnp.ndarray,
+        label: jnp.ndarray = None,
+    ) -> jnp.ndarray:
+        if label is None:
+            raise ValueError("TimeRescaledLinearInterpolant requires pair-time labels.")
+        tau = pair_times.global_to_local(t, label, dtype=x0.dtype)
+        return (1.0 - tau) * x0 + tau * x1
+
+    def calc_It_dot(
+        self,
+        t: float,
+        x0: jnp.ndarray,
+        x1: jnp.ndarray,
+        label: jnp.ndarray = None,
+    ) -> jnp.ndarray:
+        if label is None:
+            raise ValueError("TimeRescaledLinearInterpolant requires pair-time labels.")
+        t_start, t_end = pair_times.bounds(label, dtype=x0.dtype)
+        duration = jnp.maximum(t_end - t_start, jnp.asarray(1e-8, dtype=x0.dtype))
+        return (x1 - x0) / duration
+
+    def __hash__(self):
+        return hash("time_rescaled_linear")
+
+    def __eq__(self, other):
+        return isinstance(other, TimeRescaledLinearInterpolant)
 
 
 class TriangleGaussianInterpolant(Interpolant):
@@ -648,6 +693,8 @@ def setup_interpolant(cfg: config_dict.ConfigDict) -> Interpolant:
             alpha_dot=lambda _: -1.0,
             beta_dot=lambda _: 1.0,
         )
+    elif cfg.problem.interp_type in ("time_rescaled_linear", "segment_linear"):
+        interp = TimeRescaledLinearInterpolant()
     elif cfg.problem.interp_type == "trig":
         interp = Interpolant(
             alpha=lambda t: jnp.cos(jnp.pi * t / 2),

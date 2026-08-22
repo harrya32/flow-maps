@@ -25,10 +25,43 @@ from matplotlib.patches import Circle, Ellipse, Rectangle
 from matplotlib import pyplot as plt
 from ml_collections import config_dict
 
-from . import datasets, dist_utils, fid_utils, flow_map, loss_args, maizels, state_utils
+from . import (
+    cite_multi,
+    datasets,
+    dist_utils,
+    fid_utils,
+    flow_map,
+    loss_args,
+    maizels,
+    pair_times,
+    state_utils,
+)
 
 Parameters = Dict[str, Dict]
 _MAIZELS_VALIDATION_CACHE = {}
+
+
+def _is_lineage_trajectory_target(cfg: config_dict.ConfigDict) -> bool:
+    return getattr(cfg.problem, "target", None) in {
+        "maizels_pca50",
+        "cite_multi_pca100",
+    }
+
+
+def _lineage_backend(cfg: config_dict.ConfigDict):
+    if getattr(cfg.problem, "target", None) == "cite_multi_pca100":
+        return cite_multi
+    return maizels
+
+
+def _training_pair_mode(cfg: config_dict.ConfigDict) -> str:
+    return str(
+        getattr(
+            cfg.problem,
+            "pair_mode",
+            getattr(cfg.problem, "maizels_pair_mode", "none"),
+        )
+    )
 
 
 def is_lowd_problem(cfg: config_dict.ConfigDict) -> bool:
@@ -1023,6 +1056,43 @@ def _vector_field_batch(
     labels: jnp.ndarray,
 ) -> jnp.ndarray:
     """Evaluate the instantaneous vector field b_t on a batch of points."""
+    t = jnp.asarray(t)
+    if labels is None:
+        if t.ndim > 0:
+            return jax.vmap(
+                lambda ti, x: apply_fn(
+                    params,
+                    ti,
+                    x,
+                    label=None,
+                    train=False,
+                    calc_weight=False,
+                    method="calc_b",
+                )
+            )(t, xs)
+        return jax.vmap(
+            lambda x: apply_fn(
+                params,
+                t,
+                x,
+                label=None,
+                train=False,
+                calc_weight=False,
+                method="calc_b",
+            )
+        )(xs)
+    if t.ndim > 0:
+        return jax.vmap(
+            lambda ti, x, lbl: apply_fn(
+                params,
+                ti,
+                x,
+                label=lbl,
+                train=False,
+                calc_weight=False,
+                method="calc_b",
+            )
+        )(t, xs, labels)
     return jax.vmap(
         lambda x, lbl: apply_fn(
             params,
@@ -1168,7 +1238,25 @@ def _maizels_flow_map_step_batch(
     xs: jnp.ndarray,
     labels: jnp.ndarray,
 ) -> jnp.ndarray:
+    s = jnp.asarray(s)
+    t = jnp.asarray(t)
+    times_are_batched = s.ndim > 0 or t.ndim > 0
     if labels is None:
+        if times_are_batched:
+            s_batch = jnp.broadcast_to(s, (xs.shape[0],))
+            t_batch = jnp.broadcast_to(t, (xs.shape[0],))
+            return jax.vmap(
+                lambda si, ti, x: apply_fn(
+                    params,
+                    si,
+                    ti,
+                    x,
+                    label=None,
+                    train=False,
+                    calc_weight=False,
+                    return_X_and_phi=False,
+                )
+            )(s_batch, t_batch, xs)
         return jax.vmap(
             lambda x: apply_fn(
                 params,
@@ -1181,6 +1269,22 @@ def _maizels_flow_map_step_batch(
                 return_X_and_phi=False,
             )
         )(xs)
+
+    if times_are_batched:
+        s_batch = jnp.broadcast_to(s, (xs.shape[0],))
+        t_batch = jnp.broadcast_to(t, (xs.shape[0],))
+        return jax.vmap(
+            lambda si, ti, x, lbl: apply_fn(
+                params,
+                si,
+                ti,
+                x,
+                label=lbl,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(s_batch, t_batch, xs, labels)
 
     return jax.vmap(
         lambda x, lbl: apply_fn(
@@ -1203,7 +1307,7 @@ def _maizels_direct_constraint_paths(
     labels: jnp.ndarray,
     cfg: config_dict.ConfigDict,
 ) -> jnp.ndarray:
-    times = _maizels_constraint_path_times(cfg, x0s.dtype)
+    local_times = _maizels_constraint_path_times(cfg, x0s.dtype)
     if labels is None:
         return jax.vmap(
             lambda x: jax.vmap(
@@ -1217,22 +1321,26 @@ def _maizels_direct_constraint_paths(
                     calc_weight=False,
                     return_X_and_phi=False,
                 )
-            )(times)
+            )(local_times)
         )(x0s)
 
     return jax.vmap(
         lambda x, lbl: jax.vmap(
             lambda tau: apply_fn(
                 params,
-                0.0,
-                tau,
+                pair_times.bounds(lbl, dtype=x.dtype)[0]
+                if pair_times.enabled(cfg)
+                else 0.0,
+                pair_times.local_to_global(tau, lbl, dtype=x.dtype)
+                if pair_times.enabled(cfg)
+                else tau,
                 x,
                 label=lbl,
                 train=False,
                 calc_weight=False,
                 return_X_and_phi=False,
             )
-        )(times)
+            )(local_times)
     )(x0s, labels)
 
 
@@ -1243,24 +1351,31 @@ def _maizels_flowmap_constraint_paths(
     labels: jnp.ndarray,
     cfg: config_dict.ConfigDict,
 ) -> jnp.ndarray:
-    times = _maizels_constraint_path_times(cfg, x0s.dtype)
+    local_times = _maizels_constraint_path_times(cfg, x0s.dtype)
+    if pair_times.enabled(cfg):
+        t_start, t_end = pair_times.bounds(labels, dtype=x0s.dtype)
+    else:
+        t_start = jnp.zeros((x0s.shape[0],), dtype=x0s.dtype)
+        t_end = jnp.ones((x0s.shape[0],), dtype=x0s.dtype)
 
-    def step(carry, t_next):
-        xs, t_prev = carry
+    def step(carry, local_next):
+        xs, local_prev = carry
+        s = t_start + (t_end - t_start) * local_prev
+        t = t_start + (t_end - t_start) * local_next
         xs_next = _maizels_flow_map_step_batch(
             apply_fn,
             params,
-            t_prev,
-            t_next,
+            s,
+            t,
             xs,
             labels,
         )
-        return (xs_next, t_next), xs_next
+        return (xs_next, local_next), xs_next
 
     (_, _), states = jax.lax.scan(
         step,
         (x0s, jnp.asarray(0.0, dtype=x0s.dtype)),
-        times,
+        local_times,
     )
     return jnp.swapaxes(states, 0, 1)
 
@@ -1275,12 +1390,26 @@ def _maizels_euler_constraint_paths(
     n_steps = int(getattr(cfg.constraints, "euler_steps", 25))
     if n_steps < 1:
         raise ValueError("constraints.euler_steps must be >= 1")
-    if labels is None:
-        labels = -jnp.ones((x0s.shape[0],), dtype=jnp.int32)
-    return jnp.asarray(
-        _euler_paths(apply_fn, params, x0s, labels, n_steps)[:, 1:, :],
-        dtype=x0s.dtype,
-    )
+    local_times = jnp.linspace(0.0, 1.0, n_steps + 1, dtype=x0s.dtype)
+    if pair_times.enabled(cfg):
+        t_start, t_end = pair_times.bounds(labels, dtype=x0s.dtype)
+    else:
+        t_start = jnp.zeros((x0s.shape[0],), dtype=x0s.dtype)
+        t_end = jnp.ones((x0s.shape[0],), dtype=x0s.dtype)
+        if labels is None:
+            labels = -jnp.ones((x0s.shape[0],), dtype=jnp.int32)
+
+    def step(xs, idx):
+        t0 = t_start + (t_end - t_start) * local_times[idx]
+        t1 = t_start + (t_end - t_start) * local_times[idx + 1]
+        dt = t1 - t0
+        xs_next = xs + dt[:, None] * _vector_field_batch(
+            apply_fn, params, t0, xs, labels
+        )
+        return xs_next, xs_next
+
+    _, states = jax.lax.scan(step, x0s, jnp.arange(n_steps))
+    return jnp.swapaxes(states, 0, 1)
 
 
 def _maizels_lineage_constraint_paths(
@@ -1302,6 +1431,7 @@ def _sample_maizels_velocity_rollout_times(
     rng: jnp.ndarray,
     cfg: config_dict.ConfigDict,
     dtype,
+    label: jnp.ndarray = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     times = jax.random.uniform(
         rng,
@@ -1310,7 +1440,12 @@ def _sample_maizels_velocity_rollout_times(
         maxval=float(cfg.training.tmax),
         dtype=dtype,
     )
-    return jnp.minimum(times[0], times[1]), jnp.maximum(times[0], times[1])
+    start = jnp.minimum(times[0], times[1])
+    end = jnp.maximum(times[0], times[1])
+    if pair_times.enabled(cfg):
+        start = pair_times.local_to_global(start, label, dtype=dtype)
+        end = pair_times.local_to_global(end, label, dtype=dtype)
+    return start, end
 
 
 def _maizels_velocity_rollout_paths(
@@ -1340,6 +1475,7 @@ def _maizels_velocity_rollout_paths(
             time_rng,
             cfg,
             x0.dtype,
+            label,
         )
         x_start = interp.calc_It(t_start, x0, x1, label)
 
@@ -1398,12 +1534,17 @@ def _maizels_lineage_constraint_terms(
             "source and target cell-type ids."
         )
 
-    classifier_path = getattr(cfg.problem, "classifier_path", maizels.DEFAULT_CLASSIFIER)
+    backend = _lineage_backend(cfg)
+    classifier_path = getattr(
+        cfg.problem,
+        "classifier_path",
+        getattr(backend, "DEFAULT_CLASSIFIER", maizels.DEFAULT_CLASSIFIER),
+    )
     classifier_params, class_names, scaler_mean, scaler_scale = (
-        maizels.load_jax_classifier_params(classifier_path)
+        backend.load_jax_classifier_params(classifier_path)
     )
     flat = paths.reshape((-1, paths.shape[-1]))
-    logits = maizels.jax_classifier_logits(
+    logits = backend.jax_classifier_logits(
         classifier_params,
         scaler_mean,
         scaler_scale,
@@ -1414,21 +1555,21 @@ def _maizels_lineage_constraint_terms(
         logits / jnp.maximum(jnp.asarray(temperature, dtype=logits.dtype), 1e-6),
         axis=-1,
     ).reshape((paths.shape[0], paths.shape[1], -1))
-    lineage_transition_mode = maizels.lineage_transition_mode_from_config(cfg)
+    lineage_transition_mode = backend.lineage_transition_mode_from_config(cfg)
 
     lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
     target_type_ids = labels[:, 1] if lambda_final > 0.0 else None
-    return maizels.lineage_soft_terms_from_probs(
+    return backend.lineage_soft_terms_from_probs(
         probs,
         labels[:, 0],
         jnp.asarray(
-            maizels.lineage_invalid_transition_matrix(
+            backend.lineage_invalid_transition_matrix(
                 class_names,
                 transition_mode=lineage_transition_mode,
             ),
             dtype=probs.dtype,
         ),
-        jnp.asarray(maizels.classifier_index_lookup(class_names), dtype=jnp.int32),
+        jnp.asarray(backend.classifier_index_lookup(class_names), dtype=jnp.int32),
         target_type_ids=target_type_ids,
         transition_mask=transition_mask,
     )
@@ -1547,7 +1688,7 @@ def _draw_maizels_validity_paths(
     ylim: list,
     fontsize: float,
 ) -> None:
-    """Draw Maizels PC1/PC2 paths, coloring classifier-invalid paths red."""
+    """Draw PC1/PC2 paths, coloring classifier-invalid paths red."""
     valid_mask = np.asarray(valid_mask, dtype=bool)
     invalid_mask = ~valid_mask
     ax.scatter(
@@ -1624,6 +1765,7 @@ def _maizels_intermediate_timepoints(
     source_time: str,
     target_time: str,
     max_times: int,
+    requested_timepoints=None,
 ) -> list:
     source_value = maizels.parse_timepoint(source_time)
     target_value = maizels.parse_timepoint(target_time)
@@ -1635,6 +1777,15 @@ def _maizels_intermediate_timepoints(
         },
         key=maizels.parse_timepoint,
     )
+    if requested_timepoints is not None:
+        requested = {str(value) for value in requested_timepoints}
+        unknown = sorted(requested - set(unique), key=maizels.parse_timepoint)
+        if unknown:
+            raise ValueError(
+                "Requested distribution-evaluation timepoints are not available "
+                f"between {source_time} and {target_time}: {unknown}"
+            )
+        unique = [timepoint for timepoint in unique if timepoint in requested]
     if max_times <= 0 or len(unique) <= max_times:
         return unique
 
@@ -1749,8 +1900,30 @@ def _euler_terminal_at_time(
     n_steps: int,
 ) -> np.ndarray:
     """Euler rollout of dx/dt=b_t(x) from t=0 to a requested tau."""
+    return _euler_terminal_between(
+        apply_fn,
+        params,
+        x0s,
+        labels,
+        start_time=0.0,
+        end_time=float(tau),
+        n_steps=n_steps,
+    )
+
+
+def _euler_terminal_between(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    *,
+    start_time: float,
+    end_time: float,
+    n_steps: int,
+) -> np.ndarray:
+    """Euler rollout on an absolute sub-interval of the experiment clock."""
     n_steps = max(1, int(n_steps))
-    ts = jnp.linspace(0.0, float(tau), n_steps + 1)
+    ts = jnp.linspace(float(start_time), float(end_time), n_steps + 1)
 
     def step(x, idx):
         t0 = ts[idx]
@@ -1760,6 +1933,140 @@ def _euler_terminal_at_time(
 
     final, _ = jax.lax.scan(step, x0s, jnp.arange(n_steps))
     return np.asarray(final, dtype=np.float32)
+
+
+def _mfm_exact_emd(x_pred: np.ndarray, x_true: np.ndarray) -> float:
+    """Reproduce MFM's uniform-mass Euclidean ``pot.emd2`` calculation."""
+    try:
+        import ot as pot
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "MFM-compatible test_EMD logging requires POT (pip install POT==0.9.3)."
+        ) from exc
+
+    x_pred = np.asarray(x_pred, dtype=np.float32)
+    x_true = np.asarray(x_true, dtype=np.float32)
+    if x_pred.ndim != 2 or x_true.ndim != 2:
+        raise ValueError("MFM EMD inputs must be two-dimensional sample arrays.")
+    if x_pred.shape[0] == 0 or x_true.shape[0] == 0:
+        raise ValueError("MFM EMD cannot be computed on an empty population.")
+    if x_pred.shape[1] != x_true.shape[1]:
+        raise ValueError(
+            "MFM EMD populations must have the same feature dimension, got "
+            f"{x_pred.shape[1]} and {x_true.shape[1]}."
+        )
+
+    # This is the NumPy equivalent of the MFM implementation's torch.cdist.
+    pred_norm = np.sum(x_pred * x_pred, axis=1, keepdims=True)
+    true_norm = np.sum(x_true * x_true, axis=1, keepdims=True).T
+    # Build the dense cost matrix in place: the full CITE/Multi populations
+    # produce tens of millions of pairwise distances, so avoiding additional
+    # matrix-sized temporaries materially lowers peak memory.
+    cost = x_pred @ x_true.T
+    cost *= np.float32(-2.0)
+    cost += pred_norm
+    cost += true_norm
+    np.maximum(cost, np.float32(0.0), out=cost)
+    np.sqrt(cost, out=cost)
+    return float(
+        pot.emd2(
+            pot.unif(x_pred.shape[0]),
+            pot.unif(x_true.shape[0]),
+            cost,
+            numItermax=10_000_000,
+        )
+    )
+
+
+def _mfm_population_subset(
+    population: np.ndarray,
+    max_points: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Optionally cap a population; zero preserves MFM's full-population test."""
+    population = np.asarray(population, dtype=np.float32)
+    if max_points <= 0 or population.shape[0] <= max_points:
+        return population
+    idx = rng.choice(population.shape[0], size=max_points, replace=False)
+    return population[idx]
+
+
+def compute_mfm_distribution_metrics(
+    cfg: config_dict.ConfigDict,
+    train_state: state_utils.EMATrainState,
+    step: jnp.ndarray,
+) -> Dict[str, float]:
+    """Compute CITE/Multi's original MFM held-out ``test_EMD`` protocol."""
+    mfm_cfg = getattr(cfg.logging, "mfm", None)
+    if mfm_cfg is None or not bool(getattr(mfm_cfg, "enabled", False)):
+        return {}
+    if getattr(cfg.problem, "target", None) != "cite_multi_pca100":
+        return {}
+
+    step_int = int(jax.device_get(step))
+    final_only = bool(getattr(mfm_cfg, "final_only", True))
+    if final_only:
+        if step_int < int(cfg.optimization.total_steps):
+            return {}
+    else:
+        frequency = int(getattr(mfm_cfg, "frequency", cfg.logging.visual_freq))
+        if frequency <= 0 or step_int <= 0 or step_int % frequency != 0:
+            return {}
+
+    data = cite_multi.all_timepoint_data(
+        getattr(cfg.problem, "dataset_location", None)
+    )
+    timepoint_order = [
+        str(value)
+        for value in getattr(cfg.problem, "timepoint_order", cite_multi.TIMEPOINTS)
+    ]
+    heldout_timepoint = str(getattr(cfg.problem, "heldout_timepoint", "4"))
+    try:
+        heldout_index = timepoint_order.index(heldout_timepoint)
+    except ValueError as exc:
+        raise ValueError(
+            f"Held-out timepoint {heldout_timepoint!r} is not in {timepoint_order}."
+        ) from exc
+    if heldout_index <= 0:
+        raise ValueError("MFM held-out evaluation requires a preceding timepoint.")
+    source_timepoint = timepoint_order[heldout_index - 1]
+
+    source_all = data["x"][data["timepoints"] == source_timepoint]
+    actual_all = data["x"][data["timepoints"] == heldout_timepoint]
+    max_points = int(getattr(mfm_cfg, "max_points", 0))
+    seed = int(
+        getattr(
+            mfm_cfg,
+            "seed",
+            int(getattr(cfg.training, "seed", 0)) + 2901,
+        )
+    )
+    rng = np.random.default_rng(seed)
+    source = _mfm_population_subset(source_all, max_points, rng)
+    actual = _mfm_population_subset(actual_all, max_points, rng)
+
+    start_time = cite_multi.normalized_time(source_timepoint)
+    end_time = cite_multi.normalized_time(heldout_timepoint)
+    euler_steps = int(getattr(mfm_cfg, "euler_steps", 100))
+    params = dist_utils.safe_unreplicate(cfg, train_state.params)
+    prediction = _euler_terminal_between(
+        train_state.apply_fn,
+        params,
+        jnp.asarray(source, dtype=jnp.float32),
+        None,
+        start_time=start_time,
+        end_time=end_time,
+        n_steps=euler_steps,
+    )
+    emd = _mfm_exact_emd(prediction, actual)
+    print(
+        "MFM-compatible held-out evaluation: "
+        f"{source_timepoint}->{heldout_timepoint}, "
+        f"t={start_time:g}->{end_time:g}, steps={euler_steps}, "
+        f"source_n={source.shape[0]}, target_n={actual.shape[0]}, "
+        f"test_EMD={emd:.8g}"
+    )
+    return {"mfm/test_EMD": emd}
 
 
 def _flowmap_terminal_at_time(
@@ -1810,7 +2117,8 @@ def _maizels_distribution_eval_split(
             "'auto', 'heldout', 'train', or 'all'."
         )
 
-    splits = maizels.endpoint_pool_splits(cfg, dataset_location=dataset_location)
+    backend = _lineage_backend(cfg)
+    splits = backend.endpoint_pool_splits(cfg, dataset_location=dataset_location)
     heldout_n = min(int(splits["source_holdout_n"]), int(splits["target_holdout_n"]))
     if heldout_n >= int(points_per_time):
         return "heldout"
@@ -1833,8 +2141,9 @@ def _log_maizels_distribution_eval(
     if not bool(getattr(maizels_cfg, "distribution_eval_enabled", True)):
         return
 
+    backend = _lineage_backend(cfg)
     dataset_location = getattr(cfg.problem, "dataset_location", None)
-    data = maizels.all_timepoint_data(dataset_location)
+    data = backend.all_timepoint_data(dataset_location)
     source_time = getattr(cfg.problem, "source_time", "D3")
     target_time = getattr(cfg.problem, "target_time", "D8")
     source_value = maizels.parse_timepoint(source_time)
@@ -1842,8 +2151,15 @@ def _log_maizels_distribution_eval(
     denom = max(target_value - source_value, 1e-12)
 
     max_times = int(getattr(maizels_cfg, "distribution_eval_max_timepoints", 0))
+    requested_timepoints = getattr(
+        maizels_cfg, "distribution_eval_timepoints", None
+    )
     timepoints = _maizels_intermediate_timepoints(
-        data, source_time, target_time, max_times
+        data,
+        source_time,
+        target_time,
+        max_times,
+        requested_timepoints=requested_timepoints,
     )
     if not timepoints:
         return
@@ -1853,10 +2169,10 @@ def _log_maizels_distribution_eval(
     plot_pair_mode = getattr(
         maizels_cfg,
         "pair_mode",
-        getattr(cfg.problem, "maizels_pair_mode", "none"),
+        _training_pair_mode(cfg),
     )
     if plot_pair_mode == "same_as_training":
-        plot_pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+        plot_pair_mode = _training_pair_mode(cfg)
     seed = int(
         getattr(
             maizels_cfg,
@@ -1872,7 +2188,7 @@ def _log_maizels_distribution_eval(
         points_per_time,
         dataset_location,
     )
-    eval_pairs, _ = maizels.make_endpoint_split_pair_pool(
+    eval_pairs, _ = backend.make_endpoint_split_pair_pool(
         cfg,
         points_per_time,
         split=eval_split,
@@ -1938,13 +2254,16 @@ def _log_maizels_distribution_eval(
         x0_eval = x0_eval_all[:n_compare]
         x1_eval = x1_eval_all[:n_compare]
         labels_eval = labels_eval_all[:n_compare]
-        tau = float(
-            np.clip(
-                (maizels.parse_timepoint(timepoint) - source_value) / denom,
-                0.0,
-                1.0,
+        if hasattr(backend, "normalized_time"):
+            tau = float(backend.normalized_time(timepoint))
+        else:
+            tau = float(
+                np.clip(
+                    (maizels.parse_timepoint(timepoint) - source_value) / denom,
+                    0.0,
+                    1.0,
+                )
             )
-        )
 
         direct = np.asarray(
             _flow_map_batch(
@@ -2019,11 +2338,12 @@ def _log_maizels_trajectory_diagnostics(
     *,
     fontsize: float,
 ) -> None:
-    """Log classifier-validity plots on Maizels D3/D8 cells held out from training."""
+    """Log classifier-validity plots on held-out lineage-dataset endpoints."""
     maizels_cfg = getattr(cfg.logging, "maizels", None)
     if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
         return
 
+    backend = _lineage_backend(cfg)
     n_plot = int(getattr(maizels_cfg, "plot_bs", 128))
     if n_plot <= 0:
         return
@@ -2031,10 +2351,10 @@ def _log_maizels_trajectory_diagnostics(
     plot_pair_mode = getattr(
         maizels_cfg,
         "pair_mode",
-        getattr(cfg.problem, "maizels_pair_mode", "none"),
+        _training_pair_mode(cfg),
     )
     if plot_pair_mode == "same_as_training":
-        plot_pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+        plot_pair_mode = _training_pair_mode(cfg)
     plot_seed = int(
         getattr(
             maizels_cfg,
@@ -2042,7 +2362,7 @@ def _log_maizels_trajectory_diagnostics(
             int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997,
         )
     )
-    heldout_pairs, _ = maizels.make_heldout_pair_pool(
+    heldout_pairs, _ = backend.make_heldout_pair_pool(
         cfg,
         n_plot,
         dataset_location=getattr(cfg.problem, "dataset_location", None),
@@ -2069,7 +2389,11 @@ def _log_maizels_trajectory_diagnostics(
     prob_threshold = float(getattr(maizels_cfg, "prob_threshold", 0.85))
     margin_threshold = float(getattr(maizels_cfg, "margin_threshold", 1.0))
     classifier_batch_size = int(getattr(maizels_cfg, "classifier_batch_size", 8192))
-    classifier_path = getattr(cfg.problem, "classifier_path", maizels.DEFAULT_CLASSIFIER)
+    classifier_path = getattr(
+        cfg.problem,
+        "classifier_path",
+        getattr(backend, "DEFAULT_CLASSIFIER", maizels.DEFAULT_CLASSIFIER),
+    )
     lineage_transition_mode = getattr(
         maizels_cfg,
         "lineage_transition_mode",
@@ -2143,7 +2467,7 @@ def _log_maizels_trajectory_diagnostics(
         _maizels_check_times(check_n_times, include_final=False),
     )
 
-    direct_validity = maizels.check_paths_with_classifier(
+    direct_validity = backend.check_paths_with_classifier(
         paths=direct_check_paths,
         start_type_ids=start_type_ids,
         classifier_path=classifier_path,
@@ -2153,7 +2477,7 @@ def _log_maizels_trajectory_diagnostics(
         classifier_batch_size=classifier_batch_size,
         lineage_transition_mode=lineage_transition_mode,
     )
-    flowmap_validity = maizels.check_paths_with_classifier(
+    flowmap_validity = backend.check_paths_with_classifier(
         paths=flowmap_check_paths,
         start_type_ids=start_type_ids,
         classifier_path=classifier_path,
@@ -2163,7 +2487,7 @@ def _log_maizels_trajectory_diagnostics(
         classifier_batch_size=classifier_batch_size,
         lineage_transition_mode=lineage_transition_mode,
     )
-    euler_validity = maizels.check_paths_with_classifier(
+    euler_validity = backend.check_paths_with_classifier(
         paths=euler_check_paths,
         start_type_ids=start_type_ids,
         classifier_path=classifier_path,
@@ -2173,7 +2497,7 @@ def _log_maizels_trajectory_diagnostics(
         classifier_batch_size=classifier_batch_size,
         lineage_transition_mode=lineage_transition_mode,
     )
-    gt_validity = maizels.check_paths_with_classifier(
+    gt_validity = backend.check_paths_with_classifier(
         paths=gt_check_paths,
         start_type_ids=start_type_ids,
         classifier_path=classifier_path,
@@ -2245,7 +2569,10 @@ def _log_maizels_trajectory_diagnostics(
         np.asarray(x0_plot),
         np.asarray(x1_plot),
         gt_valid,
-        title="Held-out D3/D8 interpolants in PC1/PC2",
+        title=(
+            f"Held-out {cfg.problem.source_time}/{cfg.problem.target_time} "
+            "interpolants in PC1/PC2"
+        ),
         xlim=panel_xlim,
         ylim=panel_ylim,
         fontsize=fontsize,
@@ -3250,16 +3577,17 @@ def _resolve_maizels_logging_pair_mode(cfg: config_dict.ConfigDict, maizels_cfg)
         getattr(
             maizels_cfg,
             "pair_mode",
-            getattr(cfg.problem, "maizels_pair_mode", "none"),
+            _training_pair_mode(cfg),
         ),
     )
     if pair_mode == "same_as_training":
-        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+        pair_mode = _training_pair_mode(cfg)
     return str(pair_mode)
 
 
 def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndarray]:
     maizels_cfg = cfg.logging.maizels
+    backend = _lineage_backend(cfg)
     dataset_location = getattr(cfg.problem, "dataset_location", None)
     n_val = max(1, int(getattr(maizels_cfg, "validation_bs", 1024)))
     seed = int(
@@ -3272,6 +3600,9 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
     pair_mode = _resolve_maizels_logging_pair_mode(cfg, maizels_cfg)
     cache_key = (
         str(dataset_location),
+        str(getattr(cfg.problem, "target", "")),
+        str(getattr(cfg.problem, "dataset_name", "")),
+        str(getattr(cfg.problem, "heldout_timepoint", "")),
         str(getattr(cfg.problem, "source_time", "D3")),
         str(getattr(cfg.problem, "target_time", "D8")),
         pair_mode,
@@ -3285,7 +3616,7 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
     if cache_key in _MAIZELS_VALIDATION_CACHE:
         return _MAIZELS_VALIDATION_CACHE[cache_key]
 
-    pairs, _ = maizels.make_heldout_pair_pool(
+    pairs, _ = backend.make_heldout_pair_pool(
         cfg,
         n_val,
         dataset_location=dataset_location,
@@ -3333,6 +3664,12 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
     else:
         raise ValueError(f"Unknown psd_type: {cfg.training.psd_type}")
 
+    if pair_times.enabled(cfg):
+        sbatch = pair_times.local_to_global(sbatch, label, dtype=x0.dtype)
+        tbatch = pair_times.local_to_global(tbatch, label, dtype=x0.dtype)
+        if ubatch is not None:
+            ubatch = pair_times.local_to_global(ubatch, label, dtype=x0.dtype)
+
     batch = {
         "x0": x0,
         "x1": x1,
@@ -3353,8 +3690,8 @@ def compute_maizels_validation_metrics(
     train_state: state_utils.EMATrainState,
     step: jnp.ndarray,
 ) -> Dict[str, float]:
-    """Evaluate the current objective on held-out Maizels D3/D8 endpoint pairs."""
-    if getattr(cfg.problem, "target", None) != "maizels_pca50":
+    """Evaluate the objective on held-out lineage-dataset endpoint pairs."""
+    if not _is_lineage_trajectory_target(cfg):
         return {}
     maizels_cfg = getattr(cfg.logging, "maizels", None)
     if maizels_cfg is None or not bool(getattr(maizels_cfg, "validation_enabled", False)):
@@ -3421,13 +3758,13 @@ def log_metrics(
     except Exception as e:
         print(f"Warning: Constraint metric computation failed: {e}")
 
-    # Log held-out Maizels validation loss if configured.
+    # Log held-out lineage-dataset validation loss if configured.
     try:
         metrics.update(
             compute_maizels_validation_metrics(cfg, statics, train_state, step)
         )
     except Exception as e:
-        print(f"Warning: Maizels validation metric computation failed: {e}")
+        print(f"Warning: lineage validation metric computation failed: {e}")
 
     # Log endpoint distribution matching errors if configured.
     try:
@@ -3436,6 +3773,12 @@ def log_metrics(
         )
     except Exception as e:
         print(f"Warning: Endpoint matching metric computation failed: {e}")
+
+    # Reproduce the original CITE/Multi MFM test protocol in its own W&B pane.
+    try:
+        metrics.update(compute_mfm_distribution_metrics(cfg, train_state, step))
+    except Exception as e:
+        print(f"Warning: MFM-compatible distribution metric failed: {e}")
 
     # Log forbidden-box diagnostics if configured. These metrics evaluate the
     # learned flow map at several path times, so keep them off the per-step path.
@@ -3523,16 +3866,17 @@ def make_lowd_plot(
     titles = ["base and target"] + [rf"${step}$-step" for step in steps]
 
     ## extract target samples
-    is_maizels = getattr(cfg.problem, "target", None) == "maizels_pca50"
+    is_maizels = _is_lineage_trajectory_target(cfg)
     if is_maizels:
+        backend = _lineage_backend(cfg)
         maizels_cfg = getattr(cfg.logging, "maizels", None)
         plot_pair_mode = getattr(
             maizels_cfg,
             "pair_mode",
-            getattr(cfg.problem, "maizels_pair_mode", "none"),
+            _training_pair_mode(cfg),
         )
         if plot_pair_mode == "same_as_training":
-            plot_pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+            plot_pair_mode = _training_pair_mode(cfg)
         plot_seed = int(
             getattr(
                 maizels_cfg,
@@ -3540,7 +3884,7 @@ def make_lowd_plot(
                 int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997,
             )
         )
-        plot_batch, _ = maizels.make_heldout_pair_pool(
+        plot_batch, _ = backend.make_heldout_pair_pool(
             cfg,
             cfg.logging.plot_bs,
             dataset_location=getattr(cfg.problem, "dataset_location", None),
@@ -3929,7 +4273,7 @@ def make_lowd_plot(
         }
     )
 
-    if getattr(cfg.problem, "target", None) == "maizels_pca50":
+    if _is_lineage_trajectory_target(cfg):
         try:
             _log_maizels_trajectory_diagnostics(
                 cfg,
@@ -3942,11 +4286,11 @@ def make_lowd_plot(
                 fontsize=fontsize,
             )
         except Exception as e:
-            print(f"Warning: Maizels trajectory diagnostics failed: {e}")
+            print(f"Warning: lineage trajectory diagnostics failed: {e}")
         try:
             _log_maizels_distribution_eval(cfg, train_state, params_for_visual)
         except Exception as e:
-            print(f"Warning: Maizels distribution eval failed: {e}")
+            print(f"Warning: lineage distribution eval failed: {e}")
 
     return prng_key
 

@@ -1,0 +1,35 @@
+# Endpoint-only Maizels PCA50 MFM. Override --maizels_pair_mode at launch.
+data_type: "maizels"
+data_name: "maizels"
+accelerator: "gpu"
+dim: 50
+t_exclude: null
+whiten: false
+
+# MFM CITE-50 defaults.
+hidden_dims_geopath: [1024, 1024, 1024]
+hidden_dims_flow: [1024, 1024, 1024]
+time_geopath: true
+velocity_metric: "rbf"
+patience: 25
+n_centers: 150
+kappa: 1.5
+rho: -2.75
+alpha_metric: 1
+metric_epochs: 200
+metric_train_batches: 100
+metric_val_batches: 10
+mfm: true
+seeds: [42]
+batch_size: 4096
+
+# Both learned-geopath and velocity-field phases have this ceiling.
+max_steps: 10000
+val_check_interval: 500
+reference_loss_batches: 32
+maizels_eval_every_n_steps: 500
+maizels_interpolant_check_times: 50
+maizels_geopath_filter_chunk_size: 2048
+maizels_ot_infeasible_fallback: "partial"
+optimal_transport_method: "None"
+wandb_project: "self-distill-flow-maps"

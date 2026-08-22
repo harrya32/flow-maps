@@ -11,17 +11,21 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Set, Tuple
 
-import jax
-import jax.numpy as jnp
 import numpy as np
+
+try:
+    import jax
+    import jax.numpy as jnp
+except ModuleNotFoundError:  # NumPy pairing is also used by the PyTorch MFM code.
+    jax = None
+    jnp = None
 
 DEFAULT_DATASET = (
     "/Users/harryamad/Desktop/Maizels2023aa/data/"
     "celltype_classification_pca50_dataset.csv.gz"
 )
 DEFAULT_CLASSIFIER = (
-    "/Users/harryamad/Desktop/Maizels2023aa/models/"
-    "celltype_classifier_pca50.pt"
+    "/Users/harryamad/Desktop/Maizels2023aa/models/" "celltype_classifier_pca50.pt"
 )
 
 CLASS_NAMES = [
@@ -49,7 +53,9 @@ TRANSITION_EDGES = [
 
 _DATA_CACHE: Dict[str, Dict[str, np.ndarray]] = {}
 _CLASSIFIER_CACHE: Dict[str, Tuple[Any, List[str], np.ndarray, np.ndarray]] = {}
-_JAX_CLASSIFIER_CACHE: Dict[str, Tuple[Dict[str, jnp.ndarray], List[str], jnp.ndarray, jnp.ndarray]] = {}
+_JAX_CLASSIFIER_CACHE: Dict[
+    str, Tuple[Dict[str, jnp.ndarray], List[str], jnp.ndarray, jnp.ndarray]
+] = {}
 
 
 def _canonical_maizels_pair_mode(pair_mode: str) -> str:
@@ -126,9 +132,12 @@ def parse_timepoint(value: str) -> float:
     return float(text)
 
 
-def build_reachable(edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES) -> Dict[str, Set[str]]:
+def build_reachable(
+    edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    class_names: Sequence[str] = CLASS_NAMES,
+) -> Dict[str, Set[str]]:
     """Return the reflexive transitive closure of the cell-type transition graph."""
-    nodes = set(CLASS_NAMES)
+    nodes = set(class_names)
     children = defaultdict(set)
     for src, dst in edges:
         nodes.add(src)
@@ -149,9 +158,12 @@ def build_reachable(edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES) -> Dict
     return reachable
 
 
-def build_direct_reachable(edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES) -> Dict[str, Set[str]]:
+def build_direct_reachable(
+    edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    class_names: Sequence[str] = CLASS_NAMES,
+) -> Dict[str, Set[str]]:
     """Return reflexive one-edge reachability for strict stepwise checks."""
-    nodes = set(CLASS_NAMES)
+    nodes = set(class_names)
     for src, dst in edges:
         nodes.add(src)
         nodes.add(dst)
@@ -189,8 +201,7 @@ def resolve_lineage_transition_mode(mode: str | None) -> str:
     ):
         return "direct"
     raise ValueError(
-        "lineage_transition_mode must be 'descendant' or 'direct', "
-        f"got {mode!r}."
+        "lineage_transition_mode must be 'descendant' or 'direct', " f"got {mode!r}."
     )
 
 
@@ -208,15 +219,18 @@ def lineage_transition_mode_from_config(cfg, *, default: str = "descendant") -> 
 def build_transition_reachable(
     mode: str | None = "descendant",
     edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    class_names: Sequence[str] = CLASS_NAMES,
 ) -> Dict[str, Set[str]]:
     """Return the reachability relation for the configured lineage mode."""
     mode = resolve_lineage_transition_mode(mode)
     if mode == "direct":
-        return build_direct_reachable(edges)
-    return build_reachable(edges)
+        return build_direct_reachable(edges, class_names=class_names)
+    return build_reachable(edges, class_names=class_names)
 
 
-def endpoint_valid(src_type: str, dst_type: str, reachable: Dict[str, Set[str]]) -> bool:
+def endpoint_valid(
+    src_type: str, dst_type: str, reachable: Dict[str, Set[str]]
+) -> bool:
     return dst_type in reachable.get(src_type, {src_type})
 
 
@@ -246,7 +260,9 @@ def load_pca50_dataset(dataset_path: str | Path) -> Dict[str, np.ndarray]:
 
         index_col = "" if "" in (reader.fieldnames or []) else None
         for row in reader:
-            obs_names.append(row[index_col] if index_col is not None else str(len(obs_names)))
+            obs_names.append(
+                row[index_col] if index_col is not None else str(len(obs_names))
+            )
             timepoints.append(row["timepoint"])
             cell_types.append(row["cell_annotation"])
             pcs.append([float(row[col]) for col in pc_cols])
@@ -255,14 +271,18 @@ def load_pca50_dataset(dataset_path: str | Path) -> Dict[str, np.ndarray]:
         "obs_names": np.asarray(obs_names, dtype=object),
         "x": np.asarray(pcs, dtype=np.float32),
         "timepoints": np.asarray(timepoints, dtype=object),
-        "time_values": np.asarray([parse_timepoint(tp) for tp in timepoints], dtype=np.float32),
+        "time_values": np.asarray(
+            [parse_timepoint(tp) for tp in timepoints], dtype=np.float32
+        ),
         "cell_types": np.asarray(cell_types, dtype=object),
     }
     _DATA_CACHE[cache_key] = data
     return data
 
 
-def subset_time(data: Dict[str, np.ndarray], timepoint: str) -> Tuple[np.ndarray, np.ndarray]:
+def subset_time(
+    data: Dict[str, np.ndarray], timepoint: str
+) -> Tuple[np.ndarray, np.ndarray]:
     mask = data["timepoints"] == timepoint
     return data["x"][mask], data["cell_types"][mask]
 
@@ -311,7 +331,11 @@ def load_classifier(
         if cache_key in _CLASSIFIER_CACHE:
             return _CLASSIFIER_CACHE[cache_key]
         with np.load(npz_path, allow_pickle=False) as raw:
-            arrays = {key: raw[key].astype(np.float32) for key in raw.files if key.startswith("net.")}
+            arrays = {
+                key: raw[key].astype(np.float32)
+                for key in raw.files
+                if key.startswith("net.")
+            }
             class_names = [str(x) for x in raw["class_names"].tolist()]
             scaler_mean = raw["scaler_mean"].astype(np.float32)
             scaler_scale = raw["scaler_scale"].astype(np.float32)
@@ -327,8 +351,7 @@ def load_classifier(
         import torch
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            "The Maizels prior/classifier path requires PyTorch to load "
-            f"{path}."
+            "The Maizels prior/classifier path requires PyTorch to load " f"{path}."
         ) from exc
 
     try:
@@ -354,6 +377,10 @@ def load_jax_classifier_params(
     classifier_path: str | Path,
 ) -> Tuple[Dict[str, jnp.ndarray], List[str], jnp.ndarray, jnp.ndarray]:
     """Load frozen PCA50 classifier weights for differentiable JAX inference."""
+    if jax is None or jnp is None:
+        raise ModuleNotFoundError(
+            "JAX is required for differentiable Maizels classifier constraints."
+        )
     path = Path(classifier_path).expanduser().resolve()
     npz_path = path if path.suffix == ".npz" else path.with_suffix(".npz")
     if not npz_path.exists():
@@ -388,6 +415,10 @@ def jax_classifier_logits(
     x: jnp.ndarray,
 ) -> jnp.ndarray:
     """Differentiable JAX copy of the PCA50 cell-type MLP classifier."""
+    if jax is None or jnp is None:
+        raise ModuleNotFoundError(
+            "JAX is required for differentiable Maizels classifier constraints."
+        )
     x = (x - scaler_mean) / scaler_scale
 
     def linear(h, prefix):
@@ -409,28 +440,38 @@ def jax_classifier_logits(
     return linear(h, "net.8")
 
 
-def classifier_index_lookup(class_names: Sequence[str]) -> np.ndarray:
+def classifier_index_lookup(
+    class_names: Sequence[str],
+    canonical_class_names: Sequence[str] = CLASS_NAMES,
+) -> np.ndarray:
     """Map canonical Maizels class ids to a classifier-specific class order."""
     by_name = {str(name): idx for idx, name in enumerate(class_names)}
-    missing = [name for name in CLASS_NAMES if name not in by_name]
+    missing = [name for name in canonical_class_names if name not in by_name]
     if missing:
         raise KeyError(
             "Classifier is missing Maizels classes required for constraints: "
             f"{missing}"
         )
-    return np.asarray([by_name[name] for name in CLASS_NAMES], dtype=np.int32)
+    return np.asarray([by_name[name] for name in canonical_class_names], dtype=np.int32)
 
 
 def lineage_invalid_transition_matrix(
     class_names: Sequence[str],
     transition_mode: str | None = "descendant",
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> np.ndarray:
     """Return matrix M where M[i, j]=1 iff i -> j is biologically invalid."""
-    reachable = build_transition_reachable(transition_mode)
+    reachable = build_transition_reachable(
+        transition_mode,
+        edges=transition_edges,
+        class_names=class_names,
+    )
     invalid = np.zeros((len(class_names), len(class_names)), dtype=np.float32)
     for ii, src in enumerate(class_names):
         for jj, dst in enumerate(class_names):
-            invalid[ii, jj] = 0.0 if endpoint_valid(str(src), str(dst), reachable) else 1.0
+            invalid[ii, jj] = (
+                0.0 if endpoint_valid(str(src), str(dst), reachable) else 1.0
+            )
     return invalid
 
 
@@ -443,6 +484,10 @@ def lineage_soft_terms_from_probs(
     transition_mask: jnp.ndarray | None = None,
 ) -> Dict[str, jnp.ndarray]:
     """Differentiable lineage-validity terms from path classifier probabilities."""
+    if jax is None or jnp is None:
+        raise ModuleNotFoundError(
+            "JAX is required for differentiable Maizels classifier constraints."
+        )
     source_cls = jnp.take(canonical_to_classifier, source_type_ids.astype(jnp.int32))
     source_probs = jax.nn.one_hot(source_cls, probs.shape[-1], dtype=probs.dtype)
     invalid_transition = invalid_transition.astype(probs.dtype)
@@ -505,9 +550,7 @@ def lineage_soft_terms_from_probs(
         transition_valid = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
         transition_invalid_per_path = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
         transition_valid_nll = jnp.zeros((probs.shape[0], 0), dtype=probs.dtype)
-        transition_valid_nll_per_path = jnp.zeros(
-            (probs.shape[0],), dtype=probs.dtype
-        )
+        transition_valid_nll_per_path = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
         transition_valid_per_path = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
 
     if target_type_ids is None:
@@ -515,7 +558,9 @@ def lineage_soft_terms_from_probs(
         final_valid = jnp.ones((probs.shape[0],), dtype=probs.dtype)
         final_valid_nll = jnp.zeros((probs.shape[0],), dtype=probs.dtype)
     else:
-        target_cls = jnp.take(canonical_to_classifier, target_type_ids.astype(jnp.int32))
+        target_cls = jnp.take(
+            canonical_to_classifier, target_type_ids.astype(jnp.int32)
+        )
         target_probs = jax.nn.one_hot(target_cls, probs.shape[-1], dtype=probs.dtype)
         final_invalid = jnp.einsum(
             "bi,ij,bj->b",
@@ -697,10 +742,15 @@ def check_paths_with_classifier(
     final_type_ids: np.ndarray | None = None,
     classifier_batch_size: int = 8192,
     lineage_transition_mode: str | None = "descendant",
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Dict[str, np.ndarray | int]:
     """Classify path points and apply the Maizels transition prior."""
     model, class_names, scaler_mean, scaler_scale = load_classifier(classifier_path)
-    reachable = build_transition_reachable(lineage_transition_mode)
+    reachable = build_transition_reachable(
+        lineage_transition_mode,
+        edges=transition_edges,
+        class_names=class_names,
+    )
     flat = np.asarray(paths, dtype=np.float32).reshape((-1, paths.shape[-1]))
     pred_flat, prob_flat, margin_flat = classifier_predictions(
         model,
@@ -737,9 +787,23 @@ def _check_candidate_interpolants(
     margin_threshold: float,
     classifier_batch_size: int,
     lineage_transition_mode: str,
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    path_builder=None,
 ) -> Dict[str, np.ndarray | int]:
     taus = np.linspace(0.0, 1.0, n_check_times + 2, dtype=np.float32)[1:-1]
-    paths = np.stack([(1.0 - tau) * source_x + tau * target_x for tau in taus], axis=1)
+    if path_builder is None:
+        paths = np.stack(
+            [(1.0 - tau) * source_x + tau * target_x for tau in taus],
+            axis=1,
+        )
+    else:
+        paths = path_builder(source_x, target_x, taus)
+        expected_shape = (source_x.shape[0], taus.shape[0], source_x.shape[1])
+        if paths.shape != expected_shape:
+            raise ValueError(
+                "Maizels interpolant path builder returned shape "
+                f"{paths.shape}, expected {expected_shape}."
+            )
     return check_paths_with_classifier(
         paths=paths,
         start_type_ids=source_type_ids,
@@ -749,6 +813,7 @@ def _check_candidate_interpolants(
         final_type_ids=target_type_ids,
         classifier_batch_size=classifier_batch_size,
         lineage_transition_mode=lineage_transition_mode,
+        transition_edges=transition_edges,
     )
 
 
@@ -801,6 +866,8 @@ def _ot_cache_metadata(
     *,
     pair_mode: str,
     lineage_transition_mode: str,
+    class_names: Sequence[str] = CLASS_NAMES,
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Dict[str, Any]:
     pair_mode = _canonical_maizels_pair_mode(pair_mode)
     metadata = {
@@ -827,6 +894,8 @@ def _ot_cache_metadata(
         "source_n": int(source_x.shape[0]),
         "target_n": int(target_x.shape[0]),
         "dim": int(source_x.shape[1]),
+        "class_names": [str(name) for name in class_names],
+        "transition_edges": [list(edge) for edge in transition_edges],
     }
     if pair_mode == "ot_endpoint_interpolant":
         classifier_path = resolve_classifier_path(
@@ -844,6 +913,12 @@ def _ot_cache_metadata(
                 "classifier_margin_threshold": float(
                     getattr(cfg.problem, "classifier_margin_threshold", 1.0)
                 ),
+                "interpolant_path_kind": str(
+                    getattr(cfg.problem, "interpolant_path_kind", "linear")
+                ),
+                "ot_infeasible_fallback": str(
+                    getattr(cfg.problem, "ot_infeasible_fallback", "error")
+                ),
             }
         )
     return metadata
@@ -857,18 +932,28 @@ def _ot_cache_path(cfg, metadata: Dict[str, Any]) -> Path | None:
     if cache_dir:
         root = Path(cache_dir).expanduser()
     else:
-        output_folder = str(getattr(getattr(cfg, "logging", None), "output_folder", "") or "")
+        output_folder = str(
+            getattr(getattr(cfg, "logging", None), "output_folder", "") or ""
+        )
         if output_folder:
-            root = Path(output_folder).expanduser() / "maizels_ot_cache"
+            namespace = str(
+                getattr(cfg.problem, "lineage_dataset_name", "maizels")
+            ).replace(os.sep, "_")
+            root = Path(output_folder).expanduser() / f"{namespace}_ot_cache"
         else:
-            dataset_path = resolve_dataset_path(getattr(cfg.problem, "dataset_location", None))
-            root = dataset_path.parent / ".maizels_ot_cache"
+            location = Path(
+                str(getattr(cfg.problem, "dataset_location", "") or DEFAULT_DATASET)
+            ).expanduser()
+            root = (location.parent if location.suffix else location) / ".lineage_ot_cache"
 
     key = hashlib.sha256(
         json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:24]
     version = str(metadata.get("cache_version", "v1")).replace(os.sep, "_")
-    return root / f"maizels_exact_ot_{version}_{key}.npz"
+    namespace = str(
+        getattr(cfg.problem, "lineage_dataset_name", "maizels")
+    ).replace(os.sep, "_")
+    return root / f"{namespace}_exact_ot_{version}_{key}.npz"
 
 
 def _load_cached_ot_plan(cache_path: Path):
@@ -987,6 +1072,7 @@ def _collect_exact_ot_edges(
     pair_mode: str,
     endpoint_reachable: Dict[str, Set[str]],
     lineage_transition_mode: str,
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
     """Enumerate candidate edges for exact Maizels OT coupling."""
     pair_mode = _canonical_maizels_pair_mode(pair_mode)
@@ -1045,9 +1131,8 @@ def _collect_exact_ot_edges(
                 n_block = int(sidx_group.shape[0] * tidx_group.shape[0])
                 if n_block == 0:
                     continue
-                if (
-                    not plain_ot
-                    and not endpoint_valid(src_type, dst_type, endpoint_reachable)
+                if not plain_ot and not endpoint_valid(
+                    src_type, dst_type, endpoint_reachable
                 ):
                     stats["endpoint_rejected"] += n_block
                     if progress is not None:
@@ -1074,6 +1159,12 @@ def _collect_exact_ot_edges(
                             margin_threshold=margin_threshold,
                             classifier_batch_size=classifier_batch_size,
                             lineage_transition_mode=lineage_transition_mode,
+                            transition_edges=transition_edges,
+                            path_builder=getattr(
+                                cfg.problem,
+                                "interpolant_path_builder",
+                                None,
+                            ),
                         )
                         keep = np.asarray(validity["valid"], dtype=bool)
                         stats["interpolant_rejected"] += int((~keep).sum())
@@ -1098,9 +1189,7 @@ def _collect_exact_ot_edges(
             progress.close()
 
     if not edge_source_idx:
-        raise RuntimeError(
-            "Maizels exact OT found no candidate edges."
-        )
+        raise RuntimeError("Maizels exact OT found no candidate edges.")
 
     return (
         np.concatenate(edge_source_idx),
@@ -1118,6 +1207,7 @@ def _solve_sparse_exact_ot(
     costs: np.ndarray,
     *,
     mass_tol: float,
+    infeasible_fallback: str = "error",
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     """Solve exact balanced OT on a sparse hard-valid edge set with HiGHS."""
     try:
@@ -1127,6 +1217,21 @@ def _solve_sparse_exact_ot(
         raise ModuleNotFoundError(
             "Exact Maizels OT coupling requires scipy.optimize.linprog."
         ) from exc
+
+    if infeasible_fallback == "partial":
+        return _solve_sparse_max_valid_partial_ot(
+            n_source,
+            n_target,
+            source_idx,
+            target_idx,
+            costs,
+            mass_tol=mass_tol,
+        )
+    if infeasible_fallback != "error":
+        raise ValueError(
+            "infeasible_fallback must be 'error' or 'partial', "
+            f"got {infeasible_fallback!r}."
+        )
 
     n_edges = int(source_idx.shape[0])
     edge_ids = np.arange(n_edges, dtype=np.int64)
@@ -1184,6 +1289,127 @@ def _solve_sparse_exact_ot(
     return plan_mass, stats
 
 
+def _solve_sparse_max_valid_partial_ot(
+    n_source: int,
+    n_target: int,
+    source_idx: np.ndarray,
+    target_idx: np.ndarray,
+    costs: np.ndarray,
+    *,
+    mass_tol: float,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """Solve maximum-valid-mass partial OT without relaxing the hard edge mask.
+
+    One dummy source and target make the transport LP feasible. A penalty on
+    unmatched endpoint mass first maximizes mass on valid real edges and then
+    minimizes its transport cost. The valid mass is renormalized for sampling.
+    """
+    try:
+        from scipy.optimize import linprog
+        from scipy import sparse
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Partial Maizels OT coupling requires scipy.optimize.linprog."
+        ) from exc
+
+    n_edges = int(source_idx.shape[0])
+    dummy_source = n_source
+    dummy_target = n_target
+    augmented_source_idx = np.concatenate(
+        [
+            source_idx,
+            np.arange(n_source, dtype=np.int64),
+            np.full(n_target, dummy_source, dtype=np.int64),
+            np.asarray([dummy_source], dtype=np.int64),
+        ]
+    )
+    augmented_target_idx = np.concatenate(
+        [
+            target_idx,
+            np.full(n_source, dummy_target, dtype=np.int64),
+            np.arange(n_target, dtype=np.int64),
+            np.asarray([dummy_target], dtype=np.int64),
+        ]
+    )
+    finite_costs = costs[np.isfinite(costs)]
+    if finite_costs.shape[0] != costs.shape[0]:
+        raise RuntimeError("Masked Maizels OT received non-finite edge costs.")
+    unmatched_penalty = max(1.0, float(np.max(finite_costs)) + 1.0)
+    augmented_costs = np.concatenate(
+        [
+            costs.astype(np.float64, copy=False),
+            np.full(n_source + n_target, unmatched_penalty, dtype=np.float64),
+            np.zeros(1, dtype=np.float64),
+        ]
+    )
+
+    augmented_n_source = n_source + 1
+    augmented_n_target = n_target + 1
+    augmented_n_edges = int(augmented_source_idx.shape[0])
+    edge_ids = np.arange(augmented_n_edges, dtype=np.int64)
+    rows = np.concatenate(
+        [augmented_source_idx, augmented_n_source + augmented_target_idx]
+    )
+    cols = np.concatenate([edge_ids, edge_ids])
+    data = np.ones(2 * augmented_n_edges, dtype=np.float64)
+    a_eq = sparse.coo_matrix(
+        (data, (rows, cols)),
+        shape=(augmented_n_source + augmented_n_target, augmented_n_edges),
+    ).tocsr()
+    b_eq = np.concatenate(
+        [
+            np.full(n_source, 1.0 / float(n_source), dtype=np.float64),
+            np.ones(1, dtype=np.float64),
+            np.full(n_target, 1.0 / float(n_target), dtype=np.float64),
+            np.ones(1, dtype=np.float64),
+        ]
+    )
+
+    result = linprog(
+        augmented_costs,
+        A_eq=a_eq,
+        b_eq=b_eq,
+        bounds=(0.0, None),
+        method="highs",
+    )
+    if not result.success:
+        raise RuntimeError(
+            "Maximum-valid-mass partial Maizels OT failed to solve: "
+            f"{result.message}"
+        )
+
+    raw_valid_mass = np.asarray(result.x[:n_edges], dtype=np.float64)
+    raw_valid_mass = np.where(raw_valid_mass > mass_tol, raw_valid_mass, 0.0)
+    retained_mass = float(raw_valid_mass.sum())
+    if retained_mass <= 0.0:
+        raise RuntimeError("Partial masked Maizels OT retained zero valid mass.")
+    plan_mass = raw_valid_mass / retained_mass
+
+    source_mass = np.bincount(source_idx, weights=plan_mass, minlength=n_source)
+    target_mass = np.bincount(target_idx, weights=plan_mass, minlength=n_target)
+    source_target = np.full(n_source, 1.0 / float(n_source), dtype=np.float64)
+    target_target = np.full(n_target, 1.0 / float(n_target), dtype=np.float64)
+    stats = {
+        "ot_edges": n_edges,
+        "ot_positive_edges": int(np.count_nonzero(plan_mass)),
+        "ot_objective": float(np.dot(plan_mass, costs)),
+        "ot_total_mass": float(plan_mass.sum()),
+        "ot_source_max_abs_residual": float(
+            np.max(np.abs(source_mass - source_target))
+        ),
+        "ot_target_max_abs_residual": float(
+            np.max(np.abs(target_mass - target_target))
+        ),
+        "ot_solver_mode": "max_valid_partial",
+        "ot_retained_valid_mass": retained_mass,
+        "ot_unmatched_source_mass": max(0.0, 1.0 - retained_mass),
+        "ot_unmatched_target_mass": max(0.0, 1.0 - retained_mass),
+        "ot_source_cells_with_mass": int(np.count_nonzero(source_mass > mass_tol)),
+        "ot_target_cells_with_mass": int(np.count_nonzero(target_mass > mass_tol)),
+    }
+    return plan_mass, stats
+
+
 def _make_exact_ot_pair_pool_from_endpoint_arrays(
     cfg,
     source_x: np.ndarray,
@@ -1194,11 +1420,13 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
     n_pairs: int,
     rng: np.random.Generator,
     pair_mode: str,
+    class_names: Sequence[str] = CLASS_NAMES,
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     """Create a pair pool by sampling from an exact OT plan."""
     pair_mode = _canonical_maizels_pair_mode(pair_mode)
     plain_ot = pair_mode == "ot_plain"
-    class_to_id = class_to_id_map(CLASS_NAMES)
+    class_to_id = class_to_id_map(class_names)
     source_type_ids_all = np.asarray(
         [class_to_id[str(ct)] for ct in source_types],
         dtype=np.int32,
@@ -1208,7 +1436,11 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
         dtype=np.int32,
     )
     lineage_transition_mode = lineage_transition_mode_from_config(cfg)
-    endpoint_reachable = build_transition_reachable("descendant")
+    endpoint_reachable = build_transition_reachable(
+        "descendant",
+        edges=transition_edges,
+        class_names=class_names,
+    )
     mass_tol = float(getattr(cfg.problem, "ot_mass_tolerance", 1e-12))
     verbose = bool(getattr(cfg.problem, "ot_verbose", True))
     metadata = _ot_cache_metadata(
@@ -1219,6 +1451,8 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
         target_types,
         pair_mode=pair_mode,
         lineage_transition_mode=lineage_transition_mode,
+        class_names=class_names,
+        transition_edges=transition_edges,
     )
     cache_path = _ot_cache_path(cfg, metadata)
     cached = _load_cached_ot_plan(cache_path) if cache_path is not None else None
@@ -1246,15 +1480,22 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
             pair_mode=pair_mode,
             endpoint_reachable=endpoint_reachable,
             lineage_transition_mode=lineage_transition_mode,
+            transition_edges=transition_edges,
         )
-        source_has_edge = np.bincount(
-            source_idx_edges,
-            minlength=source_x.shape[0],
-        ) > 0
-        target_has_edge = np.bincount(
-            target_idx_edges,
-            minlength=target_x.shape[0],
-        ) > 0
+        source_has_edge = (
+            np.bincount(
+                source_idx_edges,
+                minlength=source_x.shape[0],
+            )
+            > 0
+        )
+        target_has_edge = (
+            np.bincount(
+                target_idx_edges,
+                minlength=target_x.shape[0],
+            )
+            > 0
+        )
         n_orphan_source = int((~source_has_edge).sum())
         n_orphan_target = int((~target_has_edge).sum())
         drop_orphans = bool(getattr(cfg.problem, "ot_drop_orphan_cells", True))
@@ -1268,9 +1509,7 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
                     "the non-orphan subproblem."
                 )
             if verbose:
-                orphan_reason = (
-                    "OT partners" if plain_ot else "hard-valid partners"
-                )
+                orphan_reason = "OT partners" if plain_ot else "hard-valid partners"
                 print(
                     f"Dropping Maizels OT orphan cells with no {orphan_reason}: "
                     f"sources={n_orphan_source}, targets={n_orphan_target}"
@@ -1295,9 +1534,17 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
         stats["ot_active_source_cells"] = int(active_source_idx.shape[0])
         stats["ot_active_target_cells"] = int(active_target_idx.shape[0])
 
+        infeasible_fallback = str(
+            getattr(cfg.problem, "ot_infeasible_fallback", "error")
+        )
         if verbose:
+            solver_description = (
+                "maximum-valid-mass partial OT"
+                if infeasible_fallback == "partial"
+                else "exact OT"
+            )
             print(
-                "Solving Maizels exact OT LP: "
+                f"Solving Maizels {solver_description} LP: "
                 f"sources={active_source_idx.shape[0]}, "
                 f"targets={active_target_idx.shape[0]}, "
                 f"valid_edges={source_idx_edges.shape[0]}"
@@ -1309,6 +1556,7 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
             remapped_target_edges,
             costs,
             mass_tol=mass_tol,
+            infeasible_fallback=infeasible_fallback,
         )
         stats.update(ot_stats)
 
@@ -1322,9 +1570,10 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
 
         if verbose:
             print(
-                "Solved Maizels exact OT LP: "
+                "Solved Maizels OT LP: "
                 f"objective={stats['ot_objective']:.6g}, "
-                f"positive_edges={stats['ot_positive_edges']}"
+                f"positive_edges={stats['ot_positive_edges']}, "
+                f"retained_valid_mass={stats.get('ot_retained_valid_mass', 1.0):.6g}"
             )
 
         if cache_path is not None:
@@ -1405,7 +1654,9 @@ def _split_train_holdout_indices(
     return train_idx, holdout_idx
 
 
-def endpoint_pool_splits(cfg, dataset_location: str | None = None) -> Dict[str, np.ndarray]:
+def endpoint_pool_splits(
+    cfg, dataset_location: str | None = None
+) -> Dict[str, np.ndarray]:
     """Load D3/D8 endpoint pools and apply the configured held-out split."""
     dataset_path = resolve_dataset_path(
         dataset_location or getattr(cfg.problem, "dataset_location", None)
@@ -1474,6 +1725,8 @@ def _make_pair_pool_from_endpoint_arrays(
     n_pairs: int,
     rng: np.random.Generator,
     pair_mode: str,
+    class_names: Sequence[str] = CLASS_NAMES,
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     """Create independent or prior-filtered pairs from provided endpoint arrays."""
     pair_mode = _canonical_maizels_pair_mode(pair_mode)
@@ -1490,13 +1743,23 @@ def _make_pair_pool_from_endpoint_arrays(
             n_pairs=n_pairs,
             rng=rng,
             pair_mode=pair_mode,
+            class_names=class_names,
+            transition_edges=transition_edges,
         )
 
-    class_to_id = class_to_id_map(CLASS_NAMES)
-    source_type_ids_all = np.asarray([class_to_id[str(ct)] for ct in source_types], dtype=np.int32)
-    target_type_ids_all = np.asarray([class_to_id[str(ct)] for ct in target_types], dtype=np.int32)
+    class_to_id = class_to_id_map(class_names)
+    source_type_ids_all = np.asarray(
+        [class_to_id[str(ct)] for ct in source_types], dtype=np.int32
+    )
+    target_type_ids_all = np.asarray(
+        [class_to_id[str(ct)] for ct in target_types], dtype=np.int32
+    )
     lineage_transition_mode = lineage_transition_mode_from_config(cfg)
-    endpoint_reachable = build_transition_reachable("descendant")
+    endpoint_reachable = build_transition_reachable(
+        "descendant",
+        edges=transition_edges,
+        class_names=class_names,
+    )
 
     accepted_source_idx: List[np.ndarray] = []
     accepted_target_idx: List[np.ndarray] = []
@@ -1508,21 +1771,34 @@ def _make_pair_pool_from_endpoint_arrays(
     }
 
     if pair_mode == "none":
-        sidx, tidx = _sample_pair_indices(rng, source_x.shape[0], target_x.shape[0], n_pairs)
+        sidx, tidx = _sample_pair_indices(
+            rng, source_x.shape[0], target_x.shape[0], n_pairs
+        )
         accepted_source_idx.append(sidx)
         accepted_target_idx.append(tidx)
         stats["candidate_pairs"] = n_pairs
         stats["accepted_pairs"] = n_pairs
     elif pair_mode in ("endpoint", "endpoint_interpolant"):
-        classifier_path = resolve_classifier_path(getattr(cfg.problem, "classifier_path", None))
+        classifier_path = resolve_classifier_path(
+            getattr(cfg.problem, "classifier_path", None)
+        )
         chunk_size = int(getattr(cfg.problem, "rejection_chunk_size", 50_000))
-        max_candidates = int(getattr(cfg.problem, "rejection_max_candidates", max(10 * n_pairs, n_pairs + 1)))
+        max_candidates = int(
+            getattr(
+                cfg.problem, "rejection_max_candidates", max(10 * n_pairs, n_pairs + 1)
+            )
+        )
         n_check_times = int(getattr(cfg.problem, "n_interpolant_check_times", 5))
         prob_threshold = float(getattr(cfg.problem, "classifier_prob_threshold", 0.85))
-        margin_threshold = float(getattr(cfg.problem, "classifier_margin_threshold", 1.0))
+        margin_threshold = float(
+            getattr(cfg.problem, "classifier_margin_threshold", 1.0)
+        )
         classifier_batch_size = int(getattr(cfg.problem, "classifier_batch_size", 8192))
 
-        while stats["accepted_pairs"] < n_pairs and stats["candidate_pairs"] < max_candidates:
+        while (
+            stats["accepted_pairs"] < n_pairs
+            and stats["candidate_pairs"] < max_candidates
+        ):
             remaining = n_pairs - stats["accepted_pairs"]
             adaptive_chunk = max(2 * remaining, min(chunk_size, 4096))
             curr_chunk = min(
@@ -1563,6 +1839,12 @@ def _make_pair_pool_from_endpoint_arrays(
                     margin_threshold=margin_threshold,
                     classifier_batch_size=classifier_batch_size,
                     lineage_transition_mode=lineage_transition_mode,
+                    transition_edges=transition_edges,
+                    path_builder=getattr(
+                        cfg.problem,
+                        "interpolant_path_builder",
+                        None,
+                    ),
                 )
                 keep = np.asarray(validity["valid"], dtype=bool)
                 stats["interpolant_rejected"] += int((~keep).sum())
@@ -1601,7 +1883,9 @@ def _make_pair_pool_from_endpoint_arrays(
     }
     stats["accepted_pairs"] = int(paired["x0"].shape[0])
     stats["collected_accepted_pairs"] = collected_accepted
-    stats["truncated_accepted_pairs"] = max(0, collected_accepted - stats["accepted_pairs"])
+    stats["truncated_accepted_pairs"] = max(
+        0, collected_accepted - stats["accepted_pairs"]
+    )
     stats["candidate_acceptance_rate"] = (
         collected_accepted / stats["candidate_pairs"]
         if stats["candidate_pairs"] > 0
@@ -1616,7 +1900,9 @@ def _make_pair_pool_from_endpoint_arrays(
     return paired, stats
 
 
-def make_pair_pool(cfg, dataset_location: str | None = None) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
+def make_pair_pool(
+    cfg, dataset_location: str | None = None
+) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     """Create independent or prior-filtered D3 -> D8 training endpoint pairs."""
     splits = endpoint_pool_splits(cfg, dataset_location=dataset_location)
     n_pairs = int(getattr(cfg.problem, "n", 100_000))
@@ -1721,8 +2007,7 @@ def make_endpoint_split_pair_pool(
         target_types = splits["target_types"]
     else:
         raise ValueError(
-            "split must be one of 'heldout', 'train', or 'all', "
-            f"got {split!r}."
+            "split must be one of 'heldout', 'train', or 'all', " f"got {split!r}."
         )
 
     if source_x.shape[0] == 0 or target_x.shape[0] == 0:

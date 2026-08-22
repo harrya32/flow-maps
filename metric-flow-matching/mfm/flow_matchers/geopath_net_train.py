@@ -15,7 +15,7 @@ class GeoPathNetTrain(pl.LightningModule):
         data_manifold_metric=None,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["flow_matcher", "ot_sampler", "data_manifold_metric"])
         self.flow_matcher = flow_matcher
         self.geopath_net = flow_matcher.geopath_net
         self.ot_sampler = ot_sampler
@@ -26,6 +26,7 @@ class GeoPathNetTrain(pl.LightningModule):
         self.args = args
         self.data_manifold_metric = data_manifold_metric
         self.multiply_validation = 4
+        self.reference_loss_batches = int(args.reference_loss_batches)
 
         self.first_loss = None
         self.timesteps = None
@@ -43,9 +44,7 @@ class GeoPathNetTrain(pl.LightningModule):
         total_count = 0
         with torch.enable_grad():
             self.t_val = []
-            for i in range(
-                self.trainer.datamodule.num_timesteps - len(self.skipped_time_points)
-            ):
+            for i in range(self.trainer.datamodule.num_timesteps - len(self.skipped_time_points)):
                 self.t_val.append(
                     torch.rand(
                         self.trainer.datamodule.batch_size * self.multiply_validation,
@@ -56,10 +55,10 @@ class GeoPathNetTrain(pl.LightningModule):
         with torch.no_grad():
             old_alpha = self.flow_matcher.alpha
             self.flow_matcher.alpha = 0
-            for batch in self.trainer.datamodule.train_dataloader():
-                self.timesteps = torch.linspace(
-                    0.0, 1.0, len(batch[0]["train_samples"][0])
-                )
+            for batch_idx, batch in enumerate(self.trainer.datamodule.train_dataloader()):
+                if self.reference_loss_batches > 0 and batch_idx >= self.reference_loss_batches:
+                    break
+                self.timesteps = torch.linspace(0.0, 1.0, len(batch[0]["train_samples"][0]))
                 loss = self._compute_loss(
                     batch[0]["train_samples"][0],
                     batch[0]["metric_samples"][0],
@@ -73,9 +72,7 @@ class GeoPathNetTrain(pl.LightningModule):
 
     def _compute_loss(self, main_batch, metric_samples_batch):
         main_batch_filtered = [
-            x.to(self.device)
-            for i, x in enumerate(main_batch)
-            if i not in self.skipped_time_points
+            x.to(self.device) for i, x in enumerate(main_batch) if i not in self.skipped_time_points
         ]
         metric_samples_batch_filtered = [
             x.to(self.device)
@@ -92,9 +89,7 @@ class GeoPathNetTrain(pl.LightningModule):
         velocities = []
         for i in range(len(ts)):
             samples = torch.cat([samples0[i], samples1[i]], dim=0)
-            vel = self.data_manifold_metric.calculate_velocity(
-                xts[i], uts[i], samples, i
-            )
+            vel = self.data_manifold_metric.calculate_velocity(xts[i], uts[i], samples, i)
             velocities.append(vel)
         loss = torch.mean(torch.cat(velocities) ** 2)
         self.log(
@@ -115,9 +110,7 @@ class GeoPathNetTrain(pl.LightningModule):
         for i, (x0, x1) in enumerate(zip(x0s, x1s)):
             x0, x1 = torch.squeeze(x0), torch.squeeze(x1)
             if self.trainer.validating or self.computing_reference_loss:
-                repeat_tuple = (self.multiply_validation, 1) + (1,) * (
-                    len(x0.shape) - 2
-                )
+                repeat_tuple = (self.multiply_validation, 1) + (1,) * (len(x0.shape) - 2)
                 x0 = x0.repeat(repeat_tuple)
                 x1 = x1.repeat(repeat_tuple)
 

@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import wandb
 import matplotlib.pyplot as plt
@@ -39,6 +40,8 @@ class FlowNetTrainBase(pl.LightningModule):
         self.weight_decay = args.flow_weight_decay
         self.whiten = args.whiten
         self.working_dir = args.working_dir
+        self.is_maizels = args.data_type == "maizels"
+        self._step_start_time = None
 
     def forward(self, t, xt):
         return self.flow_net(t, xt)
@@ -51,9 +54,12 @@ class FlowNetTrainBase(pl.LightningModule):
         x0s, x1s = main_batch_filtered[:-1], main_batch_filtered[1:]
         ts, xts, uts = self._process_flow(x0s, x1s)
 
-        t = torch.cat(ts)
-        xt = torch.cat(xts)
-        ut = torch.cat(uts)
+        # The learned geopath defines fixed conditional-flow targets. Detaching
+        # avoids optimizing it again and avoids higher-order JVP backward during
+        # velocity-field training (unsupported by Apple MPS).
+        t = torch.cat(ts).detach()
+        xt = torch.cat(xts).detach()
+        ut = torch.cat(uts).detach()
         vt = self(t[:, None], xt)
 
         loss = mean_squared_error(vt, ut)
@@ -96,7 +102,7 @@ class FlowNetTrainBase(pl.LightningModule):
         if self.flow_matcher.alpha != 0:
             self.log(
                 "FlowNet/mean_geopath_cfm",
-                (self.flow_matcher.geopath_net_output.abs().mean()),
+                (self.flow_matcher.geopath_net_output.detach().abs().mean()),
                 on_step=False,
                 on_epoch=True,
                 prog_bar=True,
@@ -110,6 +116,8 @@ class FlowNetTrainBase(pl.LightningModule):
             prog_bar=True,
             logger=True,
         )
+        if self.is_maizels:
+            self.log("loss", loss, on_step=True, on_epoch=False, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -125,7 +133,62 @@ class FlowNetTrainBase(pl.LightningModule):
             prog_bar=True,
             logger=True,
         )
+        if self.is_maizels:
+            self.log(
+                "validation_loss",
+                val_loss,
+                on_step=False,
+                on_epoch=True,
+                logger=True,
+            )
         return val_loss
+
+    def on_train_batch_start(self, batch, batch_idx):
+        if self.is_maizels:
+            self._step_start_time = time.perf_counter()
+
+    def on_fit_start(self):
+        if self.flow_matcher.alpha == 0:
+            return
+        geopath_net = self.flow_matcher.geopath_net.to(self.device)
+        geopath_net.eval()
+        geopath_net.requires_grad_(False)
+        self.flow_matcher.geopath_net = geopath_net
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        if not self.is_maizels:
+            return
+        optimizer = self.optimizers(use_pl_optimizer=False)
+        self.log(
+            "learning_rate",
+            optimizer.param_groups[0]["lr"],
+            on_step=True,
+            on_epoch=False,
+            logger=True,
+        )
+        if self._step_start_time is not None:
+            self.log(
+                "step_time",
+                time.perf_counter() - self._step_start_time,
+                on_step=True,
+                on_epoch=False,
+                logger=True,
+            )
+
+    def on_before_optimizer_step(self, optimizer):
+        if not self.is_maizels:
+            return
+        grad_norm_sq = torch.zeros((), device=self.device)
+        for parameter in self.flow_net.parameters():
+            if parameter.grad is not None:
+                grad_norm_sq = grad_norm_sq + parameter.grad.detach().pow(2).sum()
+        self.log(
+            "grad",
+            torch.sqrt(grad_norm_sq),
+            on_step=True,
+            on_epoch=False,
+            logger=True,
+        )
 
     def optimizer_step(self, *args, **kwargs):
         super().optimizer_step(*args, **kwargs)
@@ -226,13 +289,11 @@ class FlowNetTrainLidar(FlowNetTrainBase):
         if self.whiten:
             traj_shape = traj.shape
             traj = traj.reshape(-1, 3)
-            traj = self.trainer.datamodule.scaler.inverse_transform(
-                traj.detach().numpy()
-            ).reshape(traj_shape)
+            traj = self.trainer.datamodule.scaler.inverse_transform(traj.detach().numpy()).reshape(
+                traj_shape
+            )
             cloud_points = torch.tensor(
-                self.trainer.datamodule.scaler.inverse_transform(
-                    cloud_points.detach().numpy()
-                )
+                self.trainer.datamodule.scaler.inverse_transform(cloud_points.detach().numpy())
             )
         traj = torch.transpose(torch.tensor(traj), 0, 1)
 

@@ -14,12 +14,20 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 from ml_collections import config_dict
 
+from . import cite_multi
 from . import flow_map as flow_map
 from . import interpolant as interpolant
 from . import loss_args
 from . import maizels
+from . import pair_times
 
 Parameters = Dict[str, Dict]
+
+
+def _lineage_backend(cfg: config_dict.ConfigDict):
+    if getattr(cfg.problem, "target", None) == "cite_multi_pca100":
+        return cite_multi
+    return maizels
 
 
 def mean_reduce(func):
@@ -472,7 +480,20 @@ def _velocity_batch(
     *,
     X: flow_map.FlowMap,
 ) -> jnp.ndarray:
+    t = jnp.asarray(t)
+    time_is_batched = t.ndim > 0
     if label is None:
+        if time_is_batched:
+            return jax.vmap(
+                lambda ti, xi: X.apply(
+                    params,
+                    ti,
+                    xi,
+                    None,
+                    train=False,
+                    method="calc_b",
+                )
+            )(t, x)
         return jax.vmap(
             lambda xi: X.apply(
                 params,
@@ -483,6 +504,18 @@ def _velocity_batch(
                 method="calc_b",
             )
         )(x)
+
+    if time_is_batched:
+        return jax.vmap(
+            lambda ti, xi, lbl: X.apply(
+                params,
+                ti,
+                xi,
+                lbl,
+                train=False,
+                method="calc_b",
+            )
+        )(t, x, label)
 
     return jax.vmap(
         lambda xi, lbl: X.apply(
@@ -612,7 +645,25 @@ def _flow_map_step_batch(
     *,
     X: flow_map.FlowMap,
 ) -> jnp.ndarray:
+    s = jnp.asarray(s)
+    t = jnp.asarray(t)
+    times_are_batched = s.ndim > 0 or t.ndim > 0
     if label is None:
+        if times_are_batched:
+            s_batch = jnp.broadcast_to(s, (x.shape[0],))
+            t_batch = jnp.broadcast_to(t, (x.shape[0],))
+            return jax.vmap(
+                lambda si, ti, xi: X.apply(
+                    params,
+                    si,
+                    ti,
+                    xi,
+                    None,
+                    train=False,
+                    calc_weight=False,
+                    return_X_and_phi=False,
+                )
+            )(s_batch, t_batch, x)
         return jax.vmap(
             lambda xi: X.apply(
                 params,
@@ -625,6 +676,22 @@ def _flow_map_step_batch(
                 return_X_and_phi=False,
             )
         )(x)
+
+    if times_are_batched:
+        s_batch = jnp.broadcast_to(s, (x.shape[0],))
+        t_batch = jnp.broadcast_to(t, (x.shape[0],))
+        return jax.vmap(
+            lambda si, ti, xi, lbl: X.apply(
+                params,
+                si,
+                ti,
+                xi,
+                lbl,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(s_batch, t_batch, x, label)
 
     return jax.vmap(
         lambda xi, lbl: X.apply(
@@ -648,7 +715,7 @@ def _maizels_direct_path_grid(
     X: flow_map.FlowMap,
     cfg: config_dict.ConfigDict,
 ) -> jnp.ndarray:
-    times = _maizels_path_times(cfg, x0.dtype)
+    local_times = _maizels_path_times(cfg, x0.dtype)
 
     if label is None:
         return jax.vmap(
@@ -663,22 +730,26 @@ def _maizels_direct_path_grid(
                     calc_weight=False,
                     return_X_and_phi=False,
                 )
-            )(times)
+            )(local_times)
         )(x0)
 
     return jax.vmap(
         lambda x, lbl: jax.vmap(
             lambda tau: X.apply(
                 params,
-                0.0,
-                tau,
+                pair_times.bounds(lbl, dtype=x.dtype)[0]
+                if pair_times.enabled(cfg)
+                else 0.0,
+                pair_times.local_to_global(tau, lbl, dtype=x.dtype)
+                if pair_times.enabled(cfg)
+                else tau,
                 x,
                 lbl,
                 train=False,
                 calc_weight=False,
                 return_X_and_phi=False,
             )
-        )(times)
+            )(local_times)
     )(x0, label)
 
 
@@ -690,17 +761,24 @@ def _maizels_flowmap_sampling_paths(
     X: flow_map.FlowMap,
     cfg: config_dict.ConfigDict,
 ) -> jnp.ndarray:
-    times = _maizels_path_times(cfg, x0.dtype)
+    local_times = _maizels_path_times(cfg, x0.dtype)
+    if pair_times.enabled(cfg):
+        t_start, t_end = pair_times.bounds(label, dtype=x0.dtype)
+    else:
+        t_start = jnp.zeros((x0.shape[0],), dtype=x0.dtype)
+        t_end = jnp.ones((x0.shape[0],), dtype=x0.dtype)
 
-    def step(carry, t_next):
-        x, t_prev = carry
-        x_next = _flow_map_step_batch(params, t_prev, t_next, x, label, X=X)
-        return (x_next, t_next), x_next
+    def step(carry, local_next):
+        x, local_prev = carry
+        s = t_start + (t_end - t_start) * local_prev
+        t = t_start + (t_end - t_start) * local_next
+        x_next = _flow_map_step_batch(params, s, t, x, label, X=X)
+        return (x_next, local_next), x_next
 
     (_, _), states = jax.lax.scan(
         step,
         (x0, jnp.asarray(0.0, dtype=x0.dtype)),
-        times,
+        local_times,
     )
     return jnp.swapaxes(states, 0, 1)
 
@@ -716,12 +794,18 @@ def _maizels_euler_paths(
     n_steps = int(getattr(cfg.constraints, "euler_steps", 25))
     if n_steps < 1:
         raise ValueError("constraints.euler_steps must be >= 1")
-    times = jnp.linspace(0.0, 1.0, n_steps + 1, dtype=x0.dtype)
+    local_times = jnp.linspace(0.0, 1.0, n_steps + 1, dtype=x0.dtype)
+    if pair_times.enabled(cfg):
+        t_start, t_end = pair_times.bounds(label, dtype=x0.dtype)
+    else:
+        t_start = jnp.zeros((x0.shape[0],), dtype=x0.dtype)
+        t_end = jnp.ones((x0.shape[0],), dtype=x0.dtype)
 
     def step(x, idx):
-        t0 = times[idx]
-        dt = times[idx + 1] - times[idx]
-        x_next = x + dt * _velocity_batch(params, t0, x, label, X=X)
+        t0 = t_start + (t_end - t_start) * local_times[idx]
+        t1 = t_start + (t_end - t_start) * local_times[idx + 1]
+        dt = t1 - t0
+        x_next = x + dt[:, None] * _velocity_batch(params, t0, x, label, X=X)
         return x_next, x_next
 
     _, states = jax.lax.scan(step, x0, jnp.arange(n_steps))
@@ -745,25 +829,30 @@ def _maizels_lineage_constraint_paths(
 
 
 def _setup_maizels_lineage_classifier(cfg: config_dict.ConfigDict):
-    classifier_path = getattr(cfg.problem, "classifier_path", maizels.DEFAULT_CLASSIFIER)
-    params, class_names, scaler_mean, scaler_scale = maizels.load_jax_classifier_params(
+    backend = _lineage_backend(cfg)
+    classifier_path = getattr(
+        cfg.problem,
+        "classifier_path",
+        getattr(backend, "DEFAULT_CLASSIFIER", maizels.DEFAULT_CLASSIFIER),
+    )
+    params, class_names, scaler_mean, scaler_scale = backend.load_jax_classifier_params(
         classifier_path
     )
-    lineage_transition_mode = maizels.lineage_transition_mode_from_config(cfg)
+    lineage_transition_mode = backend.lineage_transition_mode_from_config(cfg)
     return {
         "params": params,
         "class_names": class_names,
         "scaler_mean": scaler_mean,
         "scaler_scale": scaler_scale,
         "invalid_transition": jnp.asarray(
-            maizels.lineage_invalid_transition_matrix(
+            backend.lineage_invalid_transition_matrix(
                 class_names,
                 transition_mode=lineage_transition_mode,
             ),
             dtype=jnp.float32,
         ),
         "canonical_to_classifier": jnp.asarray(
-            maizels.classifier_index_lookup(class_names),
+            backend.classifier_index_lookup(class_names),
             dtype=jnp.int32,
         ),
         "lineage_transition_mode": lineage_transition_mode,
@@ -784,7 +873,8 @@ def _maizels_lineage_terms(
         )
 
     flat = paths.reshape((-1, paths.shape[-1]))
-    logits = maizels.jax_classifier_logits(
+    backend = _lineage_backend(cfg)
+    logits = backend.jax_classifier_logits(
         classifier["params"],
         classifier["scaler_mean"],
         classifier["scaler_scale"],
@@ -798,7 +888,7 @@ def _maizels_lineage_terms(
 
     lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
     target_type_ids = label[:, 1] if lambda_final > 0.0 else None
-    terms = maizels.lineage_soft_terms_from_probs(
+    terms = backend.lineage_soft_terms_from_probs(
         probs,
         label[:, 0],
         classifier["invalid_transition"],
@@ -825,7 +915,8 @@ def maizels_lineage_loss_point_constraint(
         )
 
     states = jnp.stack([x_s, x_t], axis=0)
-    logits = maizels.jax_classifier_logits(
+    backend = _lineage_backend(cfg)
+    logits = backend.jax_classifier_logits(
         classifier["params"],
         classifier["scaler_mean"],
         classifier["scaler_scale"],
@@ -839,7 +930,7 @@ def maizels_lineage_loss_point_constraint(
 
     lambda_final = float(getattr(cfg.constraints, "lambda_final", 0.0))
     target_type_ids = label[None, 1] if lambda_final > 0.0 else None
-    terms = maizels.lineage_soft_terms_from_probs(
+    terms = backend.lineage_soft_terms_from_probs(
         probs,
         label[None, 0],
         classifier["invalid_transition"],
@@ -903,6 +994,7 @@ def _sample_maizels_velocity_rollout_times(
     rng: jnp.ndarray,
     cfg: config_dict.ConfigDict,
     dtype,
+    label: jnp.ndarray = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     times = jax.random.uniform(
         rng,
@@ -911,7 +1003,12 @@ def _sample_maizels_velocity_rollout_times(
         maxval=float(cfg.training.tmax),
         dtype=dtype,
     )
-    return jnp.minimum(times[0], times[1]), jnp.maximum(times[0], times[1])
+    start = jnp.minimum(times[0], times[1])
+    end = jnp.maximum(times[0], times[1])
+    if pair_times.enabled(cfg):
+        start = pair_times.local_to_global(start, label, dtype=dtype)
+        end = pair_times.local_to_global(end, label, dtype=dtype)
+    return start, end
 
 
 def _maizels_velocity_rollout_single(
@@ -927,7 +1024,12 @@ def _maizels_velocity_rollout_single(
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Roll one interpolant point forward under the learned velocity field."""
     time_rng = jax.random.fold_in(rng, 17)
-    t_start, t_end = _sample_maizels_velocity_rollout_times(time_rng, cfg, x0.dtype)
+    t_start, t_end = _sample_maizels_velocity_rollout_times(
+        time_rng,
+        cfg,
+        x0.dtype,
+        label,
+    )
     x_start = interp.calc_It(t_start, x0, x1, label)
 
     max_steps = _maizels_velocity_rollout_max_steps(cfg)
@@ -1153,8 +1255,9 @@ def _path_positions(
     tau: jnp.ndarray,
     *,
     X: flow_map.FlowMap,
+    cfg: config_dict.ConfigDict,
 ) -> jnp.ndarray:
-    """Compute X_{0,tau_i}(x0_i) for each sample i."""
+    """Compute X_{t0,tau_i}(x0_i), using per-pair t0 when available."""
     if label is None:
         return jax.vmap(
             lambda x, tt: X.apply(
@@ -1169,10 +1272,14 @@ def _path_positions(
             )
         )(x0, tau)
     else:
+        if pair_times.enabled(cfg):
+            t_start, _ = pair_times.bounds(label, dtype=x0.dtype)
+        else:
+            t_start = jnp.zeros((x0.shape[0],), dtype=x0.dtype)
         return jax.vmap(
-            lambda x, lbl, tt: X.apply(
+            lambda x, lbl, ss, tt: X.apply(
                 params,
-                0.0,
+                ss,
                 tt,
                 x,
                 lbl,
@@ -1180,7 +1287,7 @@ def _path_positions(
                 calc_weight=False,
                 return_X_and_phi=False,
             )
-        )(x0, label, tau)
+        )(x0, label, t_start, tau)
 
 
 def mid_moment_constraint(
@@ -1247,7 +1354,7 @@ def kde_path_constraint(
 ) -> float:
     """Penalize path points that leave high-density observed regions via KDE."""
     tau = jnp.clip(t, 0.0, 1.0)
-    x_tau = _path_positions(params, x0, label, tau, X=X)
+    x_tau = _path_positions(params, x0, label, tau, X=X, cfg=cfg)
     x_tau = _maybe_clip_constraint_state(x_tau, cfg)
 
     obs = _select_kde_observations(x0, x1, cfg)
@@ -1283,7 +1390,7 @@ def box_path_constraint(
 ) -> float:
     """Penalize learned one-shot path samples that enter a forbidden box."""
     tau = jnp.clip(t, 0.0, 1.0)
-    x_tau = _path_positions(params, x0, label, tau, X=X)
+    x_tau = _path_positions(params, x0, label, tau, X=X, cfg=cfg)
     x_tau = _maybe_clip_constraint_state(x_tau, cfg)
 
     loss = _box_path_penalty(x_tau, cfg)
@@ -1450,8 +1557,11 @@ def endpoint_mmd_constraint(
 ) -> float:
     """MMD between model pushforward X_{0,1}(x0) and target batch x1."""
     two_stage_cfg = cfg.training.two_stage
-    tau = jnp.ones((x0.shape[0],), dtype=x0.dtype)
-    x1_hat = _path_positions(params, x0, label, tau, X=X)
+    if pair_times.enabled(cfg):
+        _, tau = pair_times.bounds(label, dtype=x0.dtype)
+    else:
+        tau = jnp.ones((x0.shape[0],), dtype=x0.dtype)
+    x1_hat = _path_positions(params, x0, label, tau, X=X, cfg=cfg)
 
     x_clip = float(getattr(two_stage_cfg, "endpoint_mmd_x_clip", 0.0))
     clip_mode = getattr(two_stage_cfg, "endpoint_mmd_clip_mode", "hard")
@@ -1498,8 +1608,11 @@ def endpoint_matching_loss(
 ) -> float:
     """Endpoint distribution matching for the direct map X_{0,1}(x0)."""
     endpoint_cfg = cfg.training.endpoint_matching
-    tau = jnp.ones((x0.shape[0],), dtype=x0.dtype)
-    x1_hat = _path_positions(params, x0, label, tau, X=X)
+    if pair_times.enabled(cfg):
+        _, tau = pair_times.bounds(label, dtype=x0.dtype)
+    else:
+        tau = jnp.ones((x0.shape[0],), dtype=x0.dtype)
+    x1_hat = _path_positions(params, x0, label, tau, X=X, cfg=cfg)
 
     x_clip = float(getattr(endpoint_cfg, "x_clip", 0.0))
     clip_mode = getattr(endpoint_cfg, "clip_mode", "hard")

@@ -116,7 +116,41 @@ python py/launchers/learn.py \
     --slurm_id 0 \
     --dataset_location /path/to/datasets \
     --output_folder /path/to/outputs
+
+# CITE or Multi, training on three timepoints and evaluating the omitted day.
+python py/launchers/learn.py \
+    --cfg_path configs.cite_multi_pca100 \
+    --slurm_id 3 \
+    --dataset_name cite \
+    --heldout_day 4 \
+    --dataset_location metric-flow-matching/data \
+    --output_folder /path/to/outputs
 ```
+
+For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
+`--heldout_day` is `3` or `4`. Its IDs mirror the Maizels experiment: 0 is
+vanilla flow matching, 1 vanilla flow map, 2 prior-filtered flow matching, 3
+prior-filtered flow map, and 4 prior-filtered constrained flow map.
+The config looks for the downloaded H5ADs under `metric-flow-matching/data` and
+for `celltype_classifier_{cite,multi}_pca100.{pt,npz}` in the repository root;
+use `--dataset_location` and `--classifier_path` to override those locations.
+On every Maizels visual/distribution evaluation step it also logs
+`mfm/test_EMD` in a separate W&B pane, using MFM's original predecessor-day,
+100-step Euler, full-population exact-EMD test protocol. Both schedules follow
+`logging.visual_freq` by default. This requires POT;
+`logging.mfm.max_points = 0` means the full populations, while a positive value
+enables a cheaper deterministic cap.
+
+Run all five CITE/Multi methods over a seed grid with:
+
+```bash
+SEEDS="1 2 3" DATASETS="cite multi" HELDOUT_DAYS="3 4" \
+  ./cite_multi_pca100_sweep.sh
+```
+
+The defaults shown above produce 60 runs. Any grid axis can be restricted, for
+example `DATASETS=cite HELDOUT_DAYS=4 SLURM_IDS="0 1"`. Set `DRY_RUN=1` to
+print and validate the commands without launching training.
 
 The algorithm can be selected via `slurm_id`, which can also be used to run all experiments simultaneously with a slurm job array:
 
@@ -145,6 +179,15 @@ python py/launchers/eval_schiebinger_heldout.py \
     --dataset_location /path/to/datasets \
     --checkpoint /path/to/outputs/schiebinger_pca5_lsd_25.pkl \
     --out_dir /path/to/outputs/schiebinger_eval
+
+# Evaluate the single omitted CITE/Multi day from a saved checkpoint.
+python py/launchers/eval_maizels_heldout.py \
+    --cfg_path configs.cite_multi_pca100 \
+    --slurm_id 3 \
+    --dataset_name cite \
+    --heldout_day 4 \
+    --checkpoint /path/to/checkpoint.pkl \
+    --out_dir /path/to/outputs/cite_holdout_day4
 ```
 
 

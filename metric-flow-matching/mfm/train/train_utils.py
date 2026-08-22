@@ -10,6 +10,7 @@ from torchdyn.core import NeuralODE
 
 from mfm.utils import plot_images_trajectory
 from mfm.networks.utils import flow_model_torch_wrapper
+from mfm.flow_matchers.maizels_eval import MaizelsEvaluationCallback
 
 
 def load_config(path):
@@ -21,9 +22,7 @@ def load_config(path):
 def merge_config(args, config_updates):
     for key, value in config_updates.items():
         if not hasattr(args, key):
-            raise ValueError(
-                f"Unknown configuration parameter '{key}' found in the config file."
-            )
+            raise ValueError(f"Unknown configuration parameter '{key}' found in the config file.")
         setattr(args, key, value)
     return args
 
@@ -91,10 +90,13 @@ def create_callbacks(args, phase, data_type, run_id, datamodule=None):
             )
             checkpoint_callback = ModelCheckpoint(
                 dirpath=dirpath,
+                monitor="FlowNet/val_loss_cfm",
                 mode="min",
                 save_top_k=1,
             )
             callbacks = [checkpoint_callback, early_stop_callback]
+            if args.data_type == "maizels":
+                callbacks.append(MaizelsEvaluationCallback(args=args, datamodule=datamodule))
     else:
         raise ValueError("Unknown phase")
     return callbacks

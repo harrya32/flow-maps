@@ -50,6 +50,48 @@ For the `arch`, `sphere`, `single cell`, and `images` experiments, evaluation me
 
 Model checkpoints are saved within the `checkpoints` folder under `--working_dir`. The `geopath` model can be loaded using the `--load_geopath_model_ckpt <checkpoint_path>` flag. Training and evaluation can be resumed from a flow model checkpoint using the `--resume_flow_model_ckpt <checkpoint_path>` flag.
 
+### Maizels PCA50 endpoint experiments
+
+The Maizels integration follows the flow-map experiment protocol: it trains only
+on D3 -> D8 pairs and evaluates the learned velocity rollout against every
+intermediate day. The CITE-50 MFM architecture and metric defaults are used,
+with 10,000 optimizer steps each for geopath and flow training.
+
+```bash
+python -m mfm.train.main \
+  --config_path configs/single_cell/50dims/mfm_maizels.yaml \
+  --working_dir /path/to/output \
+  --maizels_dataset_path /path/to/celltype_classification_pca50_dataset.csv.gz \
+  --maizels_classifier_path /path/to/celltype_classifier_pca50.pt \
+  --maizels_pair_mode none
+```
+
+Available pair modes are:
+
+- `none`: independent D3/D8 coupling;
+- `ot_plain`: exact OT without biological filtering;
+- `endpoint_interpolant`: learn the geopath from independent pairs, then filter
+  independent candidates by endpoint lineage and 50 classifier checks along
+  the frozen learned geodesic before velocity-field training;
+- `ot_endpoint_interpolant`: learn the geopath from plain OT pairs, then solve
+  OT on endpoint-compatible edges whose frozen learned geodesics pass the same
+  classifier checks.
+
+The biological pair prior therefore does not affect metric or geopath fitting;
+it is introduced only when constructing the velocity-training pair pool.
+If the learned-geodesic edge mask cannot support uniform balanced marginals,
+MFM uses maximum-valid-mass partial OT: no rejected edge is restored, and the
+largest transportable valid mass is renormalized for velocity training.
+
+The Maizels runs log to `self-distill-flow-maps`, including all intermediate-day
+RBF MMD and sliced-Wasserstein metrics, classifier-invalid Euler trajectory
+percentage, PC1/PC2 plots, and the common loss/gradient/learning-rate scalars.
+
+On Apple Silicon, the metric/geopath phase automatically uses CPU because the
+higher-order `torch.func.jvp` backward used by the time-conditioned geopath is
+not supported by PyTorch MPS. The subsequent velocity-field phase still uses
+the configured GPU/MPS accelerator.
+
 
 
 ## Citation

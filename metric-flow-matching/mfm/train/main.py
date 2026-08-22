@@ -2,6 +2,7 @@ import argparse
 import copy
 import os
 
+import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
 import wandb
@@ -17,12 +18,9 @@ from mfm.flow_matchers.flow_net_train import (
 )
 from mfm.flow_matchers.geopath_net_train import GeoPathNetTrain
 from mfm.dataloaders.trajectory_data import TemporalDataModule
-from mfm.dataloaders.image_data import ImageDataModule
-from mfm.dataloaders.lidar_data import LidarDataModule
+from mfm.dataloaders.maizels_data import MaizelsEndpointDataModule
 from mfm.networks.flow_networks.mlp import VelocityNet
 from mfm.networks.geopath_networks.mlp import GeoPathMLP
-from mfm.networks.unet_base import UNetModelWrapper as UNetModel
-from mfm.networks.geopath_networks.unet import GeoPathUNet
 from mfm.utils import set_seed
 from mfm.train.parsers import parse_args
 from mfm.flow_matchers.ema import EMA
@@ -33,6 +31,53 @@ from mfm.train.train_utils import (
     dataset_name2datapath,
     create_callbacks,
 )
+
+
+def trainer_limit_kwargs(args, *, check_val_every_n_epoch: int = 1):
+    if args.max_steps > 0:
+        return {
+            "max_epochs": -1,
+            "max_steps": args.max_steps,
+            "val_check_interval": args.val_check_interval,
+            "check_val_every_n_epoch": None,
+        }
+    return {
+        "max_epochs": args.epochs,
+        "check_val_every_n_epoch": check_val_every_n_epoch,
+    }
+
+
+def phase_accelerator(args, phase: str) -> str:
+    """Resolve phase devices, avoiding unsupported geopath JVP backward on MPS."""
+    override = str(getattr(args, f"{phase}_accelerator", "auto") or "auto")
+    if override != "auto":
+        return override
+
+    requested = str(args.accelerator)
+    if (
+        phase == "geopath"
+        and args.data_type == "maizels"
+        and torch.backends.mps.is_available()
+        and requested in ("auto", "gpu", "mps")
+    ):
+        return "cpu"
+    return requested
+
+
+def torch_device_for_accelerator(accelerator: str) -> torch.device:
+    accelerator = str(accelerator)
+    if accelerator == "cpu":
+        return torch.device("cpu")
+    if accelerator == "mps":
+        return torch.device("mps")
+    if accelerator == "cuda":
+        return torch.device("cuda")
+    if accelerator in ("auto", "gpu"):
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+    return torch.device("cpu")
 
 
 def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
@@ -46,8 +91,18 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     elif args.data_type == "image":
         assert not args.whiten
         assert args.data_name == "afhq"
+    elif args.data_type == "maizels":
+        assert args.dim == 50
+        assert not args.whiten
 
     skipped_time_points = [t_exclude] if t_exclude else []
+    geopath_accelerator = phase_accelerator(args, "geopath")
+    flow_accelerator = phase_accelerator(args, "flow")
+    if geopath_accelerator != args.accelerator:
+        print(
+            "Using CPU for metric/geopath training because PyTorch's "
+            "time-JVP backward is unsupported on Apple MPS."
+        )
 
     ### DATAMODULES
     if args.data_type in ["arch", "scrna", "sphere"]:
@@ -55,15 +110,21 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
             args=args,
             skipped_datapoint=t_exclude,
         )
+    elif args.data_type == "maizels":
+        datamodule = MaizelsEndpointDataModule(args=args)
     elif args.data_type == "lidar":
+        from mfm.dataloaders.lidar_data import LidarDataModule
+
         datamodule = LidarDataModule(args=args)
     elif args.data_type == "image":
+        from mfm.dataloaders.image_data import ImageDataModule
+
         datamodule = ImageDataModule(args=args)
     else:
         raise ValueError("Data type not recognized")
 
     ### Interpolation and Vector Field Networks
-    if args.data_type in ["arch", "scrna", "lidar", "sphere"]:
+    if args.data_type in ["arch", "scrna", "maizels", "lidar", "sphere"]:
         flow_net = VelocityNet(
             dim=args.dim,
             hidden_dims=args.hidden_dims_flow,
@@ -78,6 +139,9 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
             batch_norm=False,
         )
     elif args.data_type == "image":
+        from mfm.networks.unet_base import UNetModelWrapper as UNetModel
+        from mfm.networks.geopath_networks.unet import GeoPathUNet
+
         flow_net = UNetModel(
             geopath_model=False,
             dim=datamodule.dim,
@@ -106,16 +170,46 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
 
     ot_sampler = (
         OTPlanSampler(method=args.optimal_transport_method)
-        if args.optimal_transport_method != "None"
+        if args.optimal_transport_method != "None" and args.data_type != "maizels"
         else None
     )
 
+    project = args.wandb_project or (
+        "self-distill-flow-maps"
+        if args.data_type == "maizels"
+        else f"mfm-{args.data_type}-{args.data_name}"
+    )
+    run_name = args.wandb_name or (
+        f"maizels_pca50_mfm_{args.maizels_pair_mode}_seed{seed}"
+        if args.data_type == "maizels"
+        else None
+    )
     wandb.init(
-        project=f"mfm-{args.data_type}-{args.data_name}",
+        project=project,
+        entity=args.wandb_entity or None,
+        name=run_name,
         group=args.group_name,
         config=vars(args),
         dir=args.working_dir,
     )
+    if args.data_type == "maizels":
+        wandb.config.update(
+            {
+                "method": "mfm",
+                "protocol": "D3_to_D8_endpoint",
+                "maizels_pair_mode_requested": datamodule.requested_pair_mode,
+                "maizels_geopath_pair_mode": datamodule.geopath_pair_mode,
+                "maizels_interpolant_check_times": int(
+                    args.maizels_interpolant_check_times
+                ),
+                "geopath_accelerator_resolved": geopath_accelerator,
+                "flow_accelerator_resolved": flow_accelerator,
+                "maizels_pair_stats": datamodule.pair_stats,
+                "maizels_validation_pair_stats": datamodule.validation_pair_stats,
+                "maizels_eval_pair_stats": datamodule.eval_pair_stats,
+            },
+            allow_val_change=True,
+        )
 
     ### Metric Flow Matching Module
     flow_matcher_base = MetricFlowMatcher(
@@ -130,6 +224,7 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
             args=args,
             skipped_time_points=skipped_time_points,
             datamodule=datamodule,
+            accelerator=geopath_accelerator,
         )
         geopath_callbacks = create_callbacks(
             args, phase="geopath", data_type=args.data_type, run_id=wandb.run.id
@@ -145,9 +240,9 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         wandb_logger = WandbLogger()
 
         trainer = Trainer(
-            max_epochs=args.epochs,
+            **trainer_limit_kwargs(args),
             callbacks=geopath_callbacks,
-            accelerator=args.accelerator,
+            accelerator=geopath_accelerator,
             logger=wandb_logger,
             num_sanity_val_steps=0,
             default_root_dir=args.working_dir,
@@ -161,9 +256,42 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
                 datamodule=datamodule,
             )
             best_model_path = geopath_callbacks[0].best_model_path
-        geopath_model = GeoPathNetTrain.load_from_checkpoint(best_model_path)
+        geopath_model = GeoPathNetTrain.load_from_checkpoint(
+            best_model_path,
+            flow_matcher=flow_matcher_base,
+            skipped_time_points=skipped_time_points,
+            ot_sampler=ot_sampler,
+            data_manifold_metric=data_manifold_metric,
+            args=args,
+        )
 
         flow_matcher_base.geopath_net = geopath_model.geopath_net
+
+        if args.data_type == "maizels":
+            rebuilt = datamodule.apply_learned_geopath_prior(
+                geopath_model.geopath_net,
+                device=torch_device_for_accelerator(flow_accelerator),
+            )
+            if rebuilt:
+                print(
+                    "Rebuilt Maizels velocity-training pairs by checking "
+                    f"{args.maizels_interpolant_check_times} points along each "
+                    "frozen learned geodesic."
+                )
+            wandb.config.update(
+                {
+                    "maizels_pair_mode_active_for_flow": datamodule.active_pair_mode,
+                    "maizels_geopath_pair_stats": datamodule.geopath_pair_stats,
+                    "maizels_geopath_validation_pair_stats": (
+                        datamodule.geopath_validation_pair_stats
+                    ),
+                    "maizels_geopath_eval_pair_stats": datamodule.geopath_eval_pair_stats,
+                    "maizels_pair_stats": datamodule.pair_stats,
+                    "maizels_validation_pair_stats": datamodule.validation_pair_stats,
+                    "maizels_eval_pair_stats": datamodule.eval_pair_stats,
+                },
+                allow_val_change=True,
+            )
 
     ##### ALGO 1: Training of Geodesic Interpolants END #####
 
@@ -181,7 +309,7 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         datamodule=datamodule,
     )
 
-    if args.data_type in ["arch", "scrna", "sphere"]:
+    if args.data_type in ["arch", "scrna", "maizels", "sphere"]:
         FlowNetTrain = FlowNetTrainTrajectory
     elif args.data_type == "lidar":
         FlowNetTrain = FlowNetTrainLidar
@@ -201,10 +329,12 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     wandb_logger = WandbLogger()
 
     trainer = Trainer(
-        max_epochs=args.epochs,
+        **trainer_limit_kwargs(
+            args,
+            check_val_every_n_epoch=args.check_val_every_n_epoch,
+        ),
         callbacks=flow_callbacks,
-        check_val_every_n_epoch=args.check_val_every_n_epoch,
-        accelerator=args.accelerator,
+        accelerator=flow_accelerator,
         logger=wandb_logger,
         default_root_dir=args.working_dir,
         gradient_clip_val=(1.0 if args.data_type == "image" else None),
@@ -227,9 +357,12 @@ if __name__ == "__main__":
         updated_args = merge_config(updated_args, config)
 
     updated_args.group_name = generate_group_string()
-    updated_args.data_path = dataset_name2datapath(
-        updated_args.data_name, updated_args.working_dir
-    )
+    if updated_args.data_type == "maizels":
+        updated_args.data_path = updated_args.maizels_dataset_path
+    else:
+        updated_args.data_path = dataset_name2datapath(
+            updated_args.data_name, updated_args.working_dir
+        )
     for seed in updated_args.seeds:
         if updated_args.t_exclude:
             for i, t_exclude in enumerate(updated_args.t_exclude):

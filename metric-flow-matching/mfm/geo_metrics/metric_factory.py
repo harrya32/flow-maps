@@ -14,6 +14,7 @@ class DataManifoldMetric:
         args,
         skipped_time_points=None,
         datamodule=None,
+        accelerator=None,
     ):
         self.skipped_time_points = skipped_time_points
         self.datamodule = datamodule
@@ -25,19 +26,18 @@ class DataManifoldMetric:
         self.kappa = args.kappa
         self.metric_epochs = args.metric_epochs
         self.metric_patience = args.metric_patience
+        self.metric_train_batches = int(args.metric_train_batches)
+        self.metric_val_batches = int(args.metric_val_batches)
         self.lr = args.metric_lr
         self.alpha_metric = args.alpha_metric
         self.image_data = args.data_type == "image"
-        self.accelerator = args.accelerator
+        self.accelerator = accelerator or args.accelerator
 
         self.called_first_time = True
 
     def calculate_metric(self, x_t, samples, current_timestep):
         if self.metric == "land":
-            M_dd_x_t = (
-                land_metric_tensor(x_t, samples, self.gamma, self.rho)
-                ** self.alpha_metric
-            )
+            M_dd_x_t = land_metric_tensor(x_t, samples, self.gamma, self.rho) ** self.alpha_metric
         elif self.metric == "rbf":
             if self.called_first_time:
                 self.rbf_networks = []
@@ -61,14 +61,19 @@ class DataManifoldMetric:
                         patience=self.metric_patience,
                         mode="min",
                     )
+                    trainer_kwargs = {}
+                    if self.metric_train_batches > 0:
+                        trainer_kwargs["limit_train_batches"] = self.metric_train_batches
+                    if self.metric_val_batches > 0:
+                        trainer_kwargs["limit_val_batches"] = self.metric_val_batches
                     trainer = pl.Trainer(
                         max_epochs=self.metric_epochs,
                         accelerator=self.accelerator,
                         logger=WandbLogger(),
                         num_sanity_val_steps=0,
-                        callbacks=(
-                            [early_stop_callback] if not self.image_data else None
-                        ),
+                        enable_checkpointing=False,
+                        callbacks=([early_stop_callback] if not self.image_data else None),
+                        **trainer_kwargs,
                     )
                     if self.image_data:
                         self.dataloader = DataLoader(

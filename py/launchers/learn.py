@@ -26,6 +26,7 @@ tf.config.set_visible_devices([], "GPU")  # Hide all GPUs from TensorFlow
 #
 import argparse
 import importlib
+import inspect
 import time
 from typing import Dict, Tuple
 
@@ -116,15 +117,43 @@ def parse_command_line_arguments():
     parser.add_argument("--slurm_id", type=int)
     parser.add_argument("--dataset_location", type=str)
     parser.add_argument("--output_folder", type=str)
+    parser.add_argument(
+        "--dataset_name",
+        choices=("cite", "multi"),
+        default=None,
+        help="Dataset variant for configs that expose a dataset_name option.",
+    )
+    parser.add_argument(
+        "--heldout_day",
+        choices=("3", "4"),
+        default=None,
+        help="Internal day omitted by leave-one-timepoint-out configs.",
+    )
+    parser.add_argument(
+        "--classifier_path",
+        type=str,
+        default=None,
+        help="Optional cell-type classifier override for lineage-aware configs.",
+    )
     return parser.parse_args()
 
 
 def setup_config_dict():
     args = parse_command_line_arguments()
     cfg_module = importlib.import_module(args.cfg_path)
-    return cfg_module.get_config(
-        args.slurm_id, args.dataset_location, args.output_folder
-    )
+    get_config = cfg_module.get_config
+    supported = inspect.signature(get_config).parameters
+    optional = {
+        "dataset_name": args.dataset_name,
+        "heldout_day": args.heldout_day,
+        "classifier_path": args.classifier_path,
+    }
+    kwargs = {
+        name: value
+        for name, value in optional.items()
+        if value is not None and name in supported
+    }
+    return get_config(args.slurm_id, args.dataset_location, args.output_folder, **kwargs)
 
 
 def setup_state(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray) -> Tuple[

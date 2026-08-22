@@ -92,6 +92,7 @@ dependencies:
       - pandas==2.3.3
       - patsy==1.0.2
       - pillow==11.3.0
+      - POT==0.9.3
       - progressbar2==4.5.0
       - promise==2.3
       - protobuf==4.25.9

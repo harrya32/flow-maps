@@ -92,6 +92,62 @@ def datasets_parser(parser):
         default=True,
         help="Whiten the data",
     )
+    parser.add_argument("--maizels_dataset_path", type=str, default="")
+    parser.add_argument("--maizels_classifier_path", type=str, default="")
+    parser.add_argument(
+        "--maizels_pair_mode",
+        type=str,
+        default="none",
+        choices=[
+            "none",
+            "ot_plain",
+            "endpoint_interpolant",
+            "ot_endpoint_interpolant",
+        ],
+    )
+    parser.add_argument("--maizels_n_pairs", type=int, default=500_000)
+    parser.add_argument("--maizels_validation_pairs", type=int, default=16_384)
+    parser.add_argument("--maizels_holdout_fraction", type=float, default=0.2)
+    parser.add_argument("--maizels_holdout_seed", type=int, default=701)
+    parser.add_argument(
+        "--maizels_lineage_transition_mode",
+        type=str,
+        default="descendant",
+        choices=["descendant", "direct"],
+    )
+    parser.add_argument("--maizels_interpolant_check_times", type=int, default=50)
+    parser.add_argument("--maizels_classifier_prob_threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--maizels_classifier_margin_threshold", type=float, default=0.0
+    )
+    parser.add_argument("--maizels_classifier_batch_size", type=int, default=8192)
+    parser.add_argument("--maizels_geopath_filter_chunk_size", type=int, default=2048)
+    parser.add_argument("--maizels_rejection_chunk_size", type=int, default=50_000)
+    parser.add_argument(
+        "--maizels_rejection_max_candidates", type=int, default=5_000_000
+    )
+    parser.add_argument("--maizels_ot_candidate_chunk_size", type=int, default=50_000)
+    parser.add_argument(
+        "--maizels_ot_infeasible_fallback",
+        type=str,
+        default="partial",
+        choices=["error", "partial"],
+    )
+    parser.add_argument("--maizels_ot_cache_dir", type=str, default="")
+    parser.add_argument(
+        "--maizels_ot_progress_enabled",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--maizels_ot_verbose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--maizels_eval_points_per_time", type=int, default=1024)
+    parser.add_argument("--maizels_eval_euler_steps", type=int, default=50)
+    parser.add_argument("--maizels_eval_wasserstein_projections", type=int, default=256)
+    parser.add_argument("--maizels_eval_every_n_steps", type=int, default=500)
     return parser
 
 
@@ -162,6 +218,18 @@ def metric_parser(parser):
         help="Number of epochs for metric learning",
     )
     parser.add_argument(
+        "--metric_train_batches",
+        type=int,
+        default=0,
+        help="Cap metric-fitting train batches per epoch; 0 uses the full loader.",
+    )
+    parser.add_argument(
+        "--metric_val_batches",
+        type=int,
+        default=0,
+        help="Cap metric-fitting validation batches; 0 uses the full loader.",
+    )
+    parser.add_argument(
         "--metric_patience",
         type=int,
         default=5,
@@ -214,7 +282,37 @@ def general_training_parser(parser):
     )
     parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs")
     parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=-1,
+        help="Maximum optimizer steps per geopath/flow phase; -1 uses epochs.",
+    )
+    parser.add_argument(
+        "--val_check_interval",
+        type=int,
+        default=500,
+        help="Validation interval in optimizer steps when max_steps is used.",
+    )
+    parser.add_argument(
+        "--reference_loss_batches",
+        type=int,
+        default=0,
+        help="Cap geopath reference-loss batches; 0 uses the full loader.",
+    )
+    parser.add_argument(
         "--accelerator", type=str, default="cpu", help="Training accelerator"
+    )
+    parser.add_argument(
+        "--geopath_accelerator",
+        type=str,
+        default="auto",
+        help="Geopath/metric accelerator. Auto uses CPU when Apple MPS is detected.",
+    )
+    parser.add_argument(
+        "--flow_accelerator",
+        type=str,
+        default="auto",
+        help="Flow-phase accelerator. Auto inherits --accelerator.",
     )
     parser.add_argument(
         "--sim_num_steps",
@@ -222,6 +320,9 @@ def general_training_parser(parser):
         default=1000,
         help="Number of steps in simulation",
     )
+    parser.add_argument("--wandb_project", type=str, default="")
+    parser.add_argument("--wandb_entity", type=str, default="")
+    parser.add_argument("--wandb_name", type=str, default="")
     return parser
 
 
