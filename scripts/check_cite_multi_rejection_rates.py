@@ -43,6 +43,12 @@ DATASET_FILES = {
     "cite": "op_cite_inputs_0.h5ad",
     "multi": "op_train_multi_targets_0.h5ad",
 }
+DEFAULT_DATA_DIR = Path(
+    os.environ.get(
+        "CITE_MULTI_DATA_DIR",
+        str(Path.home() / "Desktop" / "flow-maps-data"),
+    )
+).expanduser()
 CELL_TYPES = ("HSC", "EryP", "NeuP", "MasP", "MkP", "BP", "MoP")
 TRANSITION_EDGES = tuple(("HSC", cell_type) for cell_type in CELL_TYPES if cell_type != "HSC")
 
@@ -58,7 +64,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=REPO_ROOT / "metric-flow-matching" / "data",
+        default=DEFAULT_DATA_DIR,
     )
     parser.add_argument("--cite-path", type=Path, default=None)
     parser.add_argument("--multi-path", type=Path, default=None)

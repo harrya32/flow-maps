@@ -6,12 +6,12 @@ REPO_ROOT="${REPO_ROOT:-${SCRIPT_DIR}}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 CFG_PATH="${CFG_PATH:-configs.cite_multi_pca100_seed_sweep}"
-DATASET_LOCATION="${DATASET_LOCATION:-${REPO_ROOT}/metric-flow-matching/data}"
+DATASET_LOCATION="${DATASET_LOCATION:-${CITE_MULTI_DATA_DIR:-${HOME}/Desktop/flow-maps-data}}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/outputs/cite_multi_pca100_seed_sweep}"
 
 # Space-separated lists. Override any of these when invoking the script.
 SEEDS="${SEEDS:-1 2 3}"
-SLURM_IDS="${SLURM_IDS:-0 1 2 3 4}"
+SLURM_IDS="${SLURM_IDS:-0 1 2 3 4 5 6 7}"
 DATASETS="${DATASETS:-cite multi}"
 HELDOUT_DAYS="${HELDOUT_DAYS:-3 4}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -22,6 +22,9 @@ MODE_NAMES=(
   "bio_prior_flow_matching"
   "bio_prior_flow_map"
   "bio_prior_constrained_flow_map"
+  "ot_bio_prior_flow_map"
+  "ot_bio_prior_constrained_flow_map"
+  "ot_flow_map"
 )
 
 read -r -a seed_values <<< "${SEEDS}"
@@ -43,8 +46,8 @@ for seed in "${seed_values[@]}"; do
 done
 
 for slurm_id in "${slurm_id_values[@]}"; do
-  if [[ ! "${slurm_id}" =~ ^[0-4]$ ]]; then
-    echo "Invalid SLURM_ID: ${slurm_id}; expected one of 0 1 2 3 4." >&2
+  if [[ ! "${slurm_id}" =~ ^[0-7]$ ]]; then
+    echo "Invalid SLURM_ID: ${slurm_id}; expected one of 0 1 2 3 4 5 6 7." >&2
     exit 2
   fi
 done

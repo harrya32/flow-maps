@@ -123,25 +123,37 @@ python py/launchers/learn.py \
     --slurm_id 3 \
     --dataset_name cite \
     --heldout_day 4 \
-    --dataset_location metric-flow-matching/data \
     --output_folder /path/to/outputs
 ```
 
 For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
 `--heldout_day` is `3` or `4`. Its IDs mirror the Maizels experiment: 0 is
 vanilla flow matching, 1 vanilla flow map, 2 prior-filtered flow matching, 3
-prior-filtered flow map, and 4 prior-filtered constrained flow map.
-The config looks for the downloaded H5ADs under `metric-flow-matching/data` and
+prior-filtered flow map, 4 prior-filtered constrained flow map, 5 masked-OT
+prior-filtered flow map, and 6 its differentiably constrained counterpart.
+The config looks for the downloaded H5ADs under `~/Desktop/flow-maps-data` and
 for `celltype_classifier_{cite,multi}_pca100.{pt,npz}` in the repository root;
-use `--dataset_location` and `--classifier_path` to override those locations.
+use `CITE_MULTI_DATA_DIR` or `--dataset_location` to override the data directory,
+and `--classifier_path` to override the classifier location.
 On every Maizels visual/distribution evaluation step it also logs
 `mfm/test_EMD` in a separate W&B pane, using MFM's original predecessor-day,
-100-step Euler, full-population exact-EMD test protocol. Both schedules follow
-`logging.visual_freq` by default. This requires POT;
+100-step Euler, full-population exact-EMD test protocol. It additionally logs
+`mfm/test_EMD_flowmap` after composing 100 learned flow-map steps over the same
+interval. Both schedules follow `logging.visual_freq` by default. CITE/Multi
+uses the same 90/10 retained-day split as MFM. These metrics require POT;
 `logging.mfm.max_points = 0` means the full populations, while a positive value
 enables a cheaper deterministic cap.
 
-Run all five CITE/Multi methods over a seed grid with:
+For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
+minibatch OT couplings during training. The OT size tracks
+`optimization.bs`; because each optimizer batch is balanced across two retained
+intervals, each OT problem uses half of that batch (for example, 64 cells when
+`optimization.bs = 128`). The latter mode applies the cell-type endpoint and classifier-checked
+interpolant rules as a hard transport mask. If those rules make balanced
+transport infeasible, it uses maximum-valid-mass partial assignment and samples
+only from the valid portion.
+
+Run all seven CITE/Multi methods over a seed grid with:
 
 ```bash
 SEEDS="1 2 3" DATASETS="cite multi" HELDOUT_DAYS="3 4" \

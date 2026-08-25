@@ -43,7 +43,12 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_DIR = REPO_ROOT / "metric-flow-matching" / "data"
+DEFAULT_DATA_DIR = Path(
+    os.environ.get(
+        "CITE_MULTI_DATA_DIR",
+        str(Path.home() / "Desktop" / "flow-maps-data"),
+    )
+).expanduser()
 DEFAULT_REPORT_DIR = REPO_ROOT / "outputs" / "celltype_classification"
 
 

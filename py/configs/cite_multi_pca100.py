@@ -70,6 +70,10 @@ def get_config(
     cfg.problem.source_time = "2"
     cfg.problem.target_time = "7"
     cfg.problem.heldout_timepoint = heldout_day
+    # Match MFM's 90/10 train/validation split on every retained day. The
+    # selected internal day is still omitted completely from training.
+    cfg.problem.maizels_holdout_fraction = 0.1
+    cfg.problem.cite_multi_train_fraction = 0.9
     cfg.problem.retained_timepoints = list(
         timepoint for timepoint in cite_multi.TIMEPOINTS if timepoint != heldout_day
     )
@@ -86,6 +90,15 @@ def get_config(
     # the new experiment. The shared reference keeps edits to either spelling
     # synchronized in derived configs and parameter sweeps.
     cfg.problem.pair_mode = cfg.problem.get_ref("maizels_pair_mode")
+    # Couple the full optimizer batch rather than dividing it into smaller OT
+    # blocks. Since a training batch is balanced over two retained intervals,
+    # each interval gets one OT problem of size optimization.bs / 2.
+
+    cfg.optimization.bs = 128
+
+    cfg.problem.ot_minibatch_size = cfg.optimization.get_ref("bs")
+    cfg.problem.ot_minibatch_max_resamples = 20
+    cfg.problem.ot_infeasible_fallback = "partial"
     cfg.problem.lineage_class_names = list(cite_multi.CLASS_NAMES)
     cfg.problem.lineage_transition_edges = [
         list(edge) for edge in cite_multi.TRANSITION_EDGES
@@ -113,9 +126,18 @@ def get_config(
     cfg.logging.mfm.final_only = False
     cfg.logging.mfm.frequency = cfg.logging.get_ref("visual_freq")
     cfg.logging.mfm.euler_steps = 100
+    cfg.logging.mfm.flowmap_steps = 100
     cfg.logging.mfm.max_points = 0
     cfg.logging.mfm.seed = cfg.training.seed + 2901
 
     cfg.network.output_dim = 100
     cfg.network.input_dims = (100,)
+    cfg.network.n_neurons = 1024
+    cfg.network.n_hidden = 2
+
+    cfg.constraints.loss_point_entropy_weight = 0.001
+    cfg.constraints.weight = 10000.0
+
+    cfg.logging.visual_ema_factor = None
+
     return cfg

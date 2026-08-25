@@ -984,6 +984,19 @@ def _flow_map_batch(
     labels: jnp.ndarray,
 ) -> jnp.ndarray:
     """Evaluate X_{s,t} on a batch of low-dimensional points."""
+    if labels is None:
+        return jax.vmap(
+            lambda x: apply_fn(
+                params,
+                s,
+                t,
+                x,
+                label=None,
+                train=False,
+                calc_weight=False,
+                return_X_and_phi=False,
+            )
+        )(xs)
     return jax.vmap(
         lambda x, lbl: apply_fn(
             params,
@@ -1996,7 +2009,7 @@ def compute_mfm_distribution_metrics(
     train_state: state_utils.EMATrainState,
     step: jnp.ndarray,
 ) -> Dict[str, float]:
-    """Compute CITE/Multi's original MFM held-out ``test_EMD`` protocol."""
+    """Compute held-out EMD for MFM-compatible Euler and flow-map rollouts."""
     mfm_cfg = getattr(cfg.logging, "mfm", None)
     if mfm_cfg is None or not bool(getattr(mfm_cfg, "enabled", False)):
         return {}
@@ -2049,24 +2062,41 @@ def compute_mfm_distribution_metrics(
     end_time = cite_multi.normalized_time(heldout_timepoint)
     euler_steps = int(getattr(mfm_cfg, "euler_steps", 100))
     params = dist_utils.safe_unreplicate(cfg, train_state.params)
-    prediction = _euler_terminal_between(
+    source_jax = jnp.asarray(source, dtype=jnp.float32)
+    euler_prediction = _euler_terminal_between(
         train_state.apply_fn,
         params,
-        jnp.asarray(source, dtype=jnp.float32),
+        source_jax,
         None,
         start_time=start_time,
         end_time=end_time,
         n_steps=euler_steps,
     )
-    emd = _mfm_exact_emd(prediction, actual)
-    print(
-        "MFM-compatible held-out evaluation: "
-        f"{source_timepoint}->{heldout_timepoint}, "
-        f"t={start_time:g}->{end_time:g}, steps={euler_steps}, "
-        f"source_n={source.shape[0]}, target_n={actual.shape[0]}, "
-        f"test_EMD={emd:.8g}"
+    flowmap_steps = int(getattr(mfm_cfg, "flowmap_steps", 100))
+    flowmap_prediction = _flowmap_terminal_between(
+        train_state.apply_fn,
+        params,
+        source_jax,
+        None,
+        start_time=start_time,
+        end_time=end_time,
+        n_steps=flowmap_steps,
     )
-    return {"mfm/test_EMD": emd}
+    euler_emd = _mfm_exact_emd(euler_prediction, actual)
+    flowmap_emd = _mfm_exact_emd(flowmap_prediction, actual)
+    print(
+        "Held-out empirical EMD evaluation: "
+        f"{source_timepoint}->{heldout_timepoint}, "
+        f"t={start_time:g}->{end_time:g}, "
+        f"euler_steps={euler_steps}, flowmap_steps={flowmap_steps}, "
+        f"source_n={source.shape[0]}, target_n={actual.shape[0]}, "
+        f"euler_EMD={euler_emd:.8g}, flowmap_EMD={flowmap_emd:.8g}"
+    )
+    return {
+        # Preserve the original MFM-compatible name for cross-paper plots.
+        "mfm/test_EMD": euler_emd,
+        "mfm/test_EMD_flowmap": flowmap_emd,
+    }
 
 
 def _flowmap_terminal_at_time(
@@ -2078,8 +2108,30 @@ def _flowmap_terminal_at_time(
     n_steps: int,
 ) -> np.ndarray:
     """Iteratively sample with learned maps X_{t_k,t_{k+1}} from 0 to tau."""
+    return _flowmap_terminal_between(
+        apply_fn,
+        params,
+        x0s,
+        labels,
+        start_time=0.0,
+        end_time=float(tau),
+        n_steps=n_steps,
+    )
+
+
+def _flowmap_terminal_between(
+    apply_fn,
+    params: Dict,
+    x0s: jnp.ndarray,
+    labels: jnp.ndarray,
+    *,
+    start_time: float,
+    end_time: float,
+    n_steps: int,
+) -> np.ndarray:
+    """Compose learned maps over an absolute sub-interval of the experiment clock."""
     n_steps = max(1, int(n_steps))
-    ts = jnp.linspace(0.0, float(tau), n_steps + 1)
+    ts = jnp.linspace(float(start_time), float(end_time), n_steps + 1)
 
     def step(x, idx):
         x_next = _flow_map_batch(
@@ -3612,11 +3664,22 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
         int(getattr(cfg.problem, "maizels_holdout_seed", 701)),
         float(getattr(cfg.problem, "maizels_holdout_fraction", 0.0)),
         int(getattr(cfg.problem, "maizels_holdout_n", 0)),
+        getattr(cfg.problem, "cite_multi_train_fraction", None),
+        int(getattr(cfg.problem, "ot_minibatch_size", 128)),
+        str(getattr(cfg.problem, "ot_infeasible_fallback", "partial")),
     )
     if cache_key in _MAIZELS_VALIDATION_CACHE:
         return _MAIZELS_VALIDATION_CACHE[cache_key]
 
-    pairs, _ = backend.make_heldout_pair_pool(
+    # CITE/Multi validates on the held-out fraction of each retained training
+    # interval, matching the original MFM protocol. Maizels retains its global
+    # endpoint validation behavior.
+    make_validation_pairs = getattr(
+        backend,
+        "make_validation_pair_pool",
+        backend.make_heldout_pair_pool,
+    )
+    pairs, _ = make_validation_pairs(
         cfg,
         n_val,
         dataset_location=dataset_location,
@@ -3690,7 +3753,7 @@ def compute_maizels_validation_metrics(
     train_state: state_utils.EMATrainState,
     step: jnp.ndarray,
 ) -> Dict[str, float]:
-    """Evaluate the objective on held-out lineage-dataset endpoint pairs."""
+    """Evaluate the objective on held-out lineage-dataset pairs."""
     if not _is_lineage_trajectory_target(cfg):
         return {}
     maizels_cfg = getattr(cfg.logging, "maizels", None)

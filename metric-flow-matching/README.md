@@ -50,6 +50,9 @@ For the `arch`, `sphere`, `single cell`, and `images` experiments, evaluation me
 
 Model checkpoints are saved within the `checkpoints` folder under `--working_dir`. The `geopath` model can be loaded using the `--load_geopath_model_ckpt <checkpoint_path>` flag. Training and evaluation can be resumed from a flow model checkpoint using the `--resume_flow_model_ckpt <checkpoint_path>` flag.
 
+CITE and Multi default to `~/Desktop/flow-maps-data`. Set
+`CITE_MULTI_DATA_DIR` to use a different shared data directory.
+
 ### Maizels PCA50 endpoint experiments
 
 The Maizels integration follows the flow-map experiment protocol: it trains only

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Download and inspect the CITE/Multi data used by Metric Flow Matching.
 
-The release is Mendeley Data dataset ``hhny5ff7yj``, version 1.  Its two
-files used by this repository are downloaded into ``metric-flow-matching/data``
-by default.  The inspection is backed/read-only: the large expression matrix
-is not loaded into memory.
+The release is Mendeley Data dataset ``hhny5ff7yj``, version 1. Its two files
+used by this repository are downloaded into ``~/Desktop/flow-maps-data`` by
+default. The inspection is backed/read-only: the large expression matrix is
+not loaded into memory.
 """
 
 from __future__ import print_function
@@ -46,6 +46,12 @@ TARGET_FILES = (
     "op_cite_inputs_0.h5ad",
     "op_train_multi_targets_0.h5ad",
 )
+DEFAULT_DATA_DIR = Path(
+    os.environ.get(
+        "CITE_MULTI_DATA_DIR",
+        str(Path.home() / "Desktop" / "flow-maps-data"),
+    )
+).expanduser()
 DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -567,7 +573,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=_repo_root() / "metric-flow-matching" / "data",
+        default=DEFAULT_DATA_DIR,
         help="Destination for the two H5AD files (default: %(default)s)",
     )
     parser.add_argument(

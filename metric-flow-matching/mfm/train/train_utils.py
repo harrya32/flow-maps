@@ -36,9 +36,17 @@ def dataset_name2datapath(dataset_name, working_dir):
     if dataset_name == "eb":
         return os.path.join(working_dir, "data", "eb_velocity_v5.npz")
     elif dataset_name == "cite":
-        return os.path.join(working_dir, "data", "op_cite_inputs_0.h5ad")
+        data_dir = os.environ.get(
+            "CITE_MULTI_DATA_DIR",
+            os.path.join(os.path.expanduser("~"), "Desktop", "flow-maps-data"),
+        )
+        return os.path.join(data_dir, "op_cite_inputs_0.h5ad")
     elif dataset_name == "multi":
-        return os.path.join(working_dir, "data", "op_train_multi_targets_0.h5ad")
+        data_dir = os.environ.get(
+            "CITE_MULTI_DATA_DIR",
+            os.path.join(os.path.expanduser("~"), "Desktop", "flow-maps-data"),
+        )
+        return os.path.join(data_dir, "op_train_multi_targets_0.h5ad")
     elif dataset_name == "lidar":
         return os.path.join(working_dir, "data", "rainier2-thin.las")
     elif dataset_name == "afhq":

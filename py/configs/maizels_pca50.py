@@ -20,6 +20,12 @@ variants = [
     ("bio_prior_flow_map", "endpoint_interpolant", 0.75, False),
     # ID 4: bio-prior flow map with differentiable lineage constraint.
     ("bio_prior_constrained_flow_map", "endpoint_interpolant", 0.75, True),
+    # ID 5: bio-prior flow map with OT couplings.
+    ("bio_prior_ot_flow_map", "ot_endpoint_interpolant", 0.75, False),
+    # ID 6: bio-prior flow map with OT couplings and differentiable lineage constraint.
+    ("bio_prior_ot_constrained_flow_map", "ot_endpoint_interpolant", 0.75, True),
+    # ID 7: ot plain flow map.
+    ("ot_flow_map", "ot_plain", 0.75, False),
 ]
 
 
@@ -180,7 +186,7 @@ def get_config(
     config.constraints = ml_collections.ConfigDict()
     config.constraints.enabled = use_lineage_constraint
     config.constraints.type = "maizels_lineage_path"
-    config.constraints.path_mode = "direct" #velocity_loss_points_nll, loss_points_nll
+    config.constraints.path_mode = "loss_points_nll" #velocity_loss_points_nll, loss_points_nll, direct
     config.constraints.path_n_times = 10
     config.constraints.euler_steps = 10
     config.constraints.constraint_batch_size = 1024

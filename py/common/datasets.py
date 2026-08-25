@@ -1020,8 +1020,79 @@ class DeviceBatchDataset:
         return next(self.cpu_iterator)
 
 
+class CiteMultiMinibatchOTDataset:
+    """Build CITE/Multi training pairs with fresh exact OT minibatches."""
+
+    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, np.ndarray]):
+        self.cfg = cfg
+        self.data = {
+            "x0": np.asarray(data["x0"], dtype=np.float32),
+            "x1": np.asarray(data["x1"], dtype=np.float32),
+            "label": np.asarray(data["label"], dtype=np.float32),
+        }
+        self.pair_mode = str(
+            getattr(
+                cfg.problem,
+                "pair_mode",
+                getattr(cfg.problem, "maizels_pair_mode", "none"),
+            )
+        )
+        self.cpu_rng = np.random.default_rng(int(cfg.training.seed) + 4301)
+        self.last_pair_stats = None
+
+    @staticmethod
+    def _seed_from_key(key: jnp.ndarray) -> int:
+        try:
+            words = np.asarray(jax.device_get(jax.random.key_data(key)), dtype=np.uint32)
+        except (AttributeError, TypeError):
+            words = np.asarray(jax.device_get(key), dtype=np.uint32)
+        words = words.reshape(-1)
+        seed = 0
+        for word in words:
+            seed = ((seed << 32) ^ int(word)) & ((1 << 64) - 1)
+        return seed
+
+    def _sample(self, bs: int, seed: int) -> Dict[str, jnp.ndarray]:
+        paired, stats = cite_multi.couple_minibatch_ot_pair_pool(
+            self.cfg,
+            self.data,
+            int(bs),
+            seed=int(seed),
+            pair_mode=self.pair_mode,
+        )
+        self.last_pair_stats = stats
+        return {
+            "x0": jnp.asarray(paired["x0"], dtype=jnp.float32),
+            "x1": jnp.asarray(paired["x1"], dtype=jnp.float32),
+            "label": jnp.asarray(paired["label"], dtype=jnp.float32),
+        }
+
+    def sample_device_batch(self, bs: int, key: jnp.ndarray):
+        return self._sample(bs, self._seed_from_key(key))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        seed = int(self.cpu_rng.integers(0, np.iinfo(np.int64).max))
+        return self._sample(int(self.cfg.optimization.bs), seed)
+
+
 def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, np.ndarray]):
     """Create a paired dataset with an optional device-side training sampler."""
+    pair_mode = str(
+        getattr(
+            cfg.problem,
+            "pair_mode",
+            getattr(cfg.problem, "maizels_pair_mode", "none"),
+        )
+    )
+    if (
+        cfg.problem.target == "cite_multi_pca100"
+        and cite_multi.uses_minibatch_ot(pair_mode)
+    ):
+        return CiteMultiMinibatchOTDataset(cfg, paired)
+
     cpu_iterator = np_to_tfds(cfg, paired)
     if bool(getattr(cfg.problem, "device_batching", True)):
         return DeviceBatchDataset(cpu_iterator, paired)
@@ -1244,19 +1315,26 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
         ds = paired_np_to_dataset(cfg, paired)
         interval_summary = ", ".join(
-            (
-                f"{item['source_time']}->{item['target_time']}: "
-                f"{item['sampled_pairs']} pairs, "
-                f"acceptance={item['candidate_acceptance_rate']:.4f}"
+            f"{item['source_time']}->{item['target_time']}: "
+            f"{item['sampled_pairs']} pairs"
+            + (
+                f", acceptance={item['candidate_acceptance_rate']:.4f}"
+                if stats.get("coupling") != "dynamic_minibatch_ot"
+                else ""
             )
             for item in stats["intervals"].values()
+        )
+        coupling_summary = (
+            f", coupling=minibatch_ot({stats['ot_minibatch_size']})"
+            if stats.get("coupling") == "dynamic_minibatch_ot"
+            else ""
         )
         print(
             "Loaded CITE/Multi PCA100 pairs: "
             f"dataset={stats['dataset_name']}, "
             f"heldout_day={stats['heldout_timepoint']}, "
             f"mode={stats['pair_mode']}, total_pairs={cfg.problem.n}, "
-            f"dim={cfg.problem.d}; {interval_summary}"
+            f"dim={cfg.problem.d}{coupling_summary}; {interval_summary}"
         )
 
     elif (
