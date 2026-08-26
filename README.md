@@ -169,6 +169,11 @@ The default pushes all D3 source cells and compares them with up to 1,024 cells
 from each intermediate day; set `distribution_eval_points_per_time = 0` for
 uncapped target populations.
 
+Maizels model trajectory-violation metrics use held-out D3 cells for both
+periodic and final logging. Sampling is without replacement: if
+`trajectory_eval_source_max_points` exceeds the held-out population, every
+held-out D3 cell is evaluated exactly once.
+
 Run all seven CITE/Multi methods over a seed grid with:
 
 ```bash

@@ -2160,6 +2160,69 @@ def _population_indices_without_replacement(
     return rng.choice(population_size, size=max_points, replace=False)
 
 
+def _maizels_trajectory_eval_population(
+    cfg: config_dict.ConfigDict,
+    maizels_cfg,
+    backend,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Select trajectory-evaluation sources once, without replacement."""
+    dataset_location = getattr(cfg.problem, "dataset_location", None)
+    splits = backend.endpoint_pool_splits(
+        cfg,
+        dataset_location=dataset_location,
+    )
+    source_pool = str(
+        getattr(maizels_cfg, "trajectory_eval_source_pool", "heldout")
+    ).lower()
+    source_pool = {
+        "holdout": "heldout",
+        "held_out": "heldout",
+        "training": "train",
+    }.get(source_pool, source_pool)
+    if source_pool == "auto":
+        if int(splits["source_holdout_n"]) > 0:
+            source_pool = "heldout"
+        elif int(splits["source_train_n"]) > 0:
+            source_pool = "train"
+        else:
+            source_pool = "all"
+    if source_pool not in ("heldout", "train", "all"):
+        raise ValueError(
+            "logging.maizels.trajectory_eval_source_pool must be one of "
+            "'auto', 'heldout', 'train', or 'all'."
+        )
+
+    source_x, source_types, target_x, target_types = _lineage_eval_split_arrays(
+        splits,
+        source_pool,
+    )
+    max_points = int(
+        getattr(
+            maizels_cfg,
+            "trajectory_eval_source_max_points",
+            getattr(maizels_cfg, "plot_bs", 128),
+        )
+    )
+    seed = int(
+        getattr(
+            maizels_cfg,
+            "trajectory_eval_seed",
+            int(getattr(getattr(cfg, "training", None), "seed", 0)) + 1701,
+        )
+    )
+    source_idx = _population_indices_without_replacement(
+        source_x.shape[0],
+        max_points,
+        np.random.default_rng(seed),
+    )
+    return (
+        source_x[source_idx],
+        source_types[source_idx],
+        target_x,
+        target_types,
+    )
+
+
 def _log_maizels_distribution_eval(
     cfg: config_dict.ConfigDict,
     train_state: state_utils.EMATrainState,
@@ -2394,50 +2457,20 @@ def _compute_maizels_population_trajectory_metrics(
         )
 
     backend = _lineage_backend(cfg)
-    dataset_location = getattr(cfg.problem, "dataset_location", None)
-    points_per_time = int(getattr(maizels_cfg, "distribution_eval_points_per_time", 512))
-    source_max_points = int(
-        getattr(
-            maizels_cfg,
-            "distribution_eval_source_max_points",
-            points_per_time,
-        )
-    )
-    eval_split = _maizels_distribution_eval_split(
+    source_eval, source_types_eval, _, _ = _maizels_trajectory_eval_population(
         cfg,
         maizels_cfg,
-        points_per_time,
-        dataset_location,
+        backend,
     )
-    splits = backend.endpoint_pool_splits(
-        cfg,
-        dataset_location=dataset_location,
-    )
-    source_all, source_types_all, _, _ = _lineage_eval_split_arrays(
-        splits,
-        eval_split,
-    )
-    seed = int(
-        getattr(
-            maizels_cfg,
-            "distribution_eval_seed",
-            int(getattr(getattr(cfg, "training", None), "seed", 0)) + 1701,
-        )
-    )
-    source_idx = _population_indices_without_replacement(
-        source_all.shape[0],
-        source_max_points,
-        np.random.default_rng(seed + 29),
-    )
-    if source_idx.size == 0:
+    if source_eval.shape[0] == 0:
         return {}
 
-    x0_eval = jnp.asarray(source_all[source_idx], dtype=jnp.float32)
+    x0_eval = jnp.asarray(source_eval, dtype=jnp.float32)
     class_to_id = {
         str(class_name): idx for idx, class_name in enumerate(backend.CLASS_NAMES)
     }
     start_type_ids = np.asarray(
-        [class_to_id[str(cell_type)] for cell_type in source_types_all[source_idx]],
+        [class_to_id[str(cell_type)] for cell_type in source_types_eval],
         dtype=np.int32,
     )
 
@@ -2515,7 +2548,7 @@ def _compute_maizels_population_trajectory_metrics(
         ),
     }
 
-    metrics = {"maizels/eval_source_count": int(source_idx.size)}
+    metrics = {"maizels/eval_source_count": int(source_eval.shape[0])}
     for sampler, valid in valid_by_sampler.items():
         metrics[f"maizels/model_{sampler}_valid_trajectory_pct"] = 100.0 * float(
             np.mean(valid)
@@ -2570,8 +2603,22 @@ def _log_maizels_trajectory_diagnostics(
     x1_plot = jnp.asarray(heldout_pairs["x1"], dtype=jnp.float32)
     labels_plot = jnp.asarray(heldout_pairs["label"])
     labels_np = np.asarray(labels_plot)
-    start_type_ids = labels_np[:, 0].astype(np.int32)
+    paired_start_type_ids = labels_np[:, 0].astype(np.int32)
     target_type_ids = labels_np[:, 1].astype(np.int32)
+
+    model_source_x, model_source_types, heldout_target_x, _ = (
+        _maizels_trajectory_eval_population(cfg, maizels_cfg, backend)
+    )
+    if model_source_x.shape[0] == 0:
+        return {}
+    x0_model = jnp.asarray(model_source_x, dtype=jnp.float32)
+    class_to_id = {
+        str(class_name): idx for idx, class_name in enumerate(backend.CLASS_NAMES)
+    }
+    model_start_type_ids = np.asarray(
+        [class_to_id[str(cell_type)] for cell_type in model_source_types],
+        dtype=np.int32,
+    )
 
     path_n_times = max(2, int(getattr(maizels_cfg, "path_n_times", 25)))
     path_times = np.linspace(0.0, 1.0, path_n_times, dtype=np.float32)
@@ -2608,22 +2655,22 @@ def _log_maizels_trajectory_diagnostics(
     direct_paths = _one_step_paths(
         train_state.apply_fn,
         params_for_visual,
-        x0_plot,
-        labels_plot,
+        x0_model,
+        None,
         path_times,
     )
     flowmap_paths = _multi_step_paths(
         train_state.apply_fn,
         params_for_visual,
-        x0_plot,
-        labels_plot,
+        x0_model,
+        None,
         flowmap_n_steps,
     )
     euler_paths = _euler_paths(
         train_state.apply_fn,
         params_for_visual,
-        x0_plot,
-        labels_plot,
+        x0_model,
+        None,
         euler_n_steps,
     )
     gt_paths = _interpolant_paths(
@@ -2637,22 +2684,22 @@ def _log_maizels_trajectory_diagnostics(
     direct_check_paths = _one_step_paths(
         train_state.apply_fn,
         params_for_visual,
-        x0_plot,
-        labels_plot,
+        x0_model,
+        None,
         _maizels_check_times(check_n_times, include_final=True),
     )
     flowmap_check_paths = _multi_step_paths(
         train_state.apply_fn,
         params_for_visual,
-        x0_plot,
-        labels_plot,
+        x0_model,
+        None,
         check_n_times,
     )[:, 1:, :]
     euler_check_paths = _euler_paths(
         train_state.apply_fn,
         params_for_visual,
-        x0_plot,
-        labels_plot,
+        x0_model,
+        None,
         check_n_times,
     )[:, 1:, :]
     gt_check_paths = _interpolant_paths(
@@ -2665,7 +2712,7 @@ def _log_maizels_trajectory_diagnostics(
 
     direct_validity = backend.check_paths_with_classifier(
         paths=direct_check_paths,
-        start_type_ids=start_type_ids,
+        start_type_ids=model_start_type_ids,
         classifier_path=classifier_path,
         prob_threshold=prob_threshold,
         margin_threshold=margin_threshold,
@@ -2675,7 +2722,7 @@ def _log_maizels_trajectory_diagnostics(
     )
     flowmap_validity = backend.check_paths_with_classifier(
         paths=flowmap_check_paths,
-        start_type_ids=start_type_ids,
+        start_type_ids=model_start_type_ids,
         classifier_path=classifier_path,
         prob_threshold=prob_threshold,
         margin_threshold=margin_threshold,
@@ -2685,7 +2732,7 @@ def _log_maizels_trajectory_diagnostics(
     )
     euler_validity = backend.check_paths_with_classifier(
         paths=euler_check_paths,
-        start_type_ids=start_type_ids,
+        start_type_ids=model_start_type_ids,
         classifier_path=classifier_path,
         prob_threshold=prob_threshold,
         margin_threshold=margin_threshold,
@@ -2695,7 +2742,7 @@ def _log_maizels_trajectory_diagnostics(
     )
     gt_validity = backend.check_paths_with_classifier(
         paths=gt_check_paths,
-        start_type_ids=start_type_ids,
+        start_type_ids=paired_start_type_ids,
         classifier_path=classifier_path,
         prob_threshold=prob_threshold,
         margin_threshold=margin_threshold,
@@ -2710,6 +2757,8 @@ def _log_maizels_trajectory_diagnostics(
     gt_valid = np.asarray(gt_validity["valid"], dtype=bool)
     panel_xlim, panel_ylim = lowd_limits_for(
         cfg,
+        x0_model,
+        heldout_target_x,
         x0_plot,
         x1_plot,
         direct_paths,
@@ -2729,8 +2778,8 @@ def _log_maizels_trajectory_diagnostics(
     _draw_maizels_validity_paths(
         axs[0],
         direct_paths,
-        np.asarray(x0_plot),
-        np.asarray(x1_plot),
+        np.asarray(x0_model),
+        np.asarray(heldout_target_x),
         direct_valid,
         title="Held-out direct flow-map paths in PC1/PC2",
         xlim=panel_xlim,
@@ -2740,8 +2789,8 @@ def _log_maizels_trajectory_diagnostics(
     _draw_maizels_validity_paths(
         axs[1],
         flowmap_paths,
-        np.asarray(x0_plot),
-        np.asarray(x1_plot),
+        np.asarray(x0_model),
+        np.asarray(heldout_target_x),
         flowmap_valid,
         title=f"Held-out flow-map sampling in PC1/PC2 ({flowmap_n_steps} steps)",
         xlim=panel_xlim,
@@ -2751,8 +2800,8 @@ def _log_maizels_trajectory_diagnostics(
     _draw_maizels_validity_paths(
         axs[2],
         euler_paths,
-        np.asarray(x0_plot),
-        np.asarray(x1_plot),
+        np.asarray(x0_model),
+        np.asarray(heldout_target_x),
         euler_valid,
         title=f"Held-out Euler rollouts in PC1/PC2 ({euler_n_steps} steps)",
         xlim=panel_xlim,
@@ -2776,6 +2825,7 @@ def _log_maizels_trajectory_diagnostics(
     axs[0].legend(loc="upper right", fontsize=9, markerscale=3, frameon=True)
 
     metrics = {
+        "maizels/eval_source_count": int(model_source_x.shape[0]),
         "maizels/model_direct_invalid_trajectory_pct": 100.0
         * float(np.mean(~direct_valid)),
         "maizels/model_flowmap_invalid_trajectory_pct": 100.0

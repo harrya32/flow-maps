@@ -170,7 +170,7 @@ def get_config(
     config.logging.euler_line_steps = [10, 25, 100]
     config.logging.scalar_freq = 1
     config.logging.progress_freq = 1
-    config.logging.visual_freq = 500
+    config.logging.visual_freq = 1000
     config.logging.save_freq = 5_000
     config.logging.wandb_project = "self-distill-flow-maps"
 
@@ -197,6 +197,13 @@ def get_config(
     config.logging.maizels.validation_bs = 1024
     config.logging.maizels.validation_seed = 2701
     config.logging.maizels.validation_pair_mode = "same_as_training"
+    # Trajectory-violation metrics use held-out D3 cells.
+    # If this cap exceeds the holdout size, every held-out cell is used once.
+    config.logging.maizels.trajectory_eval_source_pool = "heldout"
+    config.logging.maizels.trajectory_eval_source_max_points = (
+        config.logging.maizels.plot_bs
+    )
+    config.logging.maizels.trajectory_eval_seed = 2698
     config.logging.maizels.distribution_eval_enabled = True
     # Match the CITE/Multi population evaluation: push every source cell forward
     # exactly once. A source cap of 0 means the complete selected population.
@@ -232,14 +239,14 @@ def get_config(
     config.constraints.path_mode = "loss_points_nll" #velocity_loss_points_nll, loss_points_nll, direct
     config.constraints.path_n_times = 10
     config.constraints.euler_steps = 10
-    config.constraints.constraint_batch_size = 1024
+    config.constraints.constraint_batch_size = 32
     config.constraints.constraint_batch_fraction = 1.0
     config.constraints.weight = 1000.0
     config.constraints.lambda_start = 0.0
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
     config.constraints.classifier_temperature = 1.0
-    config.constraints.loss_point_entropy_weight = 0.01
+    config.constraints.loss_point_entropy_weight = 0.1
     config.constraints.velocity_rollout_batch_size = 0
     config.constraints.velocity_rollout_reference_diag_fraction = 0.75
     config.constraints.velocity_rollout_max_step = 0.05

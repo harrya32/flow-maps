@@ -6,19 +6,16 @@ REPO_ROOT="${REPO_ROOT:-${SCRIPT_DIR}}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 CFG_PATH="${CFG_PATH:-configs.maizels_pca50_constraint_sweep}"
-DATASET_LOCATION="${DATASET_LOCATION:-/mnt/pdata/hmka3/flow-maps/celltype_classification_pca50_dataset.csv.gz}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/pdata/hmka3/flow-maps/outputs/maizels_pca50_constraint_sweep}"
-SEEDS="${SEEDS:-1 2 3 4 5}"
+DATASET_LOCATION="${DATASET_LOCATION:-celltype_classification_pca50_dataset.csv.gz}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/maizels_local_runs}"
+SEEDS="${SEEDS:-0 1 2 3 4}"
 
-MODE_IDS=(0 1 2 3 7 8 9)
+MODE_IDS=(0 2 4 6)
 MODE_NAMES=(
-  "bio_prior_flow_map_unconstrained"
-  "bio_prior_flow_map_constrained_loss_points_w1000"
-  "bio_prior_flow_map_constrained_direct_w100"
-  "bio_prior_flow_map_constrained_direct_w1000"
-  "bio_prior_flow_map_constrained_loss_points_nll_w100"
-  "bio_prior_flow_map_constrained_loss_points_nll_w1000_e01"
-  "bio_prior_ot_endpoint_interpolant_constrained_loss_points_nll_w1000_e01"
+  "vanilla_flow_map"
+  "bio_prior_flow_map"
+  "ot_flow_map"
+  "bio_prior_ot_flow_map"
 )
 
 cd "${REPO_ROOT}"
