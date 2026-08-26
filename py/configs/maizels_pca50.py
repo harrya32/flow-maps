@@ -30,7 +30,10 @@ variants = [
 
 
 def get_config(
-    slurm_id: int, dataset_location: str = "", output_folder: str = ""
+    slurm_id: int,
+    dataset_location: str = "",
+    output_folder: str = "",
+    early_stopping_patience=None,
 ) -> ml_collections.ConfigDict:
     import jax
 
@@ -76,7 +79,7 @@ def get_config(
     config.problem.target_time = "D8"
     # These endpoint cells are excluded from training pair construction and
     # reserved for Maizels held-out trajectory diagnostics.
-    config.problem.maizels_holdout_fraction = 0.2
+    config.problem.maizels_holdout_fraction = 0.1
     config.problem.maizels_holdout_n = 0
     config.problem.maizels_holdout_seed = 701
     config.problem.maizels_pair_mode = pair_mode
@@ -85,7 +88,7 @@ def get_config(
         "descendant",
     )
     config.problem.classifier_path = (
-        "/mnt/pdata/hmka3/flow-maps/"
+        "/Users/harryamad/desktop/drive/2026/flow-maps/"
         "celltype_classifier_pca50.pt"
     )
     config.problem.n_interpolant_check_times = 50
@@ -106,7 +109,7 @@ def get_config(
 
     # Optimization config.
     config.optimization = ml_collections.ConfigDict()
-    config.optimization.bs = 4096
+    config.optimization.bs = 128  # 4096
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 10.0
@@ -116,6 +119,25 @@ def get_config(
     )
     config.optimization.decay_steps = 10_000
     config.optimization.schedule_type = "sqrt"
+
+    config.optimization.early_stopping = ml_collections.ConfigDict()
+    if early_stopping_patience is None:
+        early_stopping_patience = int(
+            os.getenv("MAIZELS_EARLY_STOPPING_PATIENCE", "10")
+        )
+    config.optimization.early_stopping.patience = int(early_stopping_patience)
+    config.optimization.early_stopping.check_freq = int(
+        os.getenv("MAIZELS_EARLY_STOPPING_CHECK_FREQ", "100")
+    )
+    config.optimization.early_stopping.min_delta = float(
+        os.getenv("MAIZELS_EARLY_STOPPING_MIN_DELTA", "0.0")
+    )
+    config.optimization.early_stopping.warmup_steps = int(
+        os.getenv("MAIZELS_EARLY_STOPPING_WARMUP_STEPS", "0")
+    )
+    config.optimization.early_stopping.metric = "validation_loss"
+    config.optimization.early_stopping.mode = "min"
+    config.optimization.early_stopping.save_best = True
 
     # Logging config. Generic low-d plots use PC1/PC2; Maizels diagnostics add
     # classifier-validity coloring on held-out D3/D8 endpoint cells.
@@ -129,7 +151,7 @@ def get_config(
     config.logging.euler_line_steps = [10, 25, 100]
     config.logging.scalar_freq = 1
     config.logging.progress_freq = 1
-    config.logging.visual_freq = 1000
+    config.logging.visual_freq = 500
     config.logging.save_freq = 5_000
     config.logging.wandb_project = "self-distill-flow-maps"
 
@@ -157,7 +179,10 @@ def get_config(
     config.logging.maizels.validation_seed = 2701
     config.logging.maizels.validation_pair_mode = "same_as_training"
     config.logging.maizels.distribution_eval_enabled = True
-    config.logging.maizels.distribution_eval_source_pool = "auto"
+    # Match the CITE/Multi population evaluation: push every source cell forward
+    # exactly once. A source cap of 0 means the complete selected population.
+    config.logging.maizels.distribution_eval_source_pool = "all"
+    config.logging.maizels.distribution_eval_source_max_points = 0
     config.logging.maizels.distribution_eval_points_per_time = 1024
     config.logging.maizels.distribution_eval_max_timepoints = 0
     config.logging.maizels.distribution_eval_wasserstein_projections = 256
@@ -181,7 +206,7 @@ def get_config(
     config.logging.fid_batch_size = None
     config.logging.fid_n_steps_flow = None
     config.logging.fid_ema_factor = None
-    config.logging.visual_ema_factor = 0.999
+    config.logging.visual_ema_factor = None
 
     config.constraints = ml_collections.ConfigDict()
     config.constraints.enabled = use_lineage_constraint
@@ -208,8 +233,8 @@ def get_config(
     # Network config.
     config.network = ml_collections.ConfigDict()
     config.network.network_type = "mlp"
-    config.network.n_hidden = 4
-    config.network.n_neurons = 256
+    config.network.n_hidden = 2 #4
+    config.network.n_neurons = 1024 #256
     config.network.output_dim = 50
     config.network.act = "gelu"
     config.network.use_residual = False

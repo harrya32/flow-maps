@@ -16,12 +16,22 @@ def _value_label(value: float) -> str:
     return f"{value:g}".replace("-", "m").replace(".", "p")
 
 
-def get_config(slurm_id: int, dataset_location: str = "", output_folder: str = ""):
+def get_config(
+    slurm_id: int,
+    dataset_location: str = "",
+    output_folder: str = "",
+    early_stopping_patience=None,
+):
     del slurm_id
 
     # Base variant 2 is bio-prior flow matching. The sweep explicitly replaces
     # its pairing with OT-filtered, path-valid endpoint interpolants.
-    cfg = _base_get_config(2, dataset_location, output_folder)
+    cfg = _base_get_config(
+        2,
+        dataset_location,
+        output_folder,
+        early_stopping_patience=early_stopping_patience,
+    )
     seed = int(os.getenv("MAIZELS_SEED", str(cfg.training.seed)))
     weight = float(os.environ["MAIZELS_CONSTRAINT_WEIGHT"])
     entropy_weight = float(os.environ["MAIZELS_ENTROPY_WEIGHT"])

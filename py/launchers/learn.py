@@ -65,6 +65,36 @@ def train_loop(
     visual_freq = int(getattr(cfg.logging, "visual_freq", 0))
     save_freq = int(getattr(cfg.logging, "save_freq", 0))
     fid_freq = int(getattr(cfg.logging, "fid_freq", 0))
+    early_cfg = getattr(cfg.optimization, "early_stopping", None)
+    early_patience = int(getattr(early_cfg, "patience", 0))
+    early_enabled = early_patience > 0
+    early_check_freq = int(getattr(early_cfg, "check_freq", 1))
+    early_warmup_steps = int(getattr(early_cfg, "warmup_steps", 0))
+    early_min_delta = float(getattr(early_cfg, "min_delta", 0.0))
+    early_metric = str(getattr(early_cfg, "metric", "validation_loss"))
+    early_mode = str(getattr(early_cfg, "mode", "min")).lower()
+    early_save_best = bool(getattr(early_cfg, "save_best", True))
+    if early_patience < 0:
+        raise ValueError("early_stopping.patience must be non-negative")
+    if early_enabled and early_check_freq <= 0:
+        raise ValueError("early_stopping.check_freq must be positive")
+    if early_enabled and early_warmup_steps < 0:
+        raise ValueError("early_stopping.warmup_steps must be non-negative")
+    if early_enabled and early_min_delta < 0:
+        raise ValueError("early_stopping.min_delta must be non-negative")
+    if early_enabled and early_mode not in {"min", "max"}:
+        raise ValueError("early_stopping.mode must be 'min' or 'max'")
+    best_metric = np.inf if early_mode == "min" else -np.inf
+    best_step = None
+    best_params_for_evaluation = None
+    checks_without_improvement = 0
+
+    if early_enabled:
+        print(
+            f"Early stopping enabled: metric={early_metric}, "
+            f"patience={early_patience} checks, check_freq={early_check_freq} steps, "
+            f"min_delta={early_min_delta:g}, warmup_steps={early_warmup_steps}."
+        )
 
     for step_idx in pbar:
         # construct loss function arguments
@@ -87,9 +117,21 @@ def train_loop(
         should_visualize = visual_freq > 0 and (step_num % visual_freq) == 0
         should_save = save_freq > 0 and (step_num % save_freq) == 0
         should_fid = fid_freq > 0 and (step_num % fid_freq) == 0
+        should_check_early_stopping = (
+            early_enabled
+            and step_num >= early_warmup_steps
+            and (step_num % early_check_freq) == 0
+        )
 
-        if should_log_scalars or should_visualize or should_save or should_fid:
-            prng_key = logging.log_metrics(
+        metrics = {}
+        if (
+            should_log_scalars
+            or should_visualize
+            or should_save
+            or should_fid
+            or should_check_early_stopping
+        ):
+            prng_key, metrics = logging.log_metrics(
                 cfg,
                 statics,
                 train_state,
@@ -100,6 +142,49 @@ def train_loop(
                 end_time - start_time,
             )
 
+        if should_check_early_stopping:
+            if early_metric not in metrics:
+                raise ValueError(
+                    f"Early-stopping metric {early_metric!r} was not produced. "
+                    "For Maizels validation loss, ensure "
+                    "logging.maizels.validation_enabled=True."
+                )
+            current_metric = float(jax.device_get(metrics[early_metric]))
+            improvement = (
+                current_metric < best_metric - early_min_delta
+                if early_mode == "min"
+                else current_metric > best_metric + early_min_delta
+            )
+            if improvement:
+                best_metric = current_metric
+                best_step = step_num
+                checks_without_improvement = 0
+                best_params_for_evaluation = jax.device_get(
+                    logging.get_params_for_sampling(
+                        cfg,
+                        train_state,
+                        param_type="visual",
+                    )
+                )
+                if early_save_best:
+                    logging.save_state(train_state, cfg, checkpoint_label="best")
+            else:
+                checks_without_improvement += 1
+
+            if wandb.run is not None:
+                wandb.run.summary["early_stopping/best_metric"] = best_metric
+                wandb.run.summary["early_stopping/best_step"] = best_step
+                wandb.run.summary["early_stopping/checks_without_improvement"] = (
+                    checks_without_improvement
+                )
+            if checks_without_improvement >= early_patience:
+                print(
+                    f"Early stopping at step {step_num}: {early_metric}="
+                    f"{current_metric:.6g}; best={best_metric:.6g} at step "
+                    f"{best_step}."
+                )
+                break
+
         if (step_num % progress_freq) == 0:
             loss_for_progress = dist_utils.safe_index(cfg, jnp.array(loss_value))
             pbar.set_postfix(loss=float(jax.device_get(loss_for_progress)))
@@ -109,6 +194,37 @@ def train_loop(
 
     # dump one final time
     logging.save_state(train_state, cfg)
+
+    maizels_cfg = getattr(cfg.logging, "maizels", None)
+    if maizels_cfg is not None and bool(getattr(maizels_cfg, "enabled", False)):
+        final_step = int(
+            jax.device_get(dist_utils.safe_index(cfg, train_state.step))
+        )
+        if best_params_for_evaluation is None:
+            params_for_evaluation = logging.get_params_for_sampling(
+                cfg,
+                train_state,
+                param_type="visual",
+            )
+            evaluation_step = final_step
+            evaluation_metric = None
+            print(
+                "No early-stopping best snapshot was selected; evaluating the "
+                f"final model at step {final_step}."
+            )
+        else:
+            params_for_evaluation = best_params_for_evaluation
+            evaluation_step = int(best_step)
+            evaluation_metric = float(best_metric)
+            print(f"Evaluating the best model from step {evaluation_step}.")
+
+        logging.log_maizels_final_evaluation(
+            cfg,
+            train_state,
+            params_for_evaluation,
+            best_step=evaluation_step,
+            best_metric=evaluation_metric,
+        )
 
 
 def parse_command_line_arguments():
@@ -135,6 +251,15 @@ def parse_command_line_arguments():
         default=None,
         help="Optional cell-type classifier override for lineage-aware configs.",
     )
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=None,
+        help=(
+            "Stop after this many validation checks without improvement. "
+            "Zero disables early stopping."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -147,6 +272,7 @@ def setup_config_dict():
         "dataset_name": args.dataset_name,
         "heldout_day": args.heldout_day,
         "classifier_path": args.classifier_path,
+        "early_stopping_patience": args.early_stopping_patience,
     }
     kwargs = {
         name: value

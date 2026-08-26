@@ -59,7 +59,6 @@ def get_config(
         dataset_name,
     )
 
-    # Dataset and global-time configuration.
     cfg.problem.target = "cite_multi_pca100"
     cfg.problem.dataset_name = dataset_name
     cfg.problem.lineage_dataset_name = f"{dataset_name}_pca100"
@@ -70,8 +69,6 @@ def get_config(
     cfg.problem.source_time = "2"
     cfg.problem.target_time = "7"
     cfg.problem.heldout_timepoint = heldout_day
-    # Match MFM's 90/10 train/validation split on every retained day. The
-    # selected internal day is still omitted completely from training.
     cfg.problem.maizels_holdout_fraction = 0.1
     cfg.problem.cite_multi_train_fraction = 0.9
     cfg.problem.retained_timepoints = list(
@@ -117,10 +114,14 @@ def get_config(
     cfg.logging.comparison_mode = variant_name
     cfg.logging.maizels.distribution_eval_timepoints = [heldout_day]
     cfg.logging.maizels.distribution_eval_max_timepoints = 1
+    # Keep the generic SWD/MMD diagnostic bounded here. The MFM-compatible
+    # evaluator below is the CITE/Multi full-population evaluation.
+    cfg.logging.maizels.distribution_eval_source_pool = "auto"
+    cfg.logging.maizels.distribution_eval_source_max_points = 1024
+    cfg.logging.maizels.distribution_eval_points_per_time = 1024
 
     # Exact reproduction of the original CITE/Multi MFM test protocol. A slash
-    # in ``mfm/test_EMD`` gives the metric its own W&B pane. By default it runs
-    # on the same schedule as the inherited Maizels visual/distribution evals.
+    # in ``mfm/test_EMD`` gives the metric its own W&B pane.
     cfg.logging.mfm = ml_collections.ConfigDict()
     cfg.logging.mfm.enabled = True
     cfg.logging.mfm.final_only = False
@@ -135,7 +136,10 @@ def get_config(
     cfg.network.n_neurons = 1024
     cfg.network.n_hidden = 2
 
-    cfg.constraints.loss_point_entropy_weight = 0.001
+    cfg.optimization.total_steps = 5_000
+
+
+    cfg.constraints.loss_point_entropy_weight = 0.03
     cfg.constraints.weight = 10000.0
 
     cfg.logging.visual_ema_factor = None

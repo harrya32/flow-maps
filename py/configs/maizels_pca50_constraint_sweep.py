@@ -167,9 +167,19 @@ VARIANTS = [
 ]
 
 
-def get_config(slurm_id: int, dataset_location: str = "", output_folder: str = ""):
+def get_config(
+    slurm_id: int,
+    dataset_location: str = "",
+    output_folder: str = "",
+    early_stopping_patience=None,
+):
     variant = VARIANTS[slurm_id % len(VARIANTS)]
-    cfg = _base_get_config(variant["base_slurm_id"], dataset_location, output_folder)
+    cfg = _base_get_config(
+        variant["base_slurm_id"],
+        dataset_location,
+        output_folder,
+        early_stopping_patience=early_stopping_patience,
+    )
     seed = int(os.getenv("MAIZELS_SEED", str(cfg.training.seed)))
 
     cfg.training.seed = seed

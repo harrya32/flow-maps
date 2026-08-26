@@ -2181,17 +2181,61 @@ def _maizels_distribution_eval_split(
     return "all"
 
 
+def _lineage_eval_split_arrays(
+    splits: Dict[str, np.ndarray],
+    split: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return source/target arrays for a named lineage evaluation split."""
+    if split == "heldout":
+        prefix = "holdout"
+    elif split == "train":
+        prefix = "train"
+    elif split == "all":
+        return (
+            splits["source_x"],
+            splits["source_types"],
+            splits["target_x"],
+            splits["target_types"],
+        )
+    else:
+        raise ValueError(f"Unknown lineage evaluation split {split!r}.")
+
+    return (
+        splits[f"source_{prefix}_x"],
+        splits[f"source_{prefix}_types"],
+        splits[f"target_{prefix}_x"],
+        splits[f"target_{prefix}_types"],
+    )
+
+
+def _population_indices_without_replacement(
+    population_size: int,
+    max_points: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Select a capped population without replacement; zero means all points."""
+    if population_size <= 0:
+        return np.empty((0,), dtype=np.int64)
+    if max_points <= 0 or max_points >= population_size:
+        return np.arange(population_size, dtype=np.int64)
+    return rng.choice(population_size, size=max_points, replace=False)
+
+
 def _log_maizels_distribution_eval(
     cfg: config_dict.ConfigDict,
     train_state: state_utils.EMATrainState,
     params_for_visual: Dict,
-) -> None:
+    *,
+    force: bool = False,
+) -> Dict[str, float]:
     """Log distributional metrics against unseen intermediate-day populations."""
     maizels_cfg = getattr(cfg.logging, "maizels", None)
     if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
-        return
-    if not bool(getattr(maizels_cfg, "distribution_eval_enabled", True)):
-        return
+        return {}
+    if not force and not bool(
+        getattr(maizels_cfg, "distribution_eval_enabled", True)
+    ):
+        return {}
 
     backend = _lineage_backend(cfg)
     dataset_location = getattr(cfg.problem, "dataset_location", None)
@@ -2214,17 +2258,16 @@ def _log_maizels_distribution_eval(
         requested_timepoints=requested_timepoints,
     )
     if not timepoints:
-        return
+        return {}
 
     points_per_time = int(getattr(maizels_cfg, "distribution_eval_points_per_time", 512))
-    points_per_time = max(1, points_per_time)
-    plot_pair_mode = getattr(
-        maizels_cfg,
-        "pair_mode",
-        _training_pair_mode(cfg),
+    source_max_points = int(
+        getattr(
+            maizels_cfg,
+            "distribution_eval_source_max_points",
+            points_per_time,
+        )
     )
-    if plot_pair_mode == "same_as_training":
-        plot_pair_mode = _training_pair_mode(cfg)
     seed = int(
         getattr(
             maizels_cfg,
@@ -2240,17 +2283,41 @@ def _log_maizels_distribution_eval(
         points_per_time,
         dataset_location,
     )
-    eval_pairs, _ = backend.make_endpoint_split_pair_pool(
+    splits = backend.endpoint_pool_splits(
         cfg,
-        points_per_time,
-        split=eval_split,
         dataset_location=dataset_location,
-        pair_mode=str(plot_pair_mode),
-        seed=seed + 17,
     )
-    x0_eval_all = eval_pairs["x0"].astype(np.float32)
-    x1_eval_all = eval_pairs["x1"].astype(np.float32)
-    labels_eval_all = jnp.asarray(eval_pairs["label"])
+    source_all, _, target_all, _ = _lineage_eval_split_arrays(splits, eval_split)
+    source_idx = _population_indices_without_replacement(
+        source_all.shape[0],
+        source_max_points,
+        rng,
+    )
+    x0_eval_all = source_all[source_idx].astype(np.float32)
+
+    # The Maizels and CITE/Multi trajectory models are unconditional. Keeping
+    # labels out of this population evaluation avoids coupling the pushforward
+    # sample to a randomly drawn endpoint pair.
+    if bool(getattr(cfg.training, "conditional", False)):
+        raise ValueError(
+            "Whole-population lineage distribution evaluation currently requires "
+            "training.conditional=False."
+        )
+    labels_eval_all = None
+
+    linear_n = min(x0_eval_all.shape[0], target_all.shape[0])
+    linear_source_idx = _population_indices_without_replacement(
+        x0_eval_all.shape[0],
+        linear_n,
+        rng,
+    )
+    linear_target_idx = _population_indices_without_replacement(
+        target_all.shape[0],
+        linear_n,
+        rng,
+    )
+    linear_x0 = x0_eval_all[linear_source_idx]
+    linear_x1 = target_all[linear_target_idx].astype(np.float32)
 
     n_proj = int(getattr(maizels_cfg, "distribution_eval_wasserstein_projections", 256))
     euler_n_steps = int(
@@ -2293,19 +2360,17 @@ def _log_maizels_distribution_eval(
 
     for timepoint in timepoints:
         actual_all = data["x"][data["timepoints"] == timepoint].astype(np.float32)
-        n_compare = min(points_per_time, actual_all.shape[0], x0_eval_all.shape[0])
-        if n_compare <= 0:
+        actual_idx = _population_indices_without_replacement(
+            actual_all.shape[0],
+            points_per_time,
+            rng,
+        )
+        actual = actual_all[actual_idx]
+        if actual.shape[0] == 0 or x0_eval_all.shape[0] == 0:
             continue
 
-        actual = _random_subset_np(
-            actual_all,
-            n_compare,
-            rng,
-            replace_if_needed=False,
-        )
-        x0_eval = x0_eval_all[:n_compare]
-        x1_eval = x1_eval_all[:n_compare]
-        labels_eval = labels_eval_all[:n_compare]
+        x0_eval = x0_eval_all
+        labels_eval = labels_eval_all
         if hasattr(backend, "normalized_time"):
             tau = float(backend.normalized_time(timepoint))
         else:
@@ -2344,7 +2409,7 @@ def _log_maizels_distribution_eval(
             tau,
             euler_n_steps,
         )
-        linear = ((1.0 - tau) * x0_eval + tau * x1_eval).astype(np.float32)
+        linear = ((1.0 - tau) * linear_x0 + tau * linear_x1).astype(np.float32)
 
         tag = _maizels_time_tag(timepoint)
         for name, pred in [
@@ -2377,6 +2442,155 @@ def _log_maizels_distribution_eval(
 
     if metrics:
         wandb.log(metrics)
+    return metrics
+
+
+def _compute_maizels_population_trajectory_metrics(
+    cfg: config_dict.ConfigDict,
+    train_state: state_utils.EMATrainState,
+    params_for_evaluation: Dict,
+) -> Dict[str, float]:
+    """Measure path validity from a source population sampled without replacement."""
+    maizels_cfg = getattr(cfg.logging, "maizels", None)
+    if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
+        return {}
+    if bool(getattr(cfg.training, "conditional", False)):
+        raise ValueError(
+            "Whole-population lineage trajectory evaluation currently requires "
+            "training.conditional=False."
+        )
+
+    backend = _lineage_backend(cfg)
+    dataset_location = getattr(cfg.problem, "dataset_location", None)
+    points_per_time = int(getattr(maizels_cfg, "distribution_eval_points_per_time", 512))
+    source_max_points = int(
+        getattr(
+            maizels_cfg,
+            "distribution_eval_source_max_points",
+            points_per_time,
+        )
+    )
+    eval_split = _maizels_distribution_eval_split(
+        cfg,
+        maizels_cfg,
+        points_per_time,
+        dataset_location,
+    )
+    splits = backend.endpoint_pool_splits(
+        cfg,
+        dataset_location=dataset_location,
+    )
+    source_all, source_types_all, _, _ = _lineage_eval_split_arrays(
+        splits,
+        eval_split,
+    )
+    seed = int(
+        getattr(
+            maizels_cfg,
+            "distribution_eval_seed",
+            int(getattr(getattr(cfg, "training", None), "seed", 0)) + 1701,
+        )
+    )
+    source_idx = _population_indices_without_replacement(
+        source_all.shape[0],
+        source_max_points,
+        np.random.default_rng(seed + 29),
+    )
+    if source_idx.size == 0:
+        return {}
+
+    x0_eval = jnp.asarray(source_all[source_idx], dtype=jnp.float32)
+    class_to_id = {
+        str(class_name): idx for idx, class_name in enumerate(backend.CLASS_NAMES)
+    }
+    start_type_ids = np.asarray(
+        [class_to_id[str(cell_type)] for cell_type in source_types_all[source_idx]],
+        dtype=np.int32,
+    )
+
+    check_n_times = max(1, int(getattr(maizels_cfg, "check_n_times", 5)))
+    direct_paths = _one_step_paths(
+        train_state.apply_fn,
+        params_for_evaluation,
+        x0_eval,
+        None,
+        _maizels_check_times(check_n_times, include_final=True),
+    )
+    flowmap_paths = _multi_step_paths(
+        train_state.apply_fn,
+        params_for_evaluation,
+        x0_eval,
+        None,
+        check_n_times,
+    )[:, 1:, :]
+    euler_paths = _euler_paths(
+        train_state.apply_fn,
+        params_for_evaluation,
+        x0_eval,
+        None,
+        check_n_times,
+    )[:, 1:, :]
+
+    classifier_path = getattr(
+        cfg.problem,
+        "classifier_path",
+        getattr(backend, "DEFAULT_CLASSIFIER", maizels.DEFAULT_CLASSIFIER),
+    )
+    lineage_transition_mode = getattr(
+        maizels_cfg,
+        "lineage_transition_mode",
+        "same_as_problem",
+    )
+    if lineage_transition_mode in (None, "", "same_as_problem", "same_as_training"):
+        lineage_transition_mode = getattr(
+            cfg.problem,
+            "lineage_transition_mode",
+            "descendant",
+        )
+    lineage_transition_mode = maizels.resolve_lineage_transition_mode(
+        lineage_transition_mode
+    )
+    check_kwargs = {
+        "start_type_ids": start_type_ids,
+        "classifier_path": classifier_path,
+        "prob_threshold": float(getattr(maizels_cfg, "prob_threshold", 0.85)),
+        "margin_threshold": float(getattr(maizels_cfg, "margin_threshold", 1.0)),
+        "final_type_ids": None,
+        "classifier_batch_size": int(
+            getattr(maizels_cfg, "classifier_batch_size", 8192)
+        ),
+        "lineage_transition_mode": lineage_transition_mode,
+    }
+    valid_by_sampler = {
+        "direct": np.asarray(
+            backend.check_paths_with_classifier(paths=direct_paths, **check_kwargs)[
+                "valid"
+            ],
+            dtype=bool,
+        ),
+        "flowmap": np.asarray(
+            backend.check_paths_with_classifier(paths=flowmap_paths, **check_kwargs)[
+                "valid"
+            ],
+            dtype=bool,
+        ),
+        "euler": np.asarray(
+            backend.check_paths_with_classifier(paths=euler_paths, **check_kwargs)[
+                "valid"
+            ],
+            dtype=bool,
+        ),
+    }
+
+    metrics = {"maizels/eval_source_count": int(source_idx.size)}
+    for sampler, valid in valid_by_sampler.items():
+        metrics[f"maizels/model_{sampler}_valid_trajectory_pct"] = 100.0 * float(
+            np.mean(valid)
+        )
+        metrics[f"maizels/model_{sampler}_invalid_trajectory_pct"] = 100.0 * float(
+            np.mean(~valid)
+        )
+    return metrics
 
 
 def _log_maizels_trajectory_diagnostics(
@@ -2384,21 +2598,18 @@ def _log_maizels_trajectory_diagnostics(
     statics: state_utils.StaticArgs,
     train_state: state_utils.EMATrainState,
     params_for_visual: Dict,
-    paired_x0s: jnp.ndarray,
-    x1s: jnp.ndarray,
-    labels: jnp.ndarray,
     *,
     fontsize: float,
-) -> None:
+) -> Dict[str, float]:
     """Log classifier-validity plots on held-out lineage-dataset endpoints."""
     maizels_cfg = getattr(cfg.logging, "maizels", None)
     if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
-        return
+        return {}
 
     backend = _lineage_backend(cfg)
     n_plot = int(getattr(maizels_cfg, "plot_bs", 128))
     if n_plot <= 0:
-        return
+        return {}
 
     plot_pair_mode = getattr(
         maizels_cfg,
@@ -2631,19 +2842,114 @@ def _log_maizels_trajectory_diagnostics(
     )
     axs[0].legend(loc="upper right", fontsize=9, markerscale=3, frameon=True)
 
+    metrics = {
+        "maizels/model_direct_invalid_trajectory_pct": 100.0
+        * float(np.mean(~direct_valid)),
+        "maizels/model_flowmap_invalid_trajectory_pct": 100.0
+        * float(np.mean(~flowmap_valid)),
+        "maizels/model_euler_invalid_trajectory_pct": 100.0
+        * float(np.mean(~euler_valid)),
+        "maizels/interpolant_invalid_trajectory_pct": 100.0
+        * float(np.mean(~gt_valid)),
+        "maizels/model_direct_valid_trajectory_pct": 100.0
+        * float(np.mean(direct_valid)),
+        "maizels/model_flowmap_valid_trajectory_pct": 100.0
+        * float(np.mean(flowmap_valid)),
+        "maizels/model_euler_valid_trajectory_pct": 100.0
+        * float(np.mean(euler_valid)),
+        "maizels/interpolant_valid_trajectory_pct": 100.0
+        * float(np.mean(gt_valid)),
+    }
     wandb.log(
         {
             "plots/maizels_classifier_validity_paths": wandb.Image(fig),
-            "maizels/model_direct_invalid_trajectory_pct": 100.0
-            * float(np.mean(~direct_valid)),
-            "maizels/model_flowmap_invalid_trajectory_pct": 100.0
-            * float(np.mean(~flowmap_valid)),
-            "maizels/model_euler_invalid_trajectory_pct": 100.0
-            * float(np.mean(~euler_valid)),
-            "maizels/interpolant_invalid_trajectory_pct": 100.0
-            * float(np.mean(~gt_valid)),
+            **metrics,
         }
     )
+    return metrics
+
+
+def log_maizels_final_evaluation(
+    cfg: config_dict.ConfigDict,
+    train_state: state_utils.EMATrainState,
+    params_for_evaluation: Dict,
+    *,
+    best_step: int,
+    best_metric: Optional[float] = None,
+) -> Dict[str, float]:
+    """Evaluate and log the selected best lineage model after training."""
+    if not _is_lineage_trajectory_target(cfg):
+        return {}
+
+    distribution_metrics = _log_maizels_distribution_eval(
+        cfg,
+        train_state,
+        params_for_evaluation,
+        force=True,
+    )
+    trajectory_metrics = _compute_maizels_population_trajectory_metrics(
+        cfg,
+        train_state,
+        params_for_evaluation,
+    )
+    if trajectory_metrics:
+        wandb.log(trajectory_metrics)
+
+    final_metrics = {"final_eval/best_step": int(best_step)}
+    if best_metric is not None and np.isfinite(best_metric):
+        final_metrics["final_eval/best_validation_loss"] = float(best_metric)
+
+    for sampler in ("direct", "flowmap", "euler"):
+        swd_key = f"distribution_eval/{sampler}_sliced_w2_mean"
+        mmd_key = f"distribution_eval/{sampler}_rbf_mmd2_mean"
+        valid_key = f"maizels/model_{sampler}_valid_trajectory_pct"
+        if swd_key in distribution_metrics:
+            final_metrics[f"final_eval/{sampler}_mean_swd"] = distribution_metrics[
+                swd_key
+            ]
+        if mmd_key in distribution_metrics:
+            final_metrics[f"final_eval/{sampler}_mean_rbf_mmd2"] = (
+                distribution_metrics[mmd_key]
+            )
+        if valid_key in trajectory_metrics:
+            final_metrics[f"final_eval/{sampler}_valid_trajectory_pct"] = (
+                trajectory_metrics[valid_key]
+            )
+
+    linear_swd_key = "distribution_eval/linear_sliced_w2_mean"
+    linear_mmd_key = "distribution_eval/linear_rbf_mmd2_mean"
+    interpolant_valid_key = "maizels/interpolant_valid_trajectory_pct"
+    if linear_swd_key in distribution_metrics:
+        final_metrics["final_eval/linear_mean_swd"] = distribution_metrics[
+            linear_swd_key
+        ]
+    if linear_mmd_key in distribution_metrics:
+        final_metrics["final_eval/linear_mean_rbf_mmd2"] = distribution_metrics[
+            linear_mmd_key
+        ]
+    if interpolant_valid_key in trajectory_metrics:
+        final_metrics["final_eval/interpolant_valid_trajectory_pct"] = (
+            trajectory_metrics[interpolant_valid_key]
+        )
+    if "maizels/eval_source_count" in trajectory_metrics:
+        final_metrics["final_eval/source_count"] = trajectory_metrics[
+            "maizels/eval_source_count"
+        ]
+
+    wandb.log(final_metrics)
+    if wandb.run is not None:
+        for key, value in final_metrics.items():
+            wandb.run.summary[key] = value
+
+    print(
+        "Final best-model evaluation logged to W&B: "
+        + ", ".join(
+            f"{key.removeprefix('final_eval/')}={value:.6g}"
+            for key, value in final_metrics.items()
+            if key != "final_eval/best_step"
+        )
+    )
+    return final_metrics
 
 
 def _rollout_forbidden_box_metrics(
@@ -2907,12 +3213,15 @@ def register_signal_handlers(
 def save_state(
     train_state: state_utils.EMATrainState,
     cfg: config_dict.ConfigDict,
+    checkpoint_label: Optional[str] = None,
 ) -> None:
     """Save flax training state."""
     output_folder = cfg.logging.output_folder if cfg.logging.output_folder else "."
     os.makedirs(output_folder, exist_ok=True)
-    ckpt_idx = dist_utils.safe_index(cfg, train_state.step) // cfg.logging.save_freq
-    ckpt_path = f"{output_folder}/{cfg.logging.output_name}_{ckpt_idx}.pkl"
+    if checkpoint_label is None:
+        ckpt_idx = dist_utils.safe_index(cfg, train_state.step) // cfg.logging.save_freq
+        checkpoint_label = str(ckpt_idx)
+    ckpt_path = f"{output_folder}/{cfg.logging.output_name}_{checkpoint_label}.pkl"
 
     with open(ckpt_path, "wb") as f:
         state = jax.device_get(dist_utils.safe_unreplicate(cfg, train_state))
@@ -3797,7 +4106,7 @@ def log_metrics(
     loss_fn_args: Tuple,
     prng_key: jnp.ndarray,
     step_time: float,
-) -> jnp.ndarray:
+) -> Tuple[jnp.ndarray, Dict[str, float]]:
     """Log some metrics to wandb, make a figure, and checkpoint the parameters."""
 
     grads = dist_utils.safe_unreplicate(cfg, grads)
@@ -3905,7 +4214,7 @@ def log_metrics(
     if (dist_utils.safe_index(cfg, train_state.step) % cfg.logging.save_freq) == 0:
         save_state(train_state, cfg)
 
-    return prng_key
+    return prng_key, metrics
 
 
 def make_lowd_plot(
@@ -4343,9 +4652,6 @@ def make_lowd_plot(
                 statics,
                 train_state,
                 params_for_visual,
-                paired_plot_x0s,
-                plot_x1s,
-                plot_labels,
                 fontsize=fontsize,
             )
         except Exception as e:
