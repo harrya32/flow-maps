@@ -146,7 +146,6 @@ def datasets_parser(parser):
     )
     parser.add_argument("--maizels_eval_points_per_time", type=int, default=1024)
     parser.add_argument("--maizels_eval_euler_steps", type=int, default=50)
-    parser.add_argument("--maizels_eval_wasserstein_projections", type=int, default=256)
     parser.add_argument("--maizels_eval_every_n_steps", type=int, default=500)
     return parser
 

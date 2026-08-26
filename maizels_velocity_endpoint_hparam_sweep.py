@@ -5,7 +5,7 @@ The launcher keeps one training process on each GPU, dynamically assigning the
 next pending run whenever a GPU becomes free. After training, it reads the final
 W&B summaries, saves per-run and two-seed aggregate CSV files, and selects the
 stable setting with the lowest mean Euler invalid-trajectory percentage (using
-Euler sliced-W2 as the tie-breaker).
+Euler exact EMD as the tie-breaker).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ DEFAULT_ENTROPY_WEIGHTS = (0.0, 0.01, 0.1)
 DEFAULT_SEEDS = (1, 2)
 RUN_PREFIX = "maizels_pca50_bio_prior_ot_velocity_endpoint"
 INVALID_METRIC = "maizels/model_euler_invalid_trajectory_pct"
-W2_METRIC = "distribution_eval/euler_sliced_w2_mean"
+EMD_METRIC = "distribution_eval/euler_emd_mean"
 
 
 def value_label(value: float) -> str:
@@ -302,7 +302,7 @@ def fetch_runs(
             "model_euler_invalid_trajectory_pct": finite_float(
                 run.summary.get(INVALID_METRIC)
             ),
-            "euler_sliced_w2_mean": finite_float(run.summary.get(W2_METRIC)),
+            "euler_emd_mean": finite_float(run.summary.get(EMD_METRIC)),
         }
         if run.name not in latest or timestamp > latest[run.name][0]:
             latest[run.name] = (timestamp, record)
@@ -314,7 +314,7 @@ def results_ready(specs: list[RunSpec], runs: dict[str, dict[str, Any]]) -> bool
         spec.name in runs
         and runs[spec.name]["state"] == "finished"
         and runs[spec.name]["model_euler_invalid_trajectory_pct"] is not None
-        and runs[spec.name]["euler_sliced_w2_mean"] is not None
+        and runs[spec.name]["euler_emd_mean"] is not None
         for spec in specs
     )
 
@@ -332,7 +332,7 @@ def fetch_with_wait(
             for spec in specs
             if spec.name in runs
             and runs[spec.name]["model_euler_invalid_trajectory_pct"] is not None
-            and runs[spec.name]["euler_sliced_w2_mean"] is not None
+            and runs[spec.name]["euler_emd_mean"] is not None
         )
         print(
             f"Waiting for W&B summaries ({ready_count}/{len(specs)} ready)...",
@@ -366,7 +366,7 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
                 "model_euler_invalid_trajectory_pct": record.get(
                     "model_euler_invalid_trajectory_pct"
                 ),
-                "euler_sliced_w2_mean": record.get("euler_sliced_w2_mean"),
+                "euler_emd_mean": record.get("euler_emd_mean"),
                 "wandb_id": record.get("wandb_id", ""),
                 "wandb_url": record.get("wandb_url", ""),
             }
@@ -389,12 +389,12 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
                 for row in setting_rows
                 if row["state"] == "finished"
                 and row["model_euler_invalid_trajectory_pct"] is not None
-                and row["euler_sliced_w2_mean"] is not None
+                and row["euler_emd_mean"] is not None
             ]
             invalid_values = [
                 row["model_euler_invalid_trajectory_pct"] for row in valid_rows
             ]
-            w2_values = [row["euler_sliced_w2_mean"] for row in valid_rows]
+            emd_values = [row["euler_emd_mean"] for row in valid_rows]
             complete = len(valid_rows) == len(args.seeds)
             aggregate_rows.append(
                 {
@@ -409,8 +409,8 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
                     "model_euler_invalid_trajectory_pct_std": (
                         pstdev(invalid_values) if invalid_values else None
                     ),
-                    "euler_sliced_w2_mean_mean": mean(w2_values) if w2_values else None,
-                    "euler_sliced_w2_mean_std": pstdev(w2_values) if w2_values else None,
+                    "euler_emd_mean_mean": mean(emd_values) if emd_values else None,
+                    "euler_emd_mean_std": pstdev(emd_values) if emd_values else None,
                     "rank": None,
                 }
             )
@@ -419,7 +419,7 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
     eligible.sort(
         key=lambda row: (
             row["model_euler_invalid_trajectory_pct_mean"],
-            row["euler_sliced_w2_mean_mean"],
+            row["euler_emd_mean_mean"],
         )
     )
     for rank, row in enumerate(eligible, start=1):
@@ -443,7 +443,7 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
             {
                 "selection_rule": (
                     "lowest stable two-seed mean model_euler_invalid_trajectory_pct; "
-                    "tie-break by lowest mean euler_sliced_w2_mean"
+                    "tie-break by lowest mean euler_emd_mean"
                 ),
                 "best": best,
                 "run_results_csv": str(run_csv),
@@ -461,7 +461,7 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
             "BEST "
             f"weight={best['weight']:g} entropy={best['entropy_weight']:g} "
             f"invalid_pct={best['model_euler_invalid_trajectory_pct_mean']:.6g} "
-            f"euler_sliced_w2={best['euler_sliced_w2_mean_mean']:.6g}"
+            f"euler_emd={best['euler_emd_mean_mean']:.6g}"
         )
     else:
         print("No setting has both seeds and both final metrics.", file=sys.stderr)

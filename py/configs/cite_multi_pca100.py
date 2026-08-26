@@ -93,7 +93,6 @@ def get_config(
 
     cfg.optimization.bs = 128
 
-    cfg.problem.ot_minibatch_size = cfg.optimization.get_ref("bs")
     cfg.problem.ot_minibatch_max_resamples = 20
     cfg.problem.ot_infeasible_fallback = "partial"
     cfg.problem.lineage_class_names = list(cite_multi.CLASS_NAMES)
@@ -114,7 +113,7 @@ def get_config(
     cfg.logging.comparison_mode = variant_name
     cfg.logging.maizels.distribution_eval_timepoints = [heldout_day]
     cfg.logging.maizels.distribution_eval_max_timepoints = 1
-    # Keep the generic SWD/MMD diagnostic bounded here. The MFM-compatible
+    # Keep the generic exact-EMD/MMD diagnostic bounded here. The MFM-compatible
     # evaluator below is the CITE/Multi full-population evaluation.
     cfg.logging.maizels.distribution_eval_source_pool = "auto"
     cfg.logging.maizels.distribution_eval_source_max_points = 1024

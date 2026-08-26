@@ -18,6 +18,7 @@ import common.flow_map as flow_map
 import common.cite_multi as cite_multi
 import common.maizels as maizels
 import common.state_utils as state_utils
+import common.wasserstein as wasserstein
 import flax
 import jax
 import jax.numpy as jnp
@@ -117,6 +118,11 @@ def main() -> None:
     parser.add_argument("--dataset_name", choices=("cite", "multi"), default=None)
     parser.add_argument("--heldout_day", choices=("3", "4"), default=None)
     parser.add_argument("--classifier_path", default=None)
+    parser.add_argument(
+        "--maizels_ot_coupling",
+        choices=("global_ot", "minibatch_ot"),
+        default=None,
+    )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--ema_fac", type=float, default=0.9999)
     parser.add_argument("--heldout_max_times", type=int, default=0)
@@ -132,6 +138,7 @@ def main() -> None:
         "dataset_name": args.dataset_name,
         "heldout_day": args.heldout_day,
         "classifier_path": args.classifier_path,
+        "maizels_ot_coupling": args.maizels_ot_coupling,
     }
     kwargs = {
         name: value
@@ -238,6 +245,7 @@ def main() -> None:
             ),
             dtype=np.float32,
         )
+        emd = wasserstein.exact_emd(pred, actual)
         mean_mse = float(np.mean((pred.mean(axis=0) - actual.mean(axis=0)) ** 2))
         cov_err = covariance_fro_error(pred, actual)
         row = {
@@ -245,6 +253,7 @@ def main() -> None:
             "day": time_value,
             "tau": tau,
             "n": n_compare,
+            "emd": emd,
             "mean_mse": mean_mse,
             "cov_fro_error": cov_err,
         }
@@ -252,7 +261,8 @@ def main() -> None:
         results.append({**row, "actual": actual, "pred": pred})
         print(
             f"{timepoint:>4s} tau={tau:.3f} n={n_compare:>4d} "
-            f"mean_mse={mean_mse:.6g} cov_fro_error={cov_err:.6g}"
+            f"emd={emd:.6g} mean_mse={mean_mse:.6g} "
+            f"cov_fro_error={cov_err:.6g}"
         )
 
     out_dir = Path(args.out_dir)
@@ -264,11 +274,11 @@ def main() -> None:
     )
     csv_path = out_dir / f"{output_prefix}_heldout_metrics.csv"
     with csv_path.open("w") as f:
-        f.write("timepoint,day,tau,n,mean_mse,cov_fro_error\n")
+        f.write("timepoint,day,tau,n,emd,mean_mse,cov_fro_error\n")
         for row in metrics:
             f.write(
                 f"{row['timepoint']},{row['day']},{row['tau']},{row['n']},"
-                f"{row['mean_mse']},{row['cov_fro_error']}\n"
+                f"{row['emd']},{row['mean_mse']},{row['cov_fro_error']}\n"
             )
     np.savez(
         out_dir / f"{output_prefix}_heldout_metrics.npz",
@@ -276,6 +286,7 @@ def main() -> None:
         day=np.asarray([row["day"] for row in metrics], dtype=np.float32),
         tau=np.asarray([row["tau"] for row in metrics], dtype=np.float32),
         n=np.asarray([row["n"] for row in metrics], dtype=np.int32),
+        emd=np.asarray([row["emd"] for row in metrics], dtype=np.float32),
         mean_mse=np.asarray([row["mean_mse"] for row in metrics], dtype=np.float32),
         cov_fro_error=np.asarray([row["cov_fro_error"] for row in metrics], dtype=np.float32),
     )

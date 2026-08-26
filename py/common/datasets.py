@@ -1078,6 +1078,46 @@ class CiteMultiMinibatchOTDataset:
         return self._sample(int(self.cfg.optimization.bs), seed)
 
 
+class MaizelsMinibatchOTDataset:
+    """Build Maizels training pairs with fresh raw-cost OT minibatches."""
+
+    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, np.ndarray]):
+        self.cfg = cfg
+        self.data = {
+            "x0": np.asarray(data["x0"], dtype=np.float32),
+            "x1": np.asarray(data["x1"], dtype=np.float32),
+            "label": np.asarray(data["label"], dtype=np.float32),
+        }
+        self.pair_mode = str(getattr(cfg.problem, "maizels_pair_mode", "none"))
+        self.cpu_rng = np.random.default_rng(int(cfg.training.seed) + 4301)
+        self.last_pair_stats = None
+
+    def _sample(self, bs: int, seed: int) -> Dict[str, jnp.ndarray]:
+        paired, stats = maizels.couple_minibatch_ot_pair_pool(
+            self.cfg,
+            self.data,
+            int(bs),
+            seed=int(seed),
+            pair_mode=self.pair_mode,
+        )
+        self.last_pair_stats = stats
+        return {
+            "x0": jnp.asarray(paired["x0"], dtype=jnp.float32),
+            "x1": jnp.asarray(paired["x1"], dtype=jnp.float32),
+            "label": jnp.asarray(paired["label"], dtype=jnp.float32),
+        }
+
+    def sample_device_batch(self, bs: int, key: jnp.ndarray):
+        return self._sample(bs, CiteMultiMinibatchOTDataset._seed_from_key(key))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        seed = int(self.cpu_rng.integers(0, np.iinfo(np.int64).max))
+        return self._sample(int(self.cfg.optimization.bs), seed)
+
+
 def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, np.ndarray]):
     """Create a paired dataset with an optional device-side training sampler."""
     pair_mode = str(
@@ -1092,6 +1132,10 @@ def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, np.ndarr
         and cite_multi.uses_minibatch_ot(pair_mode)
     ):
         return CiteMultiMinibatchOTDataset(cfg, paired)
+    if cfg.problem.target == "maizels_pca50" and maizels.uses_minibatch_ot(
+        cfg, pair_mode
+    ):
+        return MaizelsMinibatchOTDataset(cfg, paired)
 
     cpu_iterator = np_to_tfds(cfg, paired)
     if bool(getattr(cfg.problem, "device_batching", True)):
@@ -1288,6 +1332,11 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         cfg.problem.maizels_pair_stats = stats
         rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
         ds = paired_np_to_dataset(cfg, paired)
+        coupling_summary = (
+            f", coupling=minibatch_ot({stats['ot_minibatch_size']}, raw_cost)"
+            if stats.get("coupling") == "dynamic_minibatch_ot"
+            else ""
+        )
         print(
             "Loaded Maizels PCA50 pairs: "
             f"mode={getattr(cfg.problem, 'maizels_pair_mode', 'none')}, "
@@ -1297,7 +1346,7 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             f"target={getattr(cfg.problem, 'target_time', 'D8')} "
             f"(train={stats['target_train_n']}, holdout={stats['target_holdout_n']}, "
             f"total={stats['target_total_n']}), "
-            f"pairs={cfg.problem.n}, "
+            f"pairs={cfg.problem.n}{coupling_summary}, "
             f"candidate_acceptance={stats['candidate_acceptance_rate']:.4f}, "
             f"dim={cfg.problem.d}"
         )

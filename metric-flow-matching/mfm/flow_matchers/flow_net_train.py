@@ -266,7 +266,7 @@ class FlowNetTrainTrajectory(FlowNetTrainBase):
                     fname=os.path.join(os.getcwd(), f"sphere_trajs.png"),
                 )
 
-            EMD = wasserstein_distance(X_mid_pred, batch[t_exclude], p=1)
+            EMD = wasserstein_distance(X_mid_pred, batch[t_exclude], power=1)
             self.final_EMD = EMD
 
             self.log("test_EMD", EMD, on_step=False, on_epoch=True, prog_bar=True)

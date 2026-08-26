@@ -260,6 +260,12 @@ def parse_command_line_arguments():
             "Zero disables early stopping."
         ),
     )
+    parser.add_argument(
+        "--maizels_ot_coupling",
+        choices=("global_ot", "minibatch_ot"),
+        default=None,
+        help="Use cached global OT or fresh per-step minibatch OT for Maizels.",
+    )
     return parser.parse_args()
 
 
@@ -273,6 +279,7 @@ def setup_config_dict():
         "heldout_day": args.heldout_day,
         "classifier_path": args.classifier_path,
         "early_stopping_patience": args.early_stopping_patience,
+        "maizels_ot_coupling": args.maizels_ot_coupling,
     }
     kwargs = {
         name: value

@@ -142,7 +142,8 @@ On every Maizels visual/distribution evaluation step it also logs
 interval. Both schedules follow `logging.visual_freq` by default. CITE/Multi
 uses the same 90/10 retained-day split as MFM. These metrics require POT;
 `logging.mfm.max_points = 0` means the full populations, while a positive value
-enables a cheaper deterministic cap.
+enables a cheaper deterministic cap. The Euclidean transport cost makes these
+metrics empirical W1, not W2.
 
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
@@ -152,6 +153,21 @@ intervals, each OT problem uses half of that batch (for example, 64 cells when
 interpolant rules as a hard transport mask. If those rules make balanced
 transport infeasible, it uses maximum-valid-mass partial assignment and samples
 only from the valid portion.
+
+Maizels OT modes retain the cached full-population coupling by default. Pass
+`--maizels_ot_coupling minibatch_ot` (or set
+`MAIZELS_OT_COUPLING=minibatch_ot`) to recompute an exact coupling for every
+training batch instead. With the default batch size this is one 128-by-128
+D3-to-D8 problem per step. This backend matches the CITE/Multi convention and
+uses raw squared-Euclidean PCA distances without feature standardization.
+
+Maizels distribution evaluation uses the same exact uniform-mass EMD as
+`mfm/test_EMD`: Euclidean ground cost solved with POT (that is, empirical W1,
+not sliced W2). It is logged for each intermediate day and averaged under
+`distribution_eval/*_emd_mean` during training and for the selected best model.
+The default pushes all D3 source cells and compares them with up to 1,024 cells
+from each intermediate day; set `distribution_eval_points_per_time = 0` for
+uncapped target populations.
 
 Run all seven CITE/Multi methods over a seed grid with:
 

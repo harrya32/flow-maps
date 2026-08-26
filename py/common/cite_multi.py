@@ -474,23 +474,33 @@ def _make_batched_masked_minibatch_ot_pairs(
     pair_mode: str,
     ot_batch_size: int,
     max_attempts: int,
+    class_names: Sequence[str] = CLASS_NAMES,
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     """Solve many masked OT blocks while batching classifier inference."""
-    class_to_id = maizels.class_to_id_map(CLASS_NAMES)
+    class_names = tuple(str(name) for name in class_names)
+    transition_edges = tuple((str(src), str(dst)) for src, dst in transition_edges)
+    class_to_id = maizels.class_to_id_map(class_names)
     lineage_transition_mode = maizels.lineage_transition_mode_from_config(cfg)
     reachable = maizels.build_transition_reachable(
         lineage_transition_mode,
-        edges=TRANSITION_EDGES,
-        class_names=CLASS_NAMES,
+        edges=transition_edges,
+        class_names=class_names,
     )
     class_mask = np.asarray(
         [
-            [maizels.endpoint_valid(src, dst, reachable) for dst in CLASS_NAMES]
-            for src in CLASS_NAMES
+            [maizels.endpoint_valid(src, dst, reachable) for dst in class_names]
+            for src in class_names
         ],
         dtype=bool,
     )
-    fallback = str(getattr(cfg.problem, "ot_infeasible_fallback", "partial"))
+    fallback = str(
+        getattr(
+            cfg.problem,
+            "ot_minibatch_infeasible_fallback",
+            getattr(cfg.problem, "ot_infeasible_fallback", "partial"),
+        )
+    )
 
     def draw_state(output_size: int) -> Dict[str, Any]:
         candidate_size = min(
@@ -625,7 +635,7 @@ def _make_batched_masked_minibatch_ot_pairs(
                 getattr(cfg.problem, "classifier_batch_size", 8192)
             ),
             lineage_transition_mode=lineage_transition_mode,
-            transition_edges=TRANSITION_EDGES,
+            transition_edges=transition_edges,
             path_builder=getattr(cfg.problem, "interpolant_path_builder", None),
         )
         valid_all = np.asarray(validity["valid"], dtype=bool)
@@ -731,6 +741,8 @@ def _make_minibatch_ot_pairs_from_arrays(
     n_pairs: int,
     rng: np.random.Generator,
     pair_mode: str,
+    class_names: Sequence[str] = CLASS_NAMES,
+    transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     """Draw independent minibatches, solve OT, and sample coupled pairs."""
     pair_mode = _canonical_pair_mode(pair_mode)
@@ -753,9 +765,11 @@ def _make_minibatch_ot_pairs_from_arrays(
             pair_mode=pair_mode,
             ot_batch_size=ot_batch_size,
             max_attempts=max_attempts,
+            class_names=class_names,
+            transition_edges=transition_edges,
         )
 
-    class_to_id = maizels.class_to_id_map(CLASS_NAMES)
+    class_to_id = maizels.class_to_id_map(class_names)
     paired_parts = []
     block_stats = []
     remaining = int(n_pairs)

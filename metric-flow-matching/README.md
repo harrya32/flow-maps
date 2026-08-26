@@ -87,8 +87,9 @@ MFM uses maximum-valid-mass partial OT: no rejected edge is restored, and the
 largest transportable valid mass is renormalized for velocity training.
 
 The Maizels runs log to `self-distill-flow-maps`, including all intermediate-day
-RBF MMD and sliced-Wasserstein metrics, classifier-invalid Euler trajectory
-percentage, PC1/PC2 plots, and the common loss/gradient/learning-rate scalars.
+RBF MMD and exact `test_EMD`-compatible W1 metrics, classifier-invalid Euler
+trajectory percentage, PC1/PC2 plots, and the common
+loss/gradient/learning-rate scalars.
 
 On Apple Silicon, the metric/geopath phase automatically uses CPU because the
 higher-order `torch.func.jvp` backward used by the time-conditioned geopath is

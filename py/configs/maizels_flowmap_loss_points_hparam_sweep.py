@@ -17,6 +17,7 @@ def get_config(
     dataset_location: str = "",
     output_folder: str = "",
     early_stopping_patience=None,
+    maizels_ot_coupling=None,
 ):
     del slurm_id
 
@@ -27,6 +28,7 @@ def get_config(
         dataset_location,
         output_folder,
         early_stopping_patience=early_stopping_patience,
+        maizels_ot_coupling=maizels_ot_coupling,
     )
     seed = int(os.getenv("MAIZELS_SEED", str(cfg.training.seed)))
     weight = float(os.environ["MAIZELS_CONSTRAINT_WEIGHT"])

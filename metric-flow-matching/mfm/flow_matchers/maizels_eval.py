@@ -17,7 +17,7 @@ PY_ROOT = REPO_ROOT / "py"
 if str(PY_ROOT) not in sys.path:
     sys.path.insert(0, str(PY_ROOT))
 
-from common import maizels  # noqa: E402
+from common import maizels, wasserstein  # noqa: E402
 
 
 def _sqdist(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -54,19 +54,6 @@ def rbf_mmd2(x: np.ndarray, y: np.ndarray, rng) -> float:
             - 2.0 * np.exp(-xy / scale).mean()
         )
     return max(float(np.mean(values)), 0.0)
-
-
-def sliced_wasserstein_2(x: np.ndarray, y: np.ndarray, n_projections: int, rng) -> float:
-    n = min(x.shape[0], y.shape[0])
-    if x.shape[0] != n:
-        x = x[rng.choice(x.shape[0], size=n, replace=False)]
-    if y.shape[0] != n:
-        y = y[rng.choice(y.shape[0], size=n, replace=False)]
-    directions = rng.normal(size=(int(n_projections), x.shape[1]))
-    directions /= np.maximum(np.linalg.norm(directions, axis=1, keepdims=True), 1e-12)
-    x_projection = np.sort(x @ directions.T, axis=0)
-    y_projection = np.sort(y @ directions.T, axis=0)
-    return float(np.sqrt(np.mean((x_projection - y_projection) ** 2)))
 
 
 def euler_rollout(flow_net, x0: torch.Tensor, tau: float, n_steps: int):
@@ -118,7 +105,6 @@ class MaizelsEvaluationCallback(pl.Callback):
         labels = np.asarray(self.datamodule.eval_pairs["label"], dtype=np.int32)
         source_type_ids = labels[:, 0]
         n_steps = int(self.args.maizels_eval_euler_steps)
-        n_projections = int(self.args.maizels_eval_wasserstein_projections)
         seed = int(self.args.seed_current) + 1701
         rng = np.random.default_rng(seed)
         data = self.datamodule.all_timepoint_data
@@ -135,7 +121,7 @@ class MaizelsEvaluationCallback(pl.Callback):
         )
 
         metrics = {}
-        mmd_values, sw2_values = [], []
+        mmd_values, emd_values = [], []
         plot_rows = []
         with torch.no_grad():
             for timepoint in timepoints:
@@ -150,12 +136,12 @@ class MaizelsEvaluationCallback(pl.Callback):
                 prediction = prediction.detach().cpu().numpy().astype(np.float32)
 
                 mmd2 = rbf_mmd2(prediction, actual, rng)
-                sw2 = sliced_wasserstein_2(prediction, actual, n_projections, rng)
+                emd = wasserstein.exact_emd(prediction, actual)
                 tag = str(timepoint).replace(".", "p").replace("/", "_")
                 metrics[f"distribution_eval/{tag}_euler_rbf_mmd2"] = mmd2
-                metrics[f"distribution_eval/{tag}_euler_sliced_w2"] = sw2
+                metrics[f"distribution_eval/{tag}_euler_emd"] = emd
                 mmd_values.append(mmd2)
-                sw2_values.append(sw2)
+                emd_values.append(emd)
                 plot_rows.append((timepoint, actual, prediction))
 
             _, paths = euler_rollout(flow_net, x0, 1.0, n_steps)
@@ -172,7 +158,7 @@ class MaizelsEvaluationCallback(pl.Callback):
         )
         valid = np.asarray(validity["valid"], dtype=bool)
         metrics["distribution_eval/euler_rbf_mmd2_mean"] = float(np.mean(mmd_values))
-        metrics["distribution_eval/euler_sliced_w2_mean"] = float(np.mean(sw2_values))
+        metrics["distribution_eval/euler_emd_mean"] = float(np.mean(emd_values))
         metrics["maizels/model_euler_invalid_trajectory_pct"] = 100.0 * float(np.mean(~valid))
 
         metrics["plots/maizels_intermediate_distributions"] = wandb.Image(

@@ -33,17 +33,17 @@ METRICS = {
     "model_euler_invalid_trajectory_pct": (
         "maizels/model_euler_invalid_trajectory_pct"
     ),
-    "direct_sliced_w2_mean": "distribution_eval/direct_sliced_w2_mean",
-    "flowmap_sliced_w2_mean": "distribution_eval/flowmap_sliced_w2_mean",
-    "euler_sliced_w2_mean": "distribution_eval/euler_sliced_w2_mean",
+    "direct_emd_mean": "distribution_eval/direct_emd_mean",
+    "flowmap_emd_mean": "distribution_eval/flowmap_emd_mean",
+    "euler_emd_mean": "distribution_eval/euler_emd_mean",
 }
-W2_COLUMNS = (
-    "direct_sliced_w2_mean",
-    "flowmap_sliced_w2_mean",
-    "euler_sliced_w2_mean",
+EMD_COLUMNS = (
+    "direct_emd_mean",
+    "flowmap_emd_mean",
+    "euler_emd_mean",
 )
 PRIMARY_INVALID = "model_direct_invalid_trajectory_pct"
-PRIMARY_W2 = "direct_sliced_w2_mean"
+PRIMARY_EMD = "direct_emd_mean"
 
 
 def value_label(value: float) -> str:
@@ -132,12 +132,15 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("WANDB_PROJECT", "self-distill-flow-maps"),
     )
     parser.add_argument(
+        "--max-emd",
         "--max-sliced-w2",
+        dest="max_emd",
         type=float,
-        default=2.0,
+        default=float("inf"),
         help=(
-            "Per-seed ceiling applied to all three sliced-W2 metrics when "
-            "marking a run stable (default: 2.0)."
+            "Per-seed ceiling applied to all three exact-EMD metrics when "
+            "marking a run stable (default: no ceiling). The old "
+            "--max-sliced-w2 spelling remains as a compatibility alias."
         ),
     )
     parser.add_argument(
@@ -396,11 +399,11 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def run_is_stable(row: dict[str, Any], max_sliced_w2: float) -> bool:
+def run_is_stable(row: dict[str, Any], max_emd: float) -> bool:
     return (
         row["state"] == "finished"
         and all(row[column] is not None for column in METRICS)
-        and all(row[column] <= max_sliced_w2 for column in W2_COLUMNS)
+        and all(row[column] <= max_emd for column in EMD_COLUMNS)
     )
 
 
@@ -422,7 +425,7 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
             "wandb_id": record.get("wandb_id", ""),
             "wandb_url": record.get("wandb_url", ""),
         }
-        row["stable"] = run_is_stable(row, args.max_sliced_w2)
+        row["stable"] = run_is_stable(row, args.max_emd)
         run_rows.append(row)
 
     run_csv = output_root / "flowmap_loss_points_hparam_runs.csv"
@@ -459,8 +462,8 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
         key=lambda row: (
             row[f"{PRIMARY_INVALID}_mean"],
             row["model_flowmap_invalid_trajectory_pct_mean"],
-            row[f"{PRIMARY_W2}_mean"],
-            row["flowmap_sliced_w2_mean_mean"],
+            row[f"{PRIMARY_EMD}_mean"],
+            row["flowmap_emd_mean_mean"],
         )
     )
     for rank, row in enumerate(eligible, start=1):
@@ -484,12 +487,12 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
             {
                 "stability_rule": (
                     "both seeds finished with all six finite metrics and each "
-                    f"sliced-W2 <= {args.max_sliced_w2:g}"
+                    f"exact EMD <= {args.max_emd:g}"
                 ),
                 "selection_rule": (
                     "lowest mean direct invalid-trajectory percentage; tie-break "
-                    "by composed-flow-map invalid percentage, direct sliced-W2, "
-                    "then composed-flow-map sliced-W2"
+                    "by composed-flow-map invalid percentage, direct EMD, "
+                    "then composed-flow-map EMD"
                 ),
                 "best": best,
                 "run_results_csv": str(run_csv),
@@ -509,7 +512,7 @@ def summarize(specs: list[RunSpec], args: argparse.Namespace) -> bool:
             "BEST "
             f"weight={best['weight']:g} entropy={best['entropy_weight']:g} "
             f"direct_invalid={best[f'{PRIMARY_INVALID}_mean']:.6g} "
-            f"direct_sliced_w2={best[f'{PRIMARY_W2}_mean']:.6g}"
+            f"direct_emd={best[f'{PRIMARY_EMD}_mean']:.6g}"
         )
 
     return all(row["completed_seeds"] == len(args.seeds) for row in aggregate_rows)

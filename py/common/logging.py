@@ -35,6 +35,7 @@ from . import (
     maizels,
     pair_times,
     state_utils,
+    wasserstein,
 )
 
 Parameters = Dict[str, Dict]
@@ -1880,30 +1881,6 @@ def _rbf_mmd2_np(
     return max(float(mmd2 / len(bws)), 0.0)
 
 
-def _sliced_wasserstein_2_np(
-    x: np.ndarray,
-    y: np.ndarray,
-    *,
-    n_projections: int,
-    rng: np.random.Generator,
-) -> float:
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    n = min(x.shape[0], y.shape[0])
-    if n <= 0:
-        return float("nan")
-    if x.shape[0] != n:
-        x = x[rng.choice(x.shape[0], size=n, replace=False)]
-    if y.shape[0] != n:
-        y = y[rng.choice(y.shape[0], size=n, replace=False)]
-
-    directions = rng.normal(size=(int(n_projections), x.shape[1]))
-    directions /= np.maximum(np.linalg.norm(directions, axis=1, keepdims=True), 1e-12)
-    x_proj = np.sort(x @ directions.T, axis=0)
-    y_proj = np.sort(y @ directions.T, axis=0)
-    return float(np.sqrt(np.mean((x_proj - y_proj) ** 2)))
-
-
 def _euler_terminal_at_time(
     apply_fn,
     params: Dict,
@@ -1950,45 +1927,7 @@ def _euler_terminal_between(
 
 def _mfm_exact_emd(x_pred: np.ndarray, x_true: np.ndarray) -> float:
     """Reproduce MFM's uniform-mass Euclidean ``pot.emd2`` calculation."""
-    try:
-        import ot as pot
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "MFM-compatible test_EMD logging requires POT (pip install POT==0.9.3)."
-        ) from exc
-
-    x_pred = np.asarray(x_pred, dtype=np.float32)
-    x_true = np.asarray(x_true, dtype=np.float32)
-    if x_pred.ndim != 2 or x_true.ndim != 2:
-        raise ValueError("MFM EMD inputs must be two-dimensional sample arrays.")
-    if x_pred.shape[0] == 0 or x_true.shape[0] == 0:
-        raise ValueError("MFM EMD cannot be computed on an empty population.")
-    if x_pred.shape[1] != x_true.shape[1]:
-        raise ValueError(
-            "MFM EMD populations must have the same feature dimension, got "
-            f"{x_pred.shape[1]} and {x_true.shape[1]}."
-        )
-
-    # This is the NumPy equivalent of the MFM implementation's torch.cdist.
-    pred_norm = np.sum(x_pred * x_pred, axis=1, keepdims=True)
-    true_norm = np.sum(x_true * x_true, axis=1, keepdims=True).T
-    # Build the dense cost matrix in place: the full CITE/Multi populations
-    # produce tens of millions of pairwise distances, so avoiding additional
-    # matrix-sized temporaries materially lowers peak memory.
-    cost = x_pred @ x_true.T
-    cost *= np.float32(-2.0)
-    cost += pred_norm
-    cost += true_norm
-    np.maximum(cost, np.float32(0.0), out=cost)
-    np.sqrt(cost, out=cost)
-    return float(
-        pot.emd2(
-            pot.unif(x_pred.shape[0]),
-            pot.unif(x_true.shape[0]),
-            cost,
-            numItermax=10_000_000,
-        )
-    )
+    return wasserstein.exact_emd(x_pred, x_true)
 
 
 def _mfm_population_subset(
@@ -2319,7 +2258,6 @@ def _log_maizels_distribution_eval(
     linear_x0 = x0_eval_all[linear_source_idx]
     linear_x1 = target_all[linear_target_idx].astype(np.float32)
 
-    n_proj = int(getattr(maizels_cfg, "distribution_eval_wasserstein_projections", 256))
     euler_n_steps = int(
         getattr(
             maizels_cfg,
@@ -2349,13 +2287,13 @@ def _log_maizels_distribution_eval(
     metrics = {}
     aggregate = {
         "direct_rbf_mmd2": [],
-        "direct_sliced_w2": [],
+        "direct_emd": [],
         "flowmap_rbf_mmd2": [],
-        "flowmap_sliced_w2": [],
+        "flowmap_emd": [],
         "euler_rbf_mmd2": [],
-        "euler_sliced_w2": [],
+        "euler_emd": [],
         "linear_rbf_mmd2": [],
-        "linear_sliced_w2": [],
+        "linear_emd": [],
     }
 
     for timepoint in timepoints:
@@ -2425,16 +2363,11 @@ def _log_maizels_distribution_eval(
                 rng=rng,
                 bandwidth_multipliers=bandwidth_multipliers,
             )
-            sw2 = _sliced_wasserstein_2_np(
-                pred,
-                actual,
-                n_projections=n_proj,
-                rng=rng,
-            )
+            emd = _mfm_exact_emd(pred, actual)
             metrics[f"distribution_eval/{tag}_{name}_rbf_mmd2"] = mmd2
-            metrics[f"distribution_eval/{tag}_{name}_sliced_w2"] = sw2
+            metrics[f"distribution_eval/{tag}_{name}_emd"] = emd
             aggregate[f"{name}_rbf_mmd2"].append(mmd2)
-            aggregate[f"{name}_sliced_w2"].append(sw2)
+            aggregate[f"{name}_emd"].append(emd)
 
     for key, values in aggregate.items():
         if values:
@@ -2900,12 +2833,12 @@ def log_maizels_final_evaluation(
         final_metrics["final_eval/best_validation_loss"] = float(best_metric)
 
     for sampler in ("direct", "flowmap", "euler"):
-        swd_key = f"distribution_eval/{sampler}_sliced_w2_mean"
+        emd_key = f"distribution_eval/{sampler}_emd_mean"
         mmd_key = f"distribution_eval/{sampler}_rbf_mmd2_mean"
         valid_key = f"maizels/model_{sampler}_valid_trajectory_pct"
-        if swd_key in distribution_metrics:
-            final_metrics[f"final_eval/{sampler}_mean_swd"] = distribution_metrics[
-                swd_key
+        if emd_key in distribution_metrics:
+            final_metrics[f"final_eval/{sampler}_mean_emd"] = distribution_metrics[
+                emd_key
             ]
         if mmd_key in distribution_metrics:
             final_metrics[f"final_eval/{sampler}_mean_rbf_mmd2"] = (
@@ -2916,12 +2849,12 @@ def log_maizels_final_evaluation(
                 trajectory_metrics[valid_key]
             )
 
-    linear_swd_key = "distribution_eval/linear_sliced_w2_mean"
+    linear_emd_key = "distribution_eval/linear_emd_mean"
     linear_mmd_key = "distribution_eval/linear_rbf_mmd2_mean"
     interpolant_valid_key = "maizels/interpolant_valid_trajectory_pct"
-    if linear_swd_key in distribution_metrics:
-        final_metrics["final_eval/linear_mean_swd"] = distribution_metrics[
-            linear_swd_key
+    if linear_emd_key in distribution_metrics:
+        final_metrics["final_eval/linear_mean_emd"] = distribution_metrics[
+            linear_emd_key
         ]
     if linear_mmd_key in distribution_metrics:
         final_metrics["final_eval/linear_mean_rbf_mmd2"] = distribution_metrics[
@@ -3974,6 +3907,7 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
         float(getattr(cfg.problem, "maizels_holdout_fraction", 0.0)),
         int(getattr(cfg.problem, "maizels_holdout_n", 0)),
         getattr(cfg.problem, "cite_multi_train_fraction", None),
+        str(getattr(cfg.problem, "maizels_ot_coupling", "global_ot")),
         int(getattr(cfg.problem, "ot_minibatch_size", 128)),
         str(getattr(cfg.problem, "ot_infeasible_fallback", "partial")),
     )

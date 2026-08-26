@@ -34,6 +34,7 @@ def get_config(
     dataset_location: str = "",
     output_folder: str = "",
     early_stopping_patience=None,
+    maizels_ot_coupling=None,
 ) -> ml_collections.ConfigDict:
     import jax
 
@@ -56,7 +57,7 @@ def get_config(
     config.training.loss_type = loss_type
     config.training.tmin = 0.0
     config.training.tmax = 1.0
-    config.training.seed = 1
+    config.training.seed = 0
     config.training.ema_facs = [0.999, 0.9999]
     config.training.ndevices = jax.device_count()
     #config.training.teacher_ema_factor = 0.999
@@ -83,6 +84,19 @@ def get_config(
     config.problem.maizels_holdout_n = 0
     config.problem.maizels_holdout_seed = 701
     config.problem.maizels_pair_mode = pair_mode
+    if maizels_ot_coupling is None:
+        maizels_ot_coupling = os.getenv("MAIZELS_OT_COUPLING", "minibatch_ot")
+    maizels_ot_coupling = {
+        "global": "global_ot",
+        "exact": "global_ot",
+        "minibatch": "minibatch_ot",
+    }.get(str(maizels_ot_coupling).lower(), str(maizels_ot_coupling).lower())
+    if maizels_ot_coupling not in ("global_ot", "minibatch_ot"):
+        raise ValueError(
+            "maizels_ot_coupling must be 'global_ot' or 'minibatch_ot', "
+            f"got {maizels_ot_coupling!r}."
+        )
+    config.problem.maizels_ot_coupling = maizels_ot_coupling
     config.problem.lineage_transition_mode = os.getenv(
         "MAIZELS_LINEAGE_TRANSITION_MODE",
         "descendant",
@@ -110,6 +124,11 @@ def get_config(
     # Optimization config.
     config.optimization = ml_collections.ConfigDict()
     config.optimization.bs = 128  # 4096
+    # With one D3 -> D8 interval, dynamic OT couples the complete optimizer
+    # batch in one problem. Its cost is raw squared Euclidean distance.
+    config.problem.ot_minibatch_size = config.optimization.get_ref("bs")
+    config.problem.ot_minibatch_max_resamples = 20
+    config.problem.ot_minibatch_infeasible_fallback = "partial"
     config.optimization.diag_fraction = diag_fraction
     config.optimization.learning_rate = 1e-3
     config.optimization.clip = 10.0
@@ -181,11 +200,10 @@ def get_config(
     config.logging.maizels.distribution_eval_enabled = True
     # Match the CITE/Multi population evaluation: push every source cell forward
     # exactly once. A source cap of 0 means the complete selected population.
-    config.logging.maizels.distribution_eval_source_pool = "all"
+    config.logging.maizels.distribution_eval_source_pool = "all" #auto
     config.logging.maizels.distribution_eval_source_max_points = 0
-    config.logging.maizels.distribution_eval_points_per_time = 1024
+    config.logging.maizels.distribution_eval_points_per_time = 0
     config.logging.maizels.distribution_eval_max_timepoints = 0
-    config.logging.maizels.distribution_eval_wasserstein_projections = 256
     config.logging.maizels.distribution_eval_euler_n_steps = (
         config.logging.maizels.euler_n_steps
     )

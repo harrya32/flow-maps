@@ -40,7 +40,7 @@ CLASS_NAMES = [
     "pMN",
 ]
 
-TRANSITION_EDGES = [
+TRANSITION_EDGES_OLD = [
     ("NMP", "Mesoderm"),
     ("NMP", "Early_Neural"),
     ("Early_Neural", "Neural"),
@@ -49,6 +49,19 @@ TRANSITION_EDGES = [
     ("p3", "V3"),
     ("p3", "FP"),
     ("pMN", "MN"),
+]
+
+# Active lineage hierarchy. Self-transitions are added by the reachability
+# builders below, so only differentiation edges are listed here.
+TRANSITION_EDGES = [
+    ("NMP", "Mesoderm"),
+    ("NMP", "Early_Neural"),
+    ("Early_Neural", "Neural"),
+    ("Neural", "pMN"),
+    ("pMN", "MN"),
+    ("Neural", "p3"),
+    ("p3", "V3"),
+    ("p3", "FP"),
 ]
 
 _DATA_CACHE: Dict[str, Dict[str, np.ndarray]] = {}
@@ -63,6 +76,45 @@ def _canonical_maizels_pair_mode(pair_mode: str) -> str:
     if pair_mode in ("ot", "plain_ot"):
         return "ot_plain"
     return pair_mode
+
+
+_OT_PAIR_MODES = {
+    "ot_plain",
+    "ot_endpoint",
+    "ot_endpoint_interpolant",
+}
+
+
+def _canonical_maizels_ot_coupling(coupling: str) -> str:
+    aliases = {
+        "global": "global_ot",
+        "exact": "global_ot",
+        "minibatch": "minibatch_ot",
+    }
+    coupling = aliases.get(str(coupling).lower(), str(coupling).lower())
+    if coupling not in ("global_ot", "minibatch_ot"):
+        raise ValueError(
+            "problem.maizels_ot_coupling must be 'global_ot' or "
+            f"'minibatch_ot', got {coupling!r}."
+        )
+    return coupling
+
+
+def maizels_ot_coupling_from_config(cfg) -> str:
+    """Return the selected Maizels OT backend."""
+    return _canonical_maizels_ot_coupling(
+        getattr(cfg.problem, "maizels_ot_coupling", "global_ot")
+    )
+
+
+def uses_minibatch_ot(cfg, pair_mode: str | None = None) -> bool:
+    """Return whether a Maizels OT mode should be coupled per training batch."""
+    if pair_mode is None:
+        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    return (
+        _canonical_maizels_pair_mode(str(pair_mode)) in _OT_PAIR_MODES
+        and maizels_ot_coupling_from_config(cfg) == "minibatch_ot"
+    )
 
 
 class NumpyCellTypeMLP:
@@ -1900,6 +1952,86 @@ def _make_pair_pool_from_endpoint_arrays(
     return paired, stats
 
 
+def _make_minibatch_ot_pair_pool_from_endpoint_arrays(
+    cfg,
+    source_x: np.ndarray,
+    source_types: np.ndarray,
+    target_x: np.ndarray,
+    target_types: np.ndarray,
+    *,
+    n_pairs: int,
+    rng: np.random.Generator,
+    pair_mode: str,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """Couple one Maizels batch with exact OT in the raw PCA space."""
+    # Imported lazily because cite_multi imports this module for the shared
+    # lineage and classifier utilities.
+    from . import cite_multi
+
+    paired, stats = cite_multi._make_minibatch_ot_pairs_from_arrays(
+        cfg,
+        source_x,
+        source_types,
+        target_x,
+        target_types,
+        n_pairs=int(n_pairs),
+        rng=rng,
+        pair_mode=pair_mode,
+        class_names=CLASS_NAMES,
+        transition_edges=TRANSITION_EDGES,
+    )
+    stats["ot_cost"] = "raw_sqeuclidean"
+    return paired, stats
+
+
+def couple_minibatch_ot_pair_pool(
+    cfg,
+    paired: Dict[str, np.ndarray],
+    n_pairs: int,
+    *,
+    seed: int,
+    pair_mode: str | None = None,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """Construct a fresh Maizels optimizer batch with raw-cost minibatch OT."""
+    if pair_mode is None:
+        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    pair_mode = _canonical_maizels_pair_mode(str(pair_mode))
+    if pair_mode not in _OT_PAIR_MODES:
+        raise ValueError(f"Pair mode {pair_mode!r} does not request minibatch OT.")
+
+    labels = np.asarray(paired["label"])
+    if labels.ndim != 2 or labels.shape[1] < 2:
+        raise ValueError("Maizels minibatch OT requires two-column pair labels.")
+    source_ids = labels[:, 0].astype(np.int32)
+    target_ids = labels[:, 1].astype(np.int32)
+    if (
+        np.any(source_ids < 0)
+        or np.any(source_ids >= len(CLASS_NAMES))
+        or np.any(target_ids < 0)
+        or np.any(target_ids >= len(CLASS_NAMES))
+    ):
+        raise ValueError("Maizels minibatch OT received an invalid cell-type id.")
+
+    class_names = np.asarray(CLASS_NAMES, dtype=object)
+    result, stats = _make_minibatch_ot_pair_pool_from_endpoint_arrays(
+        cfg,
+        np.asarray(paired["x0"]),
+        class_names[source_ids],
+        np.asarray(paired["x1"]),
+        class_names[target_ids],
+        n_pairs=int(n_pairs),
+        rng=np.random.default_rng(int(seed)),
+        pair_mode=pair_mode,
+    )
+    stats.update(
+        {
+            "coupling": "dynamic_minibatch_ot",
+            "pair_pool_mode": "independent_candidates",
+        }
+    )
+    return result, stats
+
+
 def make_pair_pool(
     cfg, dataset_location: str | None = None
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
@@ -1909,6 +2041,7 @@ def make_pair_pool(
     seed = int(getattr(cfg.training, "seed", 0))
     rng = np.random.default_rng(seed + 301)
     pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    minibatch_ot = uses_minibatch_ot(cfg, pair_mode)
 
     paired, stats = _make_pair_pool_from_endpoint_arrays(
         cfg,
@@ -1918,8 +2051,21 @@ def make_pair_pool(
         splits["target_train_types"],
         n_pairs=n_pairs,
         rng=rng,
-        pair_mode=pair_mode,
+        # Dynamic OT starts from independent source and target candidate pools.
+        pair_mode="none" if minibatch_ot else pair_mode,
     )
+    if minibatch_ot:
+        stats.update(
+            {
+                "pair_mode": _canonical_maizels_pair_mode(str(pair_mode)),
+                "pair_pool_mode": "independent_candidates",
+                "coupling": "dynamic_minibatch_ot",
+                "ot_minibatch_size": int(
+                    getattr(cfg.problem, "ot_minibatch_size", 128)
+                ),
+                "ot_cost": "raw_sqeuclidean",
+            }
+        )
     stats.update(
         {
             "source_total_n": int(splits["source_n"]),
@@ -1955,7 +2101,12 @@ def make_heldout_pair_pool(
     if seed is None:
         seed = int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997
     rng = np.random.default_rng(int(seed))
-    paired, stats = _make_pair_pool_from_endpoint_arrays(
+    pair_builder = (
+        _make_minibatch_ot_pair_pool_from_endpoint_arrays
+        if uses_minibatch_ot(cfg, pair_mode)
+        else _make_pair_pool_from_endpoint_arrays
+    )
+    paired, stats = pair_builder(
         cfg,
         splits["source_holdout_x"],
         splits["source_holdout_types"],
@@ -2018,7 +2169,12 @@ def make_endpoint_split_pair_pool(
     if seed is None:
         seed = int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997
 
-    paired, stats = _make_pair_pool_from_endpoint_arrays(
+    pair_builder = (
+        _make_minibatch_ot_pair_pool_from_endpoint_arrays
+        if uses_minibatch_ot(cfg, pair_mode)
+        else _make_pair_pool_from_endpoint_arrays
+    )
+    paired, stats = pair_builder(
         cfg,
         source_x,
         source_types,
