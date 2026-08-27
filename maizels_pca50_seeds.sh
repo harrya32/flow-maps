@@ -10,12 +10,12 @@ DATASET_LOCATION="${DATASET_LOCATION:-celltype_classification_pca50_dataset.csv.
 OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/maizels_local_runs}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
 
-MODE_IDS=(0 2 4 6)
+MODE_IDS=(10)
 MODE_NAMES=(
-  "vanilla_flow_map"
-  "bio_prior_flow_map"
-  "ot_flow_map"
-  "bio_prior_ot_flow_map"
+  #"bio_prior_constrained_flow_map_w1000_e01"
+  #"bio_prior_ot_constrained_flow_map_w1000_e01"
+  "bio_prior_constrained_flow_matching_w1000_e01"
+  #"bio_prior_ot_constrained_flow_matching_w350_e001"
 )
 
 cd "${REPO_ROOT}"

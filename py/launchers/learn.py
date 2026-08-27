@@ -266,6 +266,18 @@ def parse_command_line_arguments():
         default=None,
         help="Use cached global OT or fresh per-step minibatch OT for Maizels.",
     )
+    parser.add_argument(
+        "--maizels_schedule",
+        choices=("d3_d8", "d3_d3p8_d8"),
+        default=None,
+        help="Observed Maizels timepoints used to construct training intervals.",
+    )
+    parser.add_argument(
+        "--maizels_time_mode",
+        choices=("real_time", "equal_time"),
+        default=None,
+        help="Use elapsed-day or equally spaced retained-interval model time.",
+    )
     return parser.parse_args()
 
 
@@ -280,6 +292,8 @@ def setup_config_dict():
         "classifier_path": args.classifier_path,
         "early_stopping_patience": args.early_stopping_patience,
         "maizels_ot_coupling": args.maizels_ot_coupling,
+        "maizels_schedule": args.maizels_schedule,
+        "maizels_time_mode": args.maizels_time_mode,
     }
     kwargs = {
         name: value

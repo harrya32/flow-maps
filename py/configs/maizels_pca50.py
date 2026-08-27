@@ -1,13 +1,113 @@
-"""Maizels PCA50 D3 -> D8 trajectory experiment.
+"""Maizels PCA50 endpoint or three-timepoint trajectory experiment.
 
 The saved PCA50 CSV is used directly: no AnnData preprocessing or PCA fitting is
 performed here. All variants use LSD; slurm IDs choose vanilla/bio-prior
 coupling and flow-matching/flow-map training.
 """
 
+from __future__ import annotations
+
 import os
+from pathlib import Path
 
 import ml_collections
+
+
+TIMEPOINTS = (
+    "D3",
+    "D3.2",
+    "D3.4",
+    "D3.6",
+    "D3.8",
+    "D4",
+    "D5",
+    "D6",
+    "D7",
+    "D8",
+)
+
+SCHEDULES = {
+    "d3_d8": ("D3", "D8"),
+    "d3_d3p8_d8": ("D3", "D3.8", "D8"),
+}
+
+
+def _canonical_schedule(value: str | None) -> str:
+    aliases = {
+        "endpoints": "d3_d8",
+        "d3-d8": "d3_d8",
+        "three_timepoint": "d3_d3p8_d8",
+        "three-timepoint": "d3_d3p8_d8",
+        "d3-d3.8-d8": "d3_d3p8_d8",
+    }
+    value = str(value or "d3_d8").lower()
+    value = aliases.get(value, value)
+    if value not in SCHEDULES:
+        raise ValueError(
+            f"maizels_schedule must be one of {sorted(SCHEDULES)}, got {value!r}."
+        )
+    return value
+
+
+def _canonical_time_mode(value: str | None) -> str:
+    aliases = {
+        "real": "real_time",
+        "physical": "real_time",
+        "physical_time": "real_time",
+        "equal": "equal_time",
+        "stage": "equal_time",
+    }
+    value = str(value or "real_time").lower()
+    value = aliases.get(value, value)
+    if value not in ("real_time", "equal_time"):
+        raise ValueError(
+            "maizels_time_mode must be 'real_time' or 'equal_time', "
+            f"got {value!r}."
+        )
+    return value
+
+
+def _timepoint_values(retained_timepoints, time_mode: str):
+    if time_mode == "real_time":
+        start, end = 3.0, 8.0
+        return [(float(value[1:]) - start) / (end - start) for value in TIMEPOINTS]
+
+    retained_indices = [TIMEPOINTS.index(value) for value in retained_timepoints]
+    retained_values = [
+        index / float(len(retained_timepoints) - 1)
+        for index in range(len(retained_timepoints))
+    ]
+    values = [None] * len(TIMEPOINTS)
+    for interval_index, (left, right) in enumerate(
+        zip(retained_indices[:-1], retained_indices[1:])
+    ):
+        start_value = retained_values[interval_index]
+        end_value = retained_values[interval_index + 1]
+        for position in range(left, right + 1):
+            fraction = (position - left) / float(right - left)
+            values[position] = start_value + fraction * (end_value - start_value)
+    if any(value is None for value in values):
+        raise ValueError("Retained Maizels timepoints must span D3 through D8.")
+    return values
+
+
+def _resolve_classifier_path(schedule: str, classifier_path: str | None) -> str:
+    if classifier_path:
+        return str(Path(classifier_path).expanduser().resolve())
+    env_path = os.getenv("MAIZELS_CLASSIFIER_PATH", "")
+    if env_path:
+        return str(Path(env_path).expanduser().resolve())
+    repo_root = Path(__file__).resolve().parents[2]
+    if schedule == "d3_d3p8_d8":
+        return str(
+            (
+                repo_root
+                / "outputs"
+                / "maizels_classifier_d3_d3p8_d8"
+                / "celltype_classifier_pca50_d3_d3p8_d8.pt"
+            ).resolve()
+        )
+    return str((repo_root / "celltype_classifier_pca50.pt").resolve())
 
 variants = [
     # ID 0: vanilla flow matching.
@@ -35,6 +135,9 @@ def get_config(
     output_folder: str = "",
     early_stopping_patience=None,
     maizels_ot_coupling=None,
+    classifier_path: str | None = None,
+    maizels_schedule: str | None = None,
+    maizels_time_mode: str | None = None,
 ) -> ml_collections.ConfigDict:
     import jax
 
@@ -70,9 +173,28 @@ def get_config(
     config.problem.num_classes = None
     config.problem.target = "maizels_pca50"
     config.problem.dataset_location = dataset_location
-    config.problem.interp_type = "linear"
+    schedule = _canonical_schedule(
+        maizels_schedule or os.getenv("MAIZELS_SCHEDULE", "d3_d8")
+    )
+    time_mode = _canonical_time_mode(
+        maizels_time_mode or os.getenv("MAIZELS_TIME_MODE", "real_time")
+    )
+    retained_timepoints = SCHEDULES[schedule]
+
+    config.problem.maizels_schedule = schedule
+    config.problem.maizels_time_mode = time_mode
+    config.problem.retained_timepoints = list(retained_timepoints)
+    config.problem.evaluation_timepoints = [
+        value for value in TIMEPOINTS if value not in retained_timepoints
+    ]
+    config.problem.timepoint_order = list(TIMEPOINTS)
+    config.problem.timepoint_values = _timepoint_values(retained_timepoints, time_mode)
+    config.problem.interp_type = (
+        "time_rescaled_linear" if len(retained_timepoints) > 2 else "linear"
+    )
     # Preserve source/target cell-type ids through batching for diagnostics only.
     config.problem.interp_uses_labels = True
+    config.problem.pair_time_bounds_in_label = len(retained_timepoints) > 2
     config.problem.base = "maizels_d3"
     config.problem.gaussian_scale = "adaptive"
 
@@ -101,9 +223,9 @@ def get_config(
         "MAIZELS_LINEAGE_TRANSITION_MODE",
         "descendant",
     )
-    config.problem.classifier_path = (
-        "/Users/harryamad/desktop/drive/2026/flow-maps/"
-        "celltype_classifier_pca50.pt"
+    config.problem.classifier_path = _resolve_classifier_path(
+        schedule,
+        classifier_path,
     )
     config.problem.n_interpolant_check_times = 50
     config.problem.classifier_prob_threshold = 0
@@ -124,8 +246,8 @@ def get_config(
     # Optimization config.
     config.optimization = ml_collections.ConfigDict()
     config.optimization.bs = 128  # 4096
-    # With one D3 -> D8 interval, dynamic OT couples the complete optimizer
-    # batch in one problem. Its cost is raw squared Euclidean distance.
+    # Dynamic OT couples each interval's share of the optimizer batch in one
+    # problem. Its cost is raw squared Euclidean distance.
     config.problem.ot_minibatch_size = config.optimization.get_ref("bs")
     config.problem.ot_minibatch_max_resamples = 20
     config.problem.ot_minibatch_infeasible_fallback = "partial"
@@ -170,7 +292,7 @@ def get_config(
     config.logging.euler_line_steps = [10, 25, 100]
     config.logging.scalar_freq = 1
     config.logging.progress_freq = 1
-    config.logging.visual_freq = 1000
+    config.logging.visual_freq = 500
     config.logging.save_freq = 5_000
     config.logging.wandb_project = "self-distill-flow-maps"
 
@@ -197,6 +319,10 @@ def get_config(
     config.logging.maizels.validation_bs = 1024
     config.logging.maizels.validation_seed = 2701
     config.logging.maizels.validation_pair_mode = "same_as_training"
+    # Hard lineage-violation diagnostics always follow held-out D3 cells over
+    # the complete model trajectory from t=0 to t=1, including multi-interval
+    # training runs. Omitted-day distribution evaluation remains interval-local.
+    config.logging.maizels.trajectory_diagnostics_enabled = True
     # Trajectory-violation metrics use held-out D3 cells.
     # If this cap exceeds the holdout size, every held-out cell is used once.
     config.logging.maizels.trajectory_eval_source_pool = "heldout"
@@ -211,6 +337,12 @@ def get_config(
     config.logging.maizels.distribution_eval_source_max_points = 0
     config.logging.maizels.distribution_eval_points_per_time = 0
     config.logging.maizels.distribution_eval_max_timepoints = 0
+    config.logging.maizels.distribution_eval_timepoints = list(
+        config.problem.evaluation_timepoints
+    )
+    config.logging.maizels.distribution_eval_interval_local = (
+        len(retained_timepoints) > 2
+    )
     config.logging.maizels.distribution_eval_euler_n_steps = (
         config.logging.maizels.euler_n_steps
     )
@@ -249,7 +381,7 @@ def get_config(
     config.constraints.loss_point_entropy_weight = 0.1
     config.constraints.velocity_rollout_batch_size = 0
     config.constraints.velocity_rollout_reference_diag_fraction = 0.75
-    config.constraints.velocity_rollout_max_step = 0.05
+    config.constraints.velocity_rollout_max_step = 0.01
     config.constraints.velocity_rollout_max_steps = 0
     config.constraints.velocity_rollout_loss_scope = "endpoints" #path, endpoints
     config.constraints.lineage_transition_mode = "same_as_problem"

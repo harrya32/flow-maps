@@ -1035,7 +1035,7 @@ def _interpolant_paths(
     labels: jnp.ndarray,
     times: np.ndarray,
 ) -> np.ndarray:
-    """Evaluate the configured ground-truth interpolant on a time grid."""
+    """Evaluate an interpolant on a pair-local grid from source to target."""
     x0s = jnp.asarray(x0s)
     x1s = jnp.asarray(x1s)
     labels = None if labels is None else jnp.asarray(labels)
@@ -1043,9 +1043,34 @@ def _interpolant_paths(
     paths = np.zeros((x0s.shape[0], len(times), x0s.shape[-1]), dtype=np.float32)
     for idx, tt in enumerate(times):
         tau = jnp.full((x0s.shape[0],), float(tt), dtype=x0s.dtype)
+        if labels is not None and labels.ndim == 2 and labels.shape[1] >= 4:
+            tau = pair_times.local_to_global(tau, labels, dtype=x0s.dtype)
         xt = interp.batch_calc_It(tau, x0s, x1s, labels)
         paths[:, idx, :] = np.asarray(xt, dtype=np.float32)
     return paths
+
+
+def _lineage_interpolant_plot_pairs(
+    cfg: config_dict.ConfigDict,
+    backend,
+    n_pairs: int,
+    *,
+    pair_mode: str,
+    seed: int,
+):
+    """Draw held-out pairs from the same intervals used to train the model."""
+    pair_builder = getattr(
+        backend,
+        "make_validation_pair_pool",
+        backend.make_heldout_pair_pool,
+    )
+    return pair_builder(
+        cfg,
+        int(n_pairs),
+        dataset_location=getattr(cfg.problem, "dataset_location", None),
+        pair_mode=str(pair_mode),
+        seed=int(seed),
+    )
 
 
 def _multi_step_paths(
@@ -2285,17 +2310,36 @@ def _log_maizels_distribution_eval(
         points_per_time,
         dataset_location,
     )
-    splits = backend.endpoint_pool_splits(
-        cfg,
-        dataset_location=dataset_location,
+    interval_local = bool(
+        getattr(maizels_cfg, "distribution_eval_interval_local", False)
     )
-    source_all, _, target_all, _ = _lineage_eval_split_arrays(splits, eval_split)
-    source_idx = _population_indices_without_replacement(
-        source_all.shape[0],
-        source_max_points,
-        rng,
-    )
-    x0_eval_all = source_all[source_idx].astype(np.float32)
+    timepoint_splits = None
+    if interval_local:
+        if backend is not maizels:
+            raise ValueError(
+                "Interval-local distribution evaluation is currently configured "
+                "only for the Maizels backend."
+            )
+        timepoint_splits = backend.timepoint_pool_splits(
+            cfg,
+            dataset_location=dataset_location,
+        )
+        x0_eval_all = None
+        target_all = None
+    else:
+        splits = backend.endpoint_pool_splits(
+            cfg,
+            dataset_location=dataset_location,
+        )
+        source_all, _, target_all, _ = _lineage_eval_split_arrays(
+            splits, eval_split
+        )
+        source_idx = _population_indices_without_replacement(
+            source_all.shape[0],
+            source_max_points,
+            rng,
+        )
+        x0_eval_all = source_all[source_idx].astype(np.float32)
 
     # The Maizels and CITE/Multi trajectory models are unconditional. Keeping
     # labels out of this population evaluation avoids coupling the pushforward
@@ -2307,19 +2351,20 @@ def _log_maizels_distribution_eval(
         )
     labels_eval_all = None
 
-    linear_n = min(x0_eval_all.shape[0], target_all.shape[0])
-    linear_source_idx = _population_indices_without_replacement(
-        x0_eval_all.shape[0],
-        linear_n,
-        rng,
-    )
-    linear_target_idx = _population_indices_without_replacement(
-        target_all.shape[0],
-        linear_n,
-        rng,
-    )
-    linear_x0 = x0_eval_all[linear_source_idx]
-    linear_x1 = target_all[linear_target_idx].astype(np.float32)
+    if not interval_local:
+        linear_n = min(x0_eval_all.shape[0], target_all.shape[0])
+        linear_source_idx = _population_indices_without_replacement(
+            x0_eval_all.shape[0],
+            linear_n,
+            rng,
+        )
+        linear_target_idx = _population_indices_without_replacement(
+            target_all.shape[0],
+            linear_n,
+            rng,
+        )
+        linear_x0 = x0_eval_all[linear_source_idx]
+        linear_x1 = target_all[linear_target_idx].astype(np.float32)
 
     euler_n_steps = int(
         getattr(
@@ -2367,50 +2412,95 @@ def _log_maizels_distribution_eval(
             rng,
         )
         actual = actual_all[actual_idx]
-        if actual.shape[0] == 0 or x0_eval_all.shape[0] == 0:
+        if actual.shape[0] == 0:
             continue
 
-        x0_eval = x0_eval_all
         labels_eval = labels_eval_all
-        if hasattr(backend, "normalized_time"):
-            tau = float(backend.normalized_time(timepoint))
-        else:
-            tau = float(
-                np.clip(
-                    (maizels.parse_timepoint(timepoint) - source_value) / denom,
-                    0.0,
-                    1.0,
-                )
+        if interval_local:
+            interval_source, interval_target = backend.retained_interval_for_timepoint(
+                cfg, timepoint
             )
+            source_pool = timepoint_splits[interval_source]
+            target_pool = timepoint_splits[interval_target]
+            if eval_split == "all":
+                source_all = source_pool["x"]
+                interval_target_all = target_pool["x"]
+            else:
+                pool_prefix = "holdout" if eval_split == "heldout" else "train"
+                source_all = source_pool[f"{pool_prefix}_x"]
+                interval_target_all = target_pool[f"{pool_prefix}_x"]
+            source_idx = _population_indices_without_replacement(
+                source_all.shape[0],
+                source_max_points,
+                rng,
+            )
+            x0_eval = source_all[source_idx].astype(np.float32)
+            start_tau = float(backend.normalized_time(interval_source, cfg))
+            interval_end_tau = float(backend.normalized_time(interval_target, cfg))
+            tau = float(backend.normalized_time(timepoint, cfg))
+            local_tau = (tau - start_tau) / (interval_end_tau - start_tau)
+            linear_n = min(x0_eval.shape[0], interval_target_all.shape[0])
+            linear_source_idx = _population_indices_without_replacement(
+                x0_eval.shape[0], linear_n, rng
+            )
+            linear_target_idx = _population_indices_without_replacement(
+                interval_target_all.shape[0], linear_n, rng
+            )
+            linear_x0 = x0_eval[linear_source_idx]
+            linear_x1 = interval_target_all[linear_target_idx].astype(np.float32)
+        else:
+            x0_eval = x0_eval_all
+            start_tau = 0.0
+            local_tau = None
+            if backend is maizels:
+                tau = float(backend.normalized_time(timepoint, cfg))
+            elif hasattr(backend, "normalized_time"):
+                tau = float(backend.normalized_time(timepoint))
+            else:
+                tau = float(
+                    np.clip(
+                        (maizels.parse_timepoint(timepoint) - source_value) / denom,
+                        0.0,
+                        1.0,
+                    )
+                )
+        if x0_eval.shape[0] == 0:
+            continue
 
         direct = np.asarray(
             _flow_map_batch(
                 train_state.apply_fn,
                 params_for_visual,
-                0.0,
+                start_tau,
                 tau,
                 jnp.asarray(x0_eval, dtype=jnp.float32),
                 labels_eval,
             ),
             dtype=np.float32,
         )
-        flowmap_sample = _flowmap_terminal_at_time(
+        flowmap_sample = _flowmap_terminal_between(
             train_state.apply_fn,
             params_for_visual,
             jnp.asarray(x0_eval, dtype=jnp.float32),
             labels_eval,
-            tau,
-            flowmap_n_steps,
+            start_time=start_tau,
+            end_time=tau,
+            n_steps=flowmap_n_steps,
         )
-        euler = _euler_terminal_at_time(
+        euler = _euler_terminal_between(
             train_state.apply_fn,
             params_for_visual,
             jnp.asarray(x0_eval, dtype=jnp.float32),
             labels_eval,
-            tau,
-            euler_n_steps,
+            start_time=start_tau,
+            end_time=tau,
+            n_steps=euler_n_steps,
         )
-        linear = ((1.0 - tau) * linear_x0 + tau * linear_x1).astype(np.float32)
+        interpolation_tau = tau if local_tau is None else local_tau
+        linear = (
+            (1.0 - interpolation_tau) * linear_x0
+            + interpolation_tau * linear_x1
+        ).astype(np.float32)
 
         tag = _maizels_time_tag(timepoint)
         for name, pred in [
@@ -2449,6 +2539,8 @@ def _compute_maizels_population_trajectory_metrics(
     """Measure path validity from a source population sampled without replacement."""
     maizels_cfg = getattr(cfg.logging, "maizels", None)
     if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
+        return {}
+    if not bool(getattr(maizels_cfg, "trajectory_diagnostics_enabled", True)):
         return {}
     if bool(getattr(cfg.training, "conditional", False)):
         raise ValueError(
@@ -2567,9 +2659,11 @@ def _log_maizels_trajectory_diagnostics(
     *,
     fontsize: float,
 ) -> Dict[str, float]:
-    """Log classifier-validity plots on held-out lineage-dataset endpoints."""
+    """Log global model paths and training-interval interpolant validity."""
     maizels_cfg = getattr(cfg.logging, "maizels", None)
     if maizels_cfg is None or not bool(getattr(maizels_cfg, "enabled", False)):
+        return {}
+    if not bool(getattr(maizels_cfg, "trajectory_diagnostics_enabled", True)):
         return {}
 
     backend = _lineage_backend(cfg)
@@ -2591,17 +2685,17 @@ def _log_maizels_trajectory_diagnostics(
             int(getattr(getattr(cfg, "training", None), "seed", 0)) + 997,
         )
     )
-    heldout_pairs, _ = backend.make_heldout_pair_pool(
+    interpolant_pairs, _ = _lineage_interpolant_plot_pairs(
         cfg,
+        backend,
         n_plot,
-        dataset_location=getattr(cfg.problem, "dataset_location", None),
         pair_mode=str(plot_pair_mode),
         seed=plot_seed,
     )
 
-    x0_plot = jnp.asarray(heldout_pairs["x0"], dtype=jnp.float32)
-    x1_plot = jnp.asarray(heldout_pairs["x1"], dtype=jnp.float32)
-    labels_plot = jnp.asarray(heldout_pairs["label"])
+    x0_plot = jnp.asarray(interpolant_pairs["x0"], dtype=jnp.float32)
+    x1_plot = jnp.asarray(interpolant_pairs["x1"], dtype=jnp.float32)
+    labels_plot = jnp.asarray(interpolant_pairs["label"])
     labels_np = np.asarray(labels_plot)
     paired_start_type_ids = labels_np[:, 0].astype(np.int32)
     target_type_ids = labels_np[:, 1].astype(np.int32)
@@ -2814,10 +2908,7 @@ def _log_maizels_trajectory_diagnostics(
         np.asarray(x0_plot),
         np.asarray(x1_plot),
         gt_valid,
-        title=(
-            f"Held-out {cfg.problem.source_time}/{cfg.problem.target_time} "
-            "interpolants in PC1/PC2"
-        ),
+        title="Held-out training-interval interpolants in PC1/PC2",
         xlim=panel_xlim,
         ylim=panel_ylim,
         fontsize=fontsize,
@@ -3949,6 +4040,8 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
         str(getattr(cfg.problem, "heldout_timepoint", "")),
         str(getattr(cfg.problem, "source_time", "D3")),
         str(getattr(cfg.problem, "target_time", "D8")),
+        tuple(str(value) for value in getattr(cfg.problem, "retained_timepoints", [])),
+        str(getattr(cfg.problem, "maizels_time_mode", "real_time")),
         pair_mode,
         n_val,
         seed,
@@ -3964,9 +4057,8 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
     if cache_key in _MAIZELS_VALIDATION_CACHE:
         return _MAIZELS_VALIDATION_CACHE[cache_key]
 
-    # CITE/Multi validates on the held-out fraction of each retained training
-    # interval, matching the original MFM protocol. Maizels retains its global
-    # endpoint validation behavior.
+    # Multi-timepoint datasets validate on the held-out fraction of the same
+    # adjacent intervals and with the same pair construction used for training.
     make_validation_pairs = getattr(
         backend,
         "make_validation_pair_pool",
@@ -4256,6 +4348,35 @@ def make_lowd_plot(
     if plot_labels is not None:
         plot_labels = jnp.asarray(plot_labels)[: cfg.logging.plot_bs]
 
+    # Keep learned-model plots on the full held-out D3->t=1 trajectory, but
+    # draw ground-truth interpolants from held-out pairs over the intervals
+    # actually used in training.
+    interpolant_plot_x0s = paired_plot_x0s
+    interpolant_plot_x1s = plot_x1s
+    interpolant_plot_labels = plot_labels
+    if is_maizels and pair_times.enabled(cfg):
+        interpolant_plot_batch, _ = _lineage_interpolant_plot_pairs(
+            cfg,
+            backend,
+            cfg.logging.plot_bs,
+            pair_mode=str(plot_pair_mode),
+            seed=plot_seed + 211,
+        )
+        (
+            interpolant_plot_x0s,
+            interpolant_plot_x1s,
+            interpolant_plot_labels,
+        ) = extract_lowd_batch_components(interpolant_plot_batch)
+        interpolant_plot_x0s = jnp.asarray(interpolant_plot_x0s)[
+            : cfg.logging.plot_bs
+        ]
+        interpolant_plot_x1s = jnp.asarray(interpolant_plot_x1s)[
+            : cfg.logging.plot_bs
+        ]
+        interpolant_plot_labels = jnp.asarray(interpolant_plot_labels)[
+            : cfg.logging.plot_bs
+        ]
+
     ## draw multi-step samples from the model
     if is_maizels and paired_plot_x0s is not None:
         x0s = paired_plot_x0s
@@ -4297,11 +4418,15 @@ def make_lowd_plot(
     one_step_line_paths = None
     ground_truth_line_paths = None
     multi_step_line_paths = []
-    if paired_plot_x0s is not None:
-        gt_line_bs = min(line_bs, paired_plot_x0s.shape[0])
-        x0_gt_line = paired_plot_x0s[:gt_line_bs]
-        x1_gt_line = plot_x1s[:gt_line_bs]
-        labels_gt_line = None if plot_labels is None else plot_labels[:gt_line_bs]
+    if interpolant_plot_x0s is not None:
+        gt_line_bs = min(line_bs, interpolant_plot_x0s.shape[0])
+        x0_gt_line = interpolant_plot_x0s[:gt_line_bs]
+        x1_gt_line = interpolant_plot_x1s[:gt_line_bs]
+        labels_gt_line = (
+            None
+            if interpolant_plot_labels is None
+            else interpolant_plot_labels[:gt_line_bs]
+        )
         ground_truth_line_paths = _interpolant_paths(
             statics.interp,
             x0_gt_line,
@@ -4429,7 +4554,12 @@ def make_lowd_plot(
             ground_truth_line_paths,
             np.asarray(x0_gt_line),
             np.asarray(x1_gt_line),
-            title=f"Ground truth interpolant I_t(x0, x1), {n_line_times} times",
+            title=(
+                f"Ground truth training-interval interpolants, "
+                f"{n_line_times} local times"
+                if pair_times.enabled(cfg)
+                else f"Ground truth interpolant I_t(x0, x1), {n_line_times} times"
+            ),
             xlim=gt_xlim,
             ylim=gt_ylim,
             fontsize=fontsize,

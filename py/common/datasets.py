@@ -1337,19 +1337,40 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             if stats.get("coupling") == "dynamic_minibatch_ot"
             else ""
         )
-        print(
-            "Loaded Maizels PCA50 pairs: "
-            f"mode={getattr(cfg.problem, 'maizels_pair_mode', 'none')}, "
-            f"source={getattr(cfg.problem, 'source_time', 'D3')} "
-            f"(train={stats['source_train_n']}, holdout={stats['source_holdout_n']}, "
-            f"total={stats['source_total_n']}), "
-            f"target={getattr(cfg.problem, 'target_time', 'D8')} "
-            f"(train={stats['target_train_n']}, holdout={stats['target_holdout_n']}, "
-            f"total={stats['target_total_n']}), "
-            f"pairs={cfg.problem.n}{coupling_summary}, "
-            f"candidate_acceptance={stats['candidate_acceptance_rate']:.4f}, "
-            f"dim={cfg.problem.d}"
-        )
+        if "intervals" in stats:
+            interval_summary = ", ".join(
+                f"{item['source_time']}->{item['target_time']}: "
+                f"{item['sampled_pairs']} pairs"
+                + (
+                    f", acceptance={item['candidate_acceptance_rate']:.4f}"
+                    if stats.get("coupling") != "dynamic_minibatch_ot"
+                    else ""
+                )
+                for item in stats["intervals"].values()
+            )
+            print(
+                "Loaded Maizels PCA50 interval pairs: "
+                f"schedule={getattr(cfg.problem, 'maizels_schedule', 'custom')}, "
+                f"clock={getattr(cfg.problem, 'maizels_time_mode', 'real_time')}, "
+                f"mode={getattr(cfg.problem, 'maizels_pair_mode', 'none')}, "
+                f"total_pairs={cfg.problem.n}{coupling_summary}, "
+                f"candidate_acceptance={stats['candidate_acceptance_rate']:.4f}, "
+                f"dim={cfg.problem.d}; {interval_summary}"
+            )
+        else:
+            print(
+                "Loaded Maizels PCA50 pairs: "
+                f"mode={getattr(cfg.problem, 'maizels_pair_mode', 'none')}, "
+                f"source={getattr(cfg.problem, 'source_time', 'D3')} "
+                f"(train={stats['source_train_n']}, holdout={stats['source_holdout_n']}, "
+                f"total={stats['source_total_n']}), "
+                f"target={getattr(cfg.problem, 'target_time', 'D8')} "
+                f"(train={stats['target_train_n']}, holdout={stats['target_holdout_n']}, "
+                f"total={stats['target_total_n']}), "
+                f"pairs={cfg.problem.n}{coupling_summary}, "
+                f"candidate_acceptance={stats['candidate_acceptance_rate']:.4f}, "
+                f"dim={cfg.problem.d}"
+            )
 
     elif cfg.problem.target == "cite_multi_pca100":
         paired, stats = cite_multi.make_pair_pool(

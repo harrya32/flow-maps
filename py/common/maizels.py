@@ -28,6 +28,19 @@ DEFAULT_CLASSIFIER = (
     "/Users/harryamad/Desktop/Maizels2023aa/models/" "celltype_classifier_pca50.pt"
 )
 
+TIMEPOINTS = (
+    "D3",
+    "D3.2",
+    "D3.4",
+    "D3.6",
+    "D3.8",
+    "D4",
+    "D5",
+    "D6",
+    "D7",
+    "D8",
+)
+
 CLASS_NAMES = [
     "Early_Neural",
     "FP",
@@ -182,6 +195,65 @@ def parse_timepoint(value: str) -> float:
     if text.startswith("D"):
         text = text[1:]
     return float(text)
+
+
+def retained_timepoints(cfg) -> Tuple[str, ...]:
+    """Return the observed timepoints used to construct training intervals."""
+    configured = getattr(cfg.problem, "retained_timepoints", None)
+    if configured is None:
+        configured = (
+            getattr(cfg.problem, "source_time", "D3"),
+            getattr(cfg.problem, "target_time", "D8"),
+        )
+    retained = tuple(str(value) for value in configured)
+    if len(retained) < 2:
+        raise ValueError("Maizels training requires at least two retained timepoints.")
+    if len(set(retained)) != len(retained):
+        raise ValueError(f"Duplicate retained Maizels timepoints: {retained}.")
+    ordered = tuple(sorted(retained, key=parse_timepoint))
+    if retained != ordered:
+        raise ValueError(
+            "problem.retained_timepoints must be in increasing day order, "
+            f"got {retained}."
+        )
+    return retained
+
+
+def uses_retained_intervals(cfg) -> bool:
+    """Whether Maizels training uses more than one adjacent interval."""
+    return len(retained_timepoints(cfg)) > 2
+
+
+def normalized_time(timepoint: str, cfg=None) -> float:
+    """Map a Maizels observation day onto the configured global model clock."""
+    key = str(timepoint)
+    if cfg is not None:
+        order = getattr(cfg.problem, "timepoint_order", None)
+        values = getattr(cfg.problem, "timepoint_values", None)
+        if order is not None and values is not None:
+            mapping = {
+                str(name): float(value) for name, value in zip(list(order), list(values))
+            }
+            if key not in mapping:
+                raise KeyError(f"Unknown configured Maizels timepoint {key!r}.")
+            return mapping[key]
+
+    source = parse_timepoint(TIMEPOINTS[0])
+    target = parse_timepoint(TIMEPOINTS[-1])
+    return float((parse_timepoint(key) - source) / (target - source))
+
+
+def retained_interval_for_timepoint(cfg, timepoint: str) -> Tuple[str, str]:
+    """Return the adjacent retained interval containing an omitted timepoint."""
+    value = parse_timepoint(timepoint)
+    retained = retained_timepoints(cfg)
+    for source_time, target_time in zip(retained[:-1], retained[1:]):
+        if parse_timepoint(source_time) < value < parse_timepoint(target_time):
+            return source_time, target_time
+    raise ValueError(
+        f"Timepoint {timepoint!r} is not strictly inside a retained interval "
+        f"from {retained}."
+    )
 
 
 def build_reachable(
@@ -1706,10 +1778,103 @@ def _split_train_holdout_indices(
     return train_idx, holdout_idx
 
 
+def timepoint_pool_splits(
+    cfg, dataset_location: str | None = None
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """Load Maizels pools while preserving the existing endpoint holdouts."""
+    dataset_path = resolve_dataset_path(
+        dataset_location or getattr(cfg.problem, "dataset_location", None)
+    )
+    data = load_pca50_dataset(dataset_path)
+    configured_order = tuple(
+        str(value)
+        for value in getattr(cfg.problem, "timepoint_order", TIMEPOINTS)
+    )
+    available = set(str(value) for value in np.unique(data["timepoints"]))
+    unknown = [timepoint for timepoint in configured_order if timepoint not in available]
+    if unknown:
+        raise ValueError(f"Unknown configured Maizels timepoints: {unknown}.")
+
+    training_seed = int(getattr(getattr(cfg, "training", None), "seed", 0))
+    split_seed = int(getattr(cfg.problem, "maizels_holdout_seed", training_seed + 701))
+    holdout_fraction = float(getattr(cfg.problem, "maizels_holdout_fraction", 0.0))
+    holdout_n = int(getattr(cfg.problem, "maizels_holdout_n", 0))
+
+    result: Dict[str, Dict[str, np.ndarray]] = {}
+    source_time = str(getattr(cfg.problem, "source_time", "D3"))
+    target_time = str(getattr(cfg.problem, "target_time", "D8"))
+    retained = set(retained_timepoints(cfg))
+    for index, timepoint in enumerate(configured_order):
+        x, cell_types = subset_time(data, timepoint)
+        if timepoint == source_time:
+            split_offset = 11
+        elif timepoint == target_time:
+            split_offset = 29
+        elif timepoint in retained:
+            split_offset = 101 * (index + 1)
+        else:
+            split_offset = None
+        if split_offset is None:
+            # Omitted evaluation days never enter training or validation.
+            train_idx = np.arange(x.shape[0], dtype=np.int64)
+            holdout_idx = np.empty((0,), dtype=np.int64)
+        else:
+            train_idx, holdout_idx = _split_train_holdout_indices(
+                x.shape[0],
+                holdout_fraction=holdout_fraction,
+                holdout_n=holdout_n,
+                seed=split_seed + split_offset,
+            )
+        result[timepoint] = {
+            "x": x,
+            "types": cell_types,
+            "train_x": x[train_idx],
+            "train_types": cell_types[train_idx],
+            "holdout_x": x[holdout_idx],
+            "holdout_types": cell_types[holdout_idx],
+            "train_idx": train_idx,
+            "holdout_idx": holdout_idx,
+        }
+    return result
+
+
+def _endpoint_split_dict(source, target) -> Dict[str, np.ndarray]:
+    return {
+        "source_x": source["x"],
+        "source_types": source["types"],
+        "target_x": target["x"],
+        "target_types": target["types"],
+        "source_train_x": source["train_x"],
+        "source_train_types": source["train_types"],
+        "target_train_x": target["train_x"],
+        "target_train_types": target["train_types"],
+        "source_holdout_x": source["holdout_x"],
+        "source_holdout_types": source["holdout_types"],
+        "target_holdout_x": target["holdout_x"],
+        "target_holdout_types": target["holdout_types"],
+        "source_train_idx": source["train_idx"],
+        "source_holdout_idx": source["holdout_idx"],
+        "target_train_idx": target["train_idx"],
+        "target_holdout_idx": target["holdout_idx"],
+        "source_n": int(source["x"].shape[0]),
+        "target_n": int(target["x"].shape[0]),
+        "source_train_n": int(source["train_x"].shape[0]),
+        "source_holdout_n": int(source["holdout_x"].shape[0]),
+        "target_train_n": int(target["train_x"].shape[0]),
+        "target_holdout_n": int(target["holdout_x"].shape[0]),
+    }
+
+
 def endpoint_pool_splits(
     cfg, dataset_location: str | None = None
 ) -> Dict[str, np.ndarray]:
     """Load D3/D8 endpoint pools and apply the configured held-out split."""
+    if uses_retained_intervals(cfg):
+        pools = timepoint_pool_splits(cfg, dataset_location=dataset_location)
+        source_time = str(getattr(cfg.problem, "source_time", "D3"))
+        target_time = str(getattr(cfg.problem, "target_time", "D8"))
+        return _endpoint_split_dict(pools[source_time], pools[target_time])
+
     dataset_path = resolve_dataset_path(
         dataset_location or getattr(cfg.problem, "dataset_location", None)
     )
@@ -1741,30 +1906,27 @@ def endpoint_pool_splits(
         seed=split_seed + 29,
     )
 
-    return {
-        "source_x": source_x,
-        "source_types": source_types,
-        "target_x": target_x,
-        "target_types": target_types,
-        "source_train_x": source_x[source_train_idx],
-        "source_train_types": source_types[source_train_idx],
-        "target_train_x": target_x[target_train_idx],
-        "target_train_types": target_types[target_train_idx],
-        "source_holdout_x": source_x[source_holdout_idx],
-        "source_holdout_types": source_types[source_holdout_idx],
-        "target_holdout_x": target_x[target_holdout_idx],
-        "target_holdout_types": target_types[target_holdout_idx],
-        "source_train_idx": source_train_idx,
-        "source_holdout_idx": source_holdout_idx,
-        "target_train_idx": target_train_idx,
-        "target_holdout_idx": target_holdout_idx,
-        "source_n": int(source_x.shape[0]),
-        "target_n": int(target_x.shape[0]),
-        "source_train_n": int(source_train_idx.shape[0]),
-        "source_holdout_n": int(source_holdout_idx.shape[0]),
-        "target_train_n": int(target_train_idx.shape[0]),
-        "target_holdout_n": int(target_holdout_idx.shape[0]),
+    source = {
+        "x": source_x,
+        "types": source_types,
+        "train_x": source_x[source_train_idx],
+        "train_types": source_types[source_train_idx],
+        "holdout_x": source_x[source_holdout_idx],
+        "holdout_types": source_types[source_holdout_idx],
+        "train_idx": source_train_idx,
+        "holdout_idx": source_holdout_idx,
     }
+    target = {
+        "x": target_x,
+        "types": target_types,
+        "train_x": target_x[target_train_idx],
+        "train_types": target_types[target_train_idx],
+        "holdout_x": target_x[target_holdout_idx],
+        "holdout_types": target_types[target_holdout_idx],
+        "train_idx": target_train_idx,
+        "holdout_idx": target_holdout_idx,
+    }
+    return _endpoint_split_dict(source, target)
 
 
 def _make_pair_pool_from_endpoint_arrays(
@@ -1984,6 +2146,212 @@ def _make_minibatch_ot_pair_pool_from_endpoint_arrays(
     return paired, stats
 
 
+def _add_time_bounds(
+    cfg,
+    paired: Dict[str, np.ndarray],
+    source_time: str,
+    target_time: str,
+) -> Dict[str, np.ndarray]:
+    """Append the absolute interval occupied by every paired example."""
+    n_pairs = paired["x0"].shape[0]
+    bounds = np.tile(
+        np.asarray(
+            [
+                normalized_time(source_time, cfg),
+                normalized_time(target_time, cfg),
+            ],
+            dtype=np.float32,
+        ),
+        (n_pairs, 1),
+    )
+    result = dict(paired)
+    result["label"] = np.concatenate(
+        [paired["label"].astype(np.float32), bounds], axis=1
+    )
+    return result
+
+
+def _make_interval_pairs(
+    cfg,
+    source_x: np.ndarray,
+    source_types: np.ndarray,
+    target_x: np.ndarray,
+    target_types: np.ndarray,
+    *,
+    source_time: str,
+    target_time: str,
+    n_pairs: int,
+    rng: np.random.Generator,
+    pair_mode: str,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    paired, stats = _make_pair_pool_from_endpoint_arrays(
+        cfg,
+        source_x,
+        source_types,
+        target_x,
+        target_types,
+        n_pairs=int(n_pairs),
+        rng=rng,
+        pair_mode=pair_mode,
+    )
+    paired = _add_time_bounds(cfg, paired, source_time, target_time)
+    stats.update(
+        {
+            "source_time": str(source_time),
+            "target_time": str(target_time),
+            "t_start": normalized_time(source_time, cfg),
+            "t_end": normalized_time(target_time, cfg),
+            "sampled_pairs": int(paired["x0"].shape[0]),
+        }
+    )
+    return paired, stats
+
+
+def _make_minibatch_ot_interval_pairs(
+    cfg,
+    source_x: np.ndarray,
+    source_types: np.ndarray,
+    target_x: np.ndarray,
+    target_types: np.ndarray,
+    *,
+    source_time: str,
+    target_time: str,
+    n_pairs: int,
+    rng: np.random.Generator,
+    pair_mode: str,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    paired, stats = _make_minibatch_ot_pair_pool_from_endpoint_arrays(
+        cfg,
+        source_x,
+        source_types,
+        target_x,
+        target_types,
+        n_pairs=int(n_pairs),
+        rng=rng,
+        pair_mode=pair_mode,
+    )
+    paired = _add_time_bounds(cfg, paired, source_time, target_time)
+    stats.update(
+        {
+            "source_time": str(source_time),
+            "target_time": str(target_time),
+            "t_start": normalized_time(source_time, cfg),
+            "t_end": normalized_time(target_time, cfg),
+            "sampled_pairs": int(paired["x0"].shape[0]),
+        }
+    )
+    return paired, stats
+
+
+def _allocate_pairs(total: int, n_intervals: int) -> List[int]:
+    """Allocate a total pair budget equally over adjacent intervals."""
+    if total < n_intervals:
+        raise ValueError(
+            f"problem.n={total} must be at least the number of intervals ({n_intervals})."
+        )
+    counts = [total // n_intervals] * n_intervals
+    for index in range(total % n_intervals):
+        counts[index] += 1
+    return counts
+
+
+def _make_retained_interval_pair_pool(
+    cfg,
+    n_pairs: int,
+    *,
+    split: str,
+    dataset_location: str | None,
+    pair_mode: str,
+    seed: int,
+    minibatch_ot: bool = False,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """Build equally weighted pairs over adjacent retained Maizels intervals."""
+    split = str(split).lower()
+    if split == "train":
+        x_key, types_key = "train_x", "train_types"
+    elif split in ("holdout", "heldout"):
+        split = "heldout"
+        x_key, types_key = "holdout_x", "holdout_types"
+    else:
+        raise ValueError(f"split must be 'train' or 'heldout', got {split!r}.")
+
+    pools = timepoint_pool_splits(cfg, dataset_location)
+    retained = retained_timepoints(cfg)
+    intervals = list(zip(retained[:-1], retained[1:]))
+    counts = _allocate_pairs(int(n_pairs), len(intervals))
+    rng = np.random.default_rng(int(seed))
+    paired_parts = []
+    interval_stats = []
+
+    for (source_time, target_time), interval_n in zip(intervals, counts):
+        source = pools[source_time]
+        target = pools[target_time]
+        pair_builder = (
+            _make_minibatch_ot_interval_pairs if minibatch_ot else _make_interval_pairs
+        )
+        paired, stats = pair_builder(
+            cfg,
+            source[x_key],
+            source[types_key],
+            target[x_key],
+            target[types_key],
+            source_time=source_time,
+            target_time=target_time,
+            n_pairs=interval_n,
+            rng=rng,
+            pair_mode=pair_mode,
+        )
+        stats.update(
+            {
+                "source_total_n": int(source["x"].shape[0]),
+                "source_train_n": int(source["train_x"].shape[0]),
+                "source_holdout_n": int(source["holdout_x"].shape[0]),
+                "target_total_n": int(target["x"].shape[0]),
+                "target_train_n": int(target["train_x"].shape[0]),
+                "target_holdout_n": int(target["holdout_x"].shape[0]),
+            }
+        )
+        paired_parts.append(paired)
+        interval_stats.append(stats)
+
+    paired = {
+        key: np.concatenate([part[key] for part in paired_parts], axis=0)
+        for key in ("x0", "x1", "label")
+    }
+    permutation = rng.permutation(paired["x0"].shape[0])
+    paired = {key: value[permutation] for key, value in paired.items()}
+
+    candidate_pairs = sum(int(stats["candidate_pairs"]) for stats in interval_stats)
+    collected = sum(
+        int(stats.get("collected_accepted_pairs", stats["accepted_pairs"]))
+        for stats in interval_stats
+    )
+    aggregate = {
+        "retained_timepoints": list(retained),
+        "split": split,
+        "pair_mode": pair_mode,
+        "sampled_pairs": int(paired["x0"].shape[0]),
+        "candidate_pairs": candidate_pairs,
+        "endpoint_rejected": sum(
+            int(stats["endpoint_rejected"]) for stats in interval_stats
+        ),
+        "interpolant_rejected": sum(
+            int(stats["interpolant_rejected"]) for stats in interval_stats
+        ),
+        "candidate_acceptance_rate": (
+            collected / candidate_pairs if candidate_pairs > 0 else 0.0
+        ),
+        "intervals": {
+            (
+                f"{stats['source_time']}_to_{stats['target_time']}"
+                .replace(".", "p")
+            ): stats
+            for stats in interval_stats
+        },
+    }
+    return paired, aggregate
+
+
 def couple_minibatch_ot_pair_pool(
     cfg,
     paired: Dict[str, np.ndarray],
@@ -2013,6 +2381,60 @@ def couple_minibatch_ot_pair_pool(
         raise ValueError("Maizels minibatch OT received an invalid cell-type id.")
 
     class_names = np.asarray(CLASS_NAMES, dtype=object)
+    if labels.shape[1] >= 4:
+        interval_bounds = np.unique(labels[:, 2:4], axis=0)
+        interval_bounds = interval_bounds[np.argsort(interval_bounds[:, 0])]
+        counts = _allocate_pairs(int(n_pairs), int(interval_bounds.shape[0]))
+        rng = np.random.default_rng(int(seed))
+        paired_parts = []
+        interval_stats = []
+        for bounds, interval_n in zip(interval_bounds, counts):
+            in_interval = np.all(
+                np.isclose(labels[:, 2:4], bounds[None, :]), axis=1
+            )
+            if not in_interval.any():
+                raise RuntimeError(
+                    "Maizels candidate pool has no rows for interval "
+                    f"{bounds.tolist()}."
+                )
+            interval_pairs, stats = _make_minibatch_ot_pair_pool_from_endpoint_arrays(
+                cfg,
+                np.asarray(paired["x0"])[in_interval],
+                class_names[source_ids[in_interval]],
+                np.asarray(paired["x1"])[in_interval],
+                class_names[target_ids[in_interval]],
+                n_pairs=interval_n,
+                rng=rng,
+                pair_mode=pair_mode,
+            )
+            time_bounds = np.tile(
+                np.asarray(bounds, dtype=np.float32),
+                (interval_pairs["x0"].shape[0], 1),
+            )
+            interval_pairs["label"] = np.concatenate(
+                [interval_pairs["label"].astype(np.float32), time_bounds], axis=1
+            )
+            stats.update({"t_start": float(bounds[0]), "t_end": float(bounds[1])})
+            paired_parts.append(interval_pairs)
+            interval_stats.append(stats)
+
+        result = {
+            key: np.concatenate([part[key] for part in paired_parts], axis=0)
+            for key in ("x0", "x1", "label")
+        }
+        permutation = rng.permutation(result["x0"].shape[0])
+        result = {key: value[permutation] for key, value in result.items()}
+        return result, {
+            "pair_mode": pair_mode,
+            "coupling": "dynamic_minibatch_ot",
+            "pair_pool_mode": "independent_candidates",
+            "sampled_pairs": int(result["x0"].shape[0]),
+            "ot_minibatch_size": int(
+                getattr(cfg.problem, "ot_minibatch_size", n_pairs)
+            ),
+            "intervals": interval_stats,
+        }
+
     result, stats = _make_minibatch_ot_pair_pool_from_endpoint_arrays(
         cfg,
         np.asarray(paired["x0"]),
@@ -2035,7 +2457,45 @@ def couple_minibatch_ot_pair_pool(
 def make_pair_pool(
     cfg, dataset_location: str | None = None
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
-    """Create independent or prior-filtered D3 -> D8 training endpoint pairs."""
+    """Create endpoint pairs or adjacent retained-interval training pairs."""
+    if uses_retained_intervals(cfg):
+        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+        minibatch_ot = uses_minibatch_ot(cfg, pair_mode)
+        paired, stats = _make_retained_interval_pair_pool(
+            cfg,
+            int(getattr(cfg.problem, "n", 100_000)),
+            split="train",
+            dataset_location=dataset_location,
+            pair_mode="none" if minibatch_ot else str(pair_mode),
+            seed=int(getattr(cfg.training, "seed", 0)) + 301,
+        )
+        if minibatch_ot:
+            canonical_mode = _canonical_maizels_pair_mode(str(pair_mode))
+            for interval_stats in stats["intervals"].values():
+                interval_stats.update(
+                    {
+                        "pair_mode": canonical_mode,
+                        "pair_pool_mode": "independent_candidates",
+                        "coupling": "dynamic_minibatch_ot",
+                        "ot_minibatch_size": int(
+                            getattr(cfg.problem, "ot_minibatch_size", 128)
+                        ),
+                        "ot_cost": "raw_sqeuclidean",
+                    }
+                )
+            stats.update(
+                {
+                    "pair_mode": canonical_mode,
+                    "pair_pool_mode": "independent_candidates",
+                    "coupling": "dynamic_minibatch_ot",
+                    "ot_minibatch_size": int(
+                        getattr(cfg.problem, "ot_minibatch_size", 128)
+                    ),
+                    "ot_cost": "raw_sqeuclidean",
+                }
+            )
+        return paired, stats
+
     splits = endpoint_pool_splits(cfg, dataset_location=dataset_location)
     n_pairs = int(getattr(cfg.problem, "n", 100_000))
     seed = int(getattr(cfg.training, "seed", 0))
@@ -2079,6 +2539,38 @@ def make_pair_pool(
     return paired, stats
 
 
+def make_validation_pair_pool(
+    cfg,
+    n_pairs: int,
+    *,
+    dataset_location: str | None = None,
+    pair_mode: str | None = None,
+    seed: int | None = None,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """Build held-out pairs over the same adjacent intervals used for training."""
+    if not uses_retained_intervals(cfg):
+        return make_heldout_pair_pool(
+            cfg,
+            n_pairs,
+            dataset_location=dataset_location,
+            pair_mode=pair_mode,
+            seed=seed,
+        )
+    if pair_mode is None:
+        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    if seed is None:
+        seed = int(getattr(cfg.training, "seed", 0)) + 2701
+    return _make_retained_interval_pair_pool(
+        cfg,
+        int(n_pairs),
+        split="heldout",
+        dataset_location=dataset_location,
+        pair_mode=str(pair_mode),
+        seed=int(seed),
+        minibatch_ot=uses_minibatch_ot(cfg, pair_mode),
+    )
+
+
 def make_heldout_pair_pool(
     cfg,
     n_pairs: int,
@@ -2116,6 +2608,13 @@ def make_heldout_pair_pool(
         rng=rng,
         pair_mode=str(pair_mode),
     )
+    if bool(getattr(cfg.problem, "pair_time_bounds_in_label", False)):
+        paired = _add_time_bounds(
+            cfg,
+            paired,
+            str(getattr(cfg.problem, "source_time", "D3")),
+            str(getattr(cfg.problem, "target_time", "D8")),
+        )
     stats.update(
         {
             "source_total_n": int(splits["source_n"]),

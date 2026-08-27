@@ -92,7 +92,12 @@ def plot_heldout_comparison(results: List[Dict], out_path: Path) -> None:
     for rr, row in enumerate(results):
         for ax, key, color, title in [
             (axes[rr, 0], "actual", "#1f77b4", f"Actual {row['timepoint']}"),
-            (axes[rr, 1], "pred", "#111111", f"Predicted {row['timepoint']}"),
+            (
+                axes[rr, 1],
+                "pred",
+                "#111111",
+                f"Predicted {row['source_timepoint']}→{row['timepoint']}",
+            ),
         ]:
             vals = row[key]
             ax.scatter(vals[:, 0], vals[:, 1], s=4, alpha=0.45, c=color, linewidths=0)
@@ -123,6 +128,16 @@ def main() -> None:
         choices=("global_ot", "minibatch_ot"),
         default=None,
     )
+    parser.add_argument(
+        "--maizels_schedule",
+        choices=("d3_d8", "d3_d3p8_d8"),
+        default=None,
+    )
+    parser.add_argument(
+        "--maizels_time_mode",
+        choices=("real_time", "equal_time"),
+        default=None,
+    )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--ema_fac", type=float, default=0.9999)
     parser.add_argument("--heldout_max_times", type=int, default=0)
@@ -139,6 +154,8 @@ def main() -> None:
         "heldout_day": args.heldout_day,
         "classifier_path": args.classifier_path,
         "maizels_ot_coupling": args.maizels_ot_coupling,
+        "maizels_schedule": args.maizels_schedule,
+        "maizels_time_mode": args.maizels_time_mode,
     }
     kwargs = {
         name: value
@@ -168,7 +185,23 @@ def main() -> None:
     if x1_all.shape[0] == 0:
         raise RuntimeError(f"No target cells found for {target_time}.")
     if getattr(cfg.problem, "gaussian_scale", None) == "adaptive":
-        cfg.network.rescale = float(np.std(np.concatenate([x0_all, x1_all], axis=0)))
+        retained = [
+            str(value)
+            for value in getattr(
+                cfg.problem,
+                "retained_timepoints",
+                [source_time, target_time],
+            )
+        ]
+        scale_populations = []
+        for left, right in zip(retained[:-1], retained[1:]):
+            scale_populations.extend(
+                [
+                    data["x"][data["timepoints"] == left],
+                    data["x"][data["timepoints"] == right],
+                ]
+            )
+        cfg.network.rescale = float(np.std(np.concatenate(scale_populations, axis=0)))
 
     configured_timepoints = getattr(
         getattr(cfg.logging, "maizels", None),
@@ -185,6 +218,17 @@ def main() -> None:
             target_time,
             args.heldout_max_times,
         )
+    if (
+        args.heldout_max_times > 0
+        and len(heldout_timepoints) > args.heldout_max_times
+    ):
+        selected = np.linspace(
+            0,
+            len(heldout_timepoints) - 1,
+            num=args.heldout_max_times,
+            dtype=int,
+        )
+        heldout_timepoints = [heldout_timepoints[ii] for ii in np.unique(selected)]
     if not heldout_timepoints:
         raise RuntimeError("No held-out timepoints found.")
 
@@ -205,12 +249,16 @@ def main() -> None:
     eval_params = train_state.ema_params.get(args.ema_fac, train_state.params)
 
     @jax.jit
-    def pushforward_batch(x0_batch: jnp.ndarray, tau: jnp.ndarray) -> jnp.ndarray:
+    def pushforward_batch(
+        x0_batch: jnp.ndarray,
+        start_tau: jnp.ndarray,
+        end_tau: jnp.ndarray,
+    ) -> jnp.ndarray:
         return jax.vmap(
             lambda x: net.apply(
                 eval_params,
-                0.0,
-                tau,
+                start_tau,
+                end_tau,
                 x,
                 label=None,
                 train=False,
@@ -222,25 +270,50 @@ def main() -> None:
     rng = np.random.default_rng(args.seed + 123)
     results = []
     metrics = []
+    interval_local = bool(
+        getattr(
+            getattr(cfg.logging, "maizels", None),
+            "distribution_eval_interval_local",
+            False,
+        )
+    )
     for timepoint in heldout_timepoints:
         time_value = maizels.parse_timepoint(timepoint)
         actual_all = data["x"][data["timepoints"] == timepoint].astype(np.float32)
         n_compare = min(args.points_per_time, actual_all.shape[0])
         actual = random_subset(actual_all, n_compare, rng, replace_if_needed=False)
-        x0_for_gen = random_subset(x0_all, n_compare, rng, replace_if_needed=True)
-        if hasattr(backend, "normalized_time"):
-            tau = float(backend.normalized_time(timepoint))
-        else:
-            tau = float(
-                np.clip(
-                    (time_value - source_value) / (target_value - source_value),
-                    0.0,
-                    1.0,
-                )
+        if interval_local and backend is maizels:
+            interval_source, _ = maizels.retained_interval_for_timepoint(
+                cfg, timepoint
             )
+            source_population = data["x"][
+                data["timepoints"] == interval_source
+            ].astype(np.float32)
+            start_tau = maizels.normalized_time(interval_source, cfg)
+            tau = maizels.normalized_time(timepoint, cfg)
+        else:
+            interval_source = source_time
+            source_population = x0_all
+            start_tau = 0.0
+            if backend is maizels:
+                tau = maizels.normalized_time(timepoint, cfg)
+            elif hasattr(backend, "normalized_time"):
+                tau = float(backend.normalized_time(timepoint))
+            else:
+                tau = float(
+                    np.clip(
+                        (time_value - source_value) / (target_value - source_value),
+                        0.0,
+                        1.0,
+                    )
+                )
+        x0_for_gen = random_subset(
+            source_population, n_compare, rng, replace_if_needed=True
+        )
         pred = np.asarray(
             pushforward_batch(
                 jnp.asarray(x0_for_gen, dtype=jnp.float32),
+                jnp.asarray(start_tau, dtype=jnp.float32),
                 jnp.asarray(tau, dtype=jnp.float32),
             ),
             dtype=np.float32,
@@ -250,7 +323,9 @@ def main() -> None:
         cov_err = covariance_fro_error(pred, actual)
         row = {
             "timepoint": timepoint,
+            "source_timepoint": interval_source,
             "day": time_value,
+            "start_tau": start_tau,
             "tau": tau,
             "n": n_compare,
             "emd": emd,
@@ -260,7 +335,8 @@ def main() -> None:
         metrics.append(row)
         results.append({**row, "actual": actual, "pred": pred})
         print(
-            f"{timepoint:>4s} tau={tau:.3f} n={n_compare:>4d} "
+            f"{interval_source:>4s}->{timepoint:<4s} "
+            f"tau={start_tau:.3f}->{tau:.3f} n={n_compare:>4d} "
             f"emd={emd:.6g} mean_mse={mean_mse:.6g} "
             f"cov_fro_error={cov_err:.6g}"
         )
@@ -274,16 +350,26 @@ def main() -> None:
     )
     csv_path = out_dir / f"{output_prefix}_heldout_metrics.csv"
     with csv_path.open("w") as f:
-        f.write("timepoint,day,tau,n,emd,mean_mse,cov_fro_error\n")
+        f.write(
+            "timepoint,source_timepoint,day,start_tau,tau,n,emd,"
+            "mean_mse,cov_fro_error\n"
+        )
         for row in metrics:
             f.write(
-                f"{row['timepoint']},{row['day']},{row['tau']},{row['n']},"
+                f"{row['timepoint']},{row['source_timepoint']},{row['day']},"
+                f"{row['start_tau']},{row['tau']},{row['n']},"
                 f"{row['emd']},{row['mean_mse']},{row['cov_fro_error']}\n"
             )
     np.savez(
         out_dir / f"{output_prefix}_heldout_metrics.npz",
         timepoint=np.asarray([row["timepoint"] for row in metrics], dtype=object),
+        source_timepoint=np.asarray(
+            [row["source_timepoint"] for row in metrics], dtype=object
+        ),
         day=np.asarray([row["day"] for row in metrics], dtype=np.float32),
+        start_tau=np.asarray(
+            [row["start_tau"] for row in metrics], dtype=np.float32
+        ),
         tau=np.asarray([row["tau"] for row in metrics], dtype=np.float32),
         n=np.asarray([row["n"] for row in metrics], dtype=np.int32),
         emd=np.asarray([row["emd"] for row in metrics], dtype=np.float32),
