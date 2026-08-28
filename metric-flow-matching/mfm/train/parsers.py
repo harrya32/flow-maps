@@ -95,6 +95,20 @@ def datasets_parser(parser):
     parser.add_argument("--maizels_dataset_path", type=str, default="")
     parser.add_argument("--maizels_classifier_path", type=str, default="")
     parser.add_argument(
+        "--maizels_schedule",
+        type=str,
+        default="d3_d8",
+        choices=["d3_d8", "d3_d3p8_d8"],
+        help="Observed Maizels marginals used for training.",
+    )
+    parser.add_argument(
+        "--maizels_time_mode",
+        type=str,
+        default="real_time",
+        choices=["real_time", "equal_time"],
+        help="Global clock for retained and evaluation timepoints.",
+    )
+    parser.add_argument(
         "--maizels_pair_mode",
         type=str,
         default="none",

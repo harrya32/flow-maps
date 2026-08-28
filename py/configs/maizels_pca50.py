@@ -109,6 +109,16 @@ def _resolve_classifier_path(schedule: str, classifier_path: str | None) -> str:
         )
     return str((repo_root / "celltype_classifier_pca50.pt").resolve())
 
+
+def _resolve_full_data_classifier_path() -> str:
+    """Resolve the frozen all-timepoint classifier used only for evaluation."""
+    env_path = os.getenv("MAIZELS_FULL_DATA_CLASSIFIER_PATH", "")
+    if env_path:
+        return str(Path(env_path).expanduser().resolve())
+    repo_root = Path(__file__).resolve().parents[2]
+    return str((repo_root / "celltype_classifier_pca50.pt").resolve())
+
+
 variants = [
     # ID 0: vanilla flow matching.
     ("vanilla_flow_matching", "none", 1.0, False),
@@ -292,7 +302,7 @@ def get_config(
     config.logging.euler_line_steps = [10, 25, 100]
     config.logging.scalar_freq = 1
     config.logging.progress_freq = 1
-    config.logging.visual_freq = 500
+    config.logging.visual_freq = 5000
     config.logging.save_freq = 5_000
     config.logging.wandb_project = "self-distill-flow-maps"
 
@@ -315,6 +325,11 @@ def get_config(
     config.logging.maizels.margin_threshold = config.problem.classifier_margin_threshold
     config.logging.maizels.classifier_batch_size = config.problem.classifier_batch_size
     config.logging.maizels.lineage_transition_mode = "same_as_problem"
+    # This evaluator is deliberately separate from the schedule-specific
+    # classifier used to construct pairs and train the lineage constraint.
+    config.logging.maizels.full_data_classifier_path = (
+        _resolve_full_data_classifier_path()
+    )
     config.logging.maizels.validation_enabled = True
     config.logging.maizels.validation_bs = 1024
     config.logging.maizels.validation_seed = 2701
@@ -378,7 +393,7 @@ def get_config(
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
     config.constraints.classifier_temperature = 1.0
-    config.constraints.loss_point_entropy_weight = 0.1
+    config.constraints.loss_point_entropy_weight = 0.01
     config.constraints.velocity_rollout_batch_size = 0
     config.constraints.velocity_rollout_reference_diag_fraction = 0.75
     config.constraints.velocity_rollout_max_step = 0.01

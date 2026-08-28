@@ -46,6 +46,12 @@ class FlowNetTrainBase(pl.LightningModule):
     def forward(self, t, xt):
         return self.flow_net(t, xt)
 
+    def _configured_timesteps(self, batch_length):
+        configured = getattr(self.trainer.datamodule, "times", None)
+        if configured is not None and len(configured) == batch_length:
+            return torch.as_tensor(configured, dtype=torch.float32).tolist()
+        return torch.linspace(0.0, 1.0, batch_length).tolist()
+
     def _compute_loss(self, main_batch):
         main_batch_filtered = [
             x for i, x in enumerate(main_batch) if i not in self.skipped_time_points
@@ -97,7 +103,7 @@ class FlowNetTrainBase(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         main_batch = batch["train_samples"][0]
-        self.timesteps = torch.linspace(0.0, 1.0, len(main_batch)).tolist()
+        self.timesteps = self._configured_timesteps(len(main_batch))
         loss = self._compute_loss(main_batch)
         if self.flow_matcher.alpha != 0:
             self.log(
@@ -123,7 +129,7 @@ class FlowNetTrainBase(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         main_batch = batch["val_samples"][0]
 
-        self.timesteps = torch.linspace(0.0, 1.0, len(main_batch)).tolist()
+        self.timesteps = self._configured_timesteps(len(main_batch))
         val_loss = self._compute_loss(main_batch)
         self.log(
             "FlowNet/val_loss_cfm",
@@ -289,11 +295,13 @@ class FlowNetTrainLidar(FlowNetTrainBase):
         if self.whiten:
             traj_shape = traj.shape
             traj = traj.reshape(-1, 3)
-            traj = self.trainer.datamodule.scaler.inverse_transform(traj.detach().numpy()).reshape(
-                traj_shape
-            )
+            traj = self.trainer.datamodule.scaler.inverse_transform(
+                traj.detach().numpy()
+            ).reshape(traj_shape)
             cloud_points = torch.tensor(
-                self.trainer.datamodule.scaler.inverse_transform(cloud_points.detach().numpy())
+                self.trainer.datamodule.scaler.inverse_transform(
+                    cloud_points.detach().numpy()
+                )
             )
         traj = torch.transpose(torch.tensor(traj), 0, 1)
 

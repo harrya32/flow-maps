@@ -8,14 +8,11 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 CFG_PATH="${CFG_PATH:-configs.maizels_pca50_constraint_sweep}"
 DATASET_LOCATION="${DATASET_LOCATION:-celltype_classification_pca50_dataset.csv.gz}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/maizels_local_runs}"
-SEEDS="${SEEDS:-0 1 2 3 4}"
+SEEDS="${SEEDS:-0 1 2 3}"
 
-MODE_IDS=(10)
+MODE_IDS=(9)
 MODE_NAMES=(
-  #"bio_prior_constrained_flow_map_w1000_e01"
-  #"bio_prior_ot_constrained_flow_map_w1000_e01"
-  "bio_prior_constrained_flow_matching_w1000_e01"
-  #"bio_prior_ot_constrained_flow_matching_w350_e001"
+  "bio_prior_ot_constrained_flow_map_w350_e001"
 )
 
 cd "${REPO_ROOT}"
@@ -31,6 +28,7 @@ for seed in ${SEEDS}; do
       --cfg_path "${CFG_PATH}" \
       --dataset_location "${DATASET_LOCATION}" \
       --output_folder "${OUTPUT_ROOT}" \
-      --slurm_id "${mode_id}"
+      --slurm_id "${mode_id}" \
+      --maizels_schedule "d3_d3p8_d8"
   done
 done

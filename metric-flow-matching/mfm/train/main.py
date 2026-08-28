@@ -168,9 +168,13 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         flow_net = EMA(model=flow_net, decay=args.ema_decay)
         geopath_net = EMA(model=geopath_net, decay=args.ema_decay)
 
+    ot_requested = str(args.optimal_transport_method).lower() != "none"
+    use_native_ot = args.data_type != "maizels" or bool(
+        getattr(datamodule, "uses_native_marginal_pairing", False)
+    )
     ot_sampler = (
         OTPlanSampler(method=args.optimal_transport_method)
-        if args.optimal_transport_method != "None" and args.data_type != "maizels"
+        if ot_requested and use_native_ot
         else None
     )
 
@@ -179,11 +183,19 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         if args.data_type == "maizels"
         else f"mfm-{args.data_type}-{args.data_name}"
     )
-    run_name = args.wandb_name or (
-        f"maizels_pca50_mfm_{args.maizels_pair_mode}_seed{seed}"
-        if args.data_type == "maizels"
-        else None
-    )
+    if args.data_type == "maizels":
+        if datamodule.uses_native_marginal_pairing:
+            mfm_variant = "ot-mfm" if ot_sampler is not None else "i-mfm"
+            default_run_name = (
+                f"maizels_pca50_{mfm_variant}_{args.maizels_schedule}_seed{seed}"
+            )
+        else:
+            mfm_variant = "mfm"
+            default_run_name = f"maizels_pca50_mfm_{args.maizels_pair_mode}_seed{seed}"
+    else:
+        mfm_variant = None
+        default_run_name = None
+    run_name = args.wandb_name or default_run_name
     wandb.init(
         project=project,
         entity=args.wandb_entity or None,
@@ -196,7 +208,14 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         wandb.config.update(
             {
                 "method": "mfm",
-                "protocol": "D3_to_D8_endpoint",
+                "mfm_variant": mfm_variant,
+                "protocol": (
+                    args.maizels_schedule
+                    if datamodule.uses_native_marginal_pairing
+                    else "D3_to_D8_endpoint"
+                ),
+                "maizels_time_mode": args.maizels_time_mode,
+                "native_minibatch_ot": ot_sampler is not None,
                 "maizels_pair_mode_requested": datamodule.requested_pair_mode,
                 "maizels_geopath_pair_mode": datamodule.geopath_pair_mode,
                 "maizels_interpolant_check_times": int(

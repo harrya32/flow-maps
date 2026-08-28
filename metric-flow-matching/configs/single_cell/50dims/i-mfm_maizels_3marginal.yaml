@@ -1,0 +1,38 @@
+# Independent MFM on the observed D3, D3.8, and D8 Maizels PCA50 marginals.
+data_type: "maizels"
+data_name: "maizels"
+accelerator: "gpu"
+dim: 50
+t_exclude: null
+whiten: false
+
+maizels_schedule: "d3_d3p8_d8"
+maizels_time_mode: "real_time"
+maizels_pair_mode: "none"
+maizels_holdout_fraction: 0.1
+
+# MFM CITE-50 defaults. One RBF metric is fit per adjacent interval.
+hidden_dims_geopath: [1024, 1024, 1024]
+hidden_dims_flow: [1024, 1024, 1024]
+time_geopath: true
+velocity_metric: "rbf"
+patience: 25
+n_centers: 150
+kappa: 1.5
+rho: -2.75
+alpha_metric: 1
+metric_epochs: 200
+metric_train_batches: 100
+metric_val_batches: 10
+mfm: true
+seeds: [0, 1, 2, 3]
+batch_size: 128
+
+# Both learned-geopath and velocity-field phases have this ceiling.
+max_steps: 10000
+val_check_interval: 500
+reference_loss_batches: 32
+maizels_eval_every_n_steps: 500
+maizels_eval_points_per_time: 1024
+optimal_transport_method: "None"
+wandb_project: "self-distill-flow-maps"

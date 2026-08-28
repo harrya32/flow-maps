@@ -2594,6 +2594,11 @@ def _compute_maizels_population_trajectory_metrics(
         "classifier_path",
         getattr(backend, "DEFAULT_CLASSIFIER", maizels.DEFAULT_CLASSIFIER),
     )
+    full_data_classifier_path = getattr(
+        maizels_cfg,
+        "full_data_classifier_path",
+        None,
+    )
     lineage_transition_mode = getattr(
         maizels_cfg,
         "lineage_transition_mode",
@@ -2610,7 +2615,6 @@ def _compute_maizels_population_trajectory_metrics(
     )
     check_kwargs = {
         "start_type_ids": start_type_ids,
-        "classifier_path": classifier_path,
         "prob_threshold": float(getattr(maizels_cfg, "prob_threshold", 0.85)),
         "margin_threshold": float(getattr(maizels_cfg, "margin_threshold", 1.0)),
         "final_type_ids": None,
@@ -2619,26 +2623,33 @@ def _compute_maizels_population_trajectory_metrics(
         ),
         "lineage_transition_mode": lineage_transition_mode,
     }
-    valid_by_sampler = {
-        "direct": np.asarray(
-            backend.check_paths_with_classifier(paths=direct_paths, **check_kwargs)[
-                "valid"
-            ],
-            dtype=bool,
-        ),
-        "flowmap": np.asarray(
-            backend.check_paths_with_classifier(paths=flowmap_paths, **check_kwargs)[
-                "valid"
-            ],
-            dtype=bool,
-        ),
-        "euler": np.asarray(
-            backend.check_paths_with_classifier(paths=euler_paths, **check_kwargs)[
-                "valid"
-            ],
-            dtype=bool,
-        ),
+    paths_by_sampler = {
+        "direct": direct_paths,
+        "flowmap": flowmap_paths,
+        "euler": euler_paths,
     }
+
+    def score_with_classifier(path):
+        return {
+            sampler: np.asarray(
+                backend.check_paths_with_classifier(
+                    paths=paths,
+                    classifier_path=path,
+                    **check_kwargs,
+                )["valid"],
+                dtype=bool,
+            )
+            for sampler, paths in paths_by_sampler.items()
+        }
+
+    valid_by_sampler = score_with_classifier(classifier_path)
+    full_data_valid_by_sampler = None
+    if full_data_classifier_path and os.path.realpath(
+        os.path.expanduser(str(full_data_classifier_path))
+    ) != os.path.realpath(os.path.expanduser(str(classifier_path))):
+        full_data_valid_by_sampler = score_with_classifier(
+            full_data_classifier_path
+        )
 
     metrics = {"maizels/eval_source_count": int(source_eval.shape[0])}
     for sampler, valid in valid_by_sampler.items():
@@ -2648,6 +2659,15 @@ def _compute_maizels_population_trajectory_metrics(
         metrics[f"maizels/model_{sampler}_invalid_trajectory_pct"] = 100.0 * float(
             np.mean(~valid)
         )
+    if full_data_valid_by_sampler is not None:
+        for sampler, valid in full_data_valid_by_sampler.items():
+            prefix = f"maizels/full_data_classifier/model_{sampler}"
+            metrics[f"{prefix}_valid_trajectory_pct"] = 100.0 * float(
+                np.mean(valid)
+            )
+            metrics[f"{prefix}_invalid_trajectory_pct"] = 100.0 * float(
+                np.mean(~valid)
+            )
     return metrics
 
 
@@ -2730,6 +2750,11 @@ def _log_maizels_trajectory_diagnostics(
         cfg.problem,
         "classifier_path",
         getattr(backend, "DEFAULT_CLASSIFIER", maizels.DEFAULT_CLASSIFIER),
+    )
+    full_data_classifier_path = getattr(
+        maizels_cfg,
+        "full_data_classifier_path",
+        None,
     )
     lineage_transition_mode = getattr(
         maizels_cfg,
@@ -2849,6 +2874,46 @@ def _log_maizels_trajectory_diagnostics(
     flowmap_valid = np.asarray(flowmap_validity["valid"], dtype=bool)
     euler_valid = np.asarray(euler_validity["valid"], dtype=bool)
     gt_valid = np.asarray(gt_validity["valid"], dtype=bool)
+
+    full_data_valid = None
+    if full_data_classifier_path and os.path.realpath(
+        os.path.expanduser(str(full_data_classifier_path))
+    ) != os.path.realpath(os.path.expanduser(str(classifier_path))):
+
+        def score_full_data(paths, start_type_ids, final_type_ids=None):
+            return np.asarray(
+                backend.check_paths_with_classifier(
+                    paths=paths,
+                    start_type_ids=start_type_ids,
+                    classifier_path=full_data_classifier_path,
+                    prob_threshold=prob_threshold,
+                    margin_threshold=margin_threshold,
+                    final_type_ids=final_type_ids,
+                    classifier_batch_size=classifier_batch_size,
+                    lineage_transition_mode=lineage_transition_mode,
+                )["valid"],
+                dtype=bool,
+            )
+
+        full_data_valid = {
+            "direct": score_full_data(
+                direct_check_paths,
+                model_start_type_ids,
+            ),
+            "flowmap": score_full_data(
+                flowmap_check_paths,
+                model_start_type_ids,
+            ),
+            "euler": score_full_data(
+                euler_check_paths,
+                model_start_type_ids,
+            ),
+            "interpolant": score_full_data(
+                gt_check_paths,
+                paired_start_type_ids,
+                target_type_ids,
+            ),
+        }
     panel_xlim, panel_ylim = lowd_limits_for(
         cfg,
         x0_model,
@@ -2934,6 +2999,20 @@ def _log_maizels_trajectory_diagnostics(
         "maizels/interpolant_valid_trajectory_pct": 100.0
         * float(np.mean(gt_valid)),
     }
+    if full_data_valid is not None:
+        for sampler, valid in full_data_valid.items():
+            stem = (
+                "interpolant"
+                if sampler == "interpolant"
+                else f"model_{sampler}"
+            )
+            prefix = f"maizels/full_data_classifier/{stem}"
+            metrics[f"{prefix}_valid_trajectory_pct"] = 100.0 * float(
+                np.mean(valid)
+            )
+            metrics[f"{prefix}_invalid_trajectory_pct"] = 100.0 * float(
+                np.mean(~valid)
+            )
     wandb.log(
         {
             "plots/maizels_classifier_validity_paths": wandb.Image(fig),
@@ -2977,6 +3056,12 @@ def log_maizels_final_evaluation(
         emd_key = f"distribution_eval/{sampler}_emd_mean"
         mmd_key = f"distribution_eval/{sampler}_rbf_mmd2_mean"
         valid_key = f"maizels/model_{sampler}_valid_trajectory_pct"
+        full_data_valid_key = (
+            f"maizels/full_data_classifier/model_{sampler}_valid_trajectory_pct"
+        )
+        full_data_invalid_key = (
+            f"maizels/full_data_classifier/model_{sampler}_invalid_trajectory_pct"
+        )
         if emd_key in distribution_metrics:
             final_metrics[f"final_eval/{sampler}_mean_emd"] = distribution_metrics[
                 emd_key
@@ -2989,6 +3074,14 @@ def log_maizels_final_evaluation(
             final_metrics[f"final_eval/{sampler}_valid_trajectory_pct"] = (
                 trajectory_metrics[valid_key]
             )
+        if full_data_valid_key in trajectory_metrics:
+            final_metrics[
+                f"final_eval/full_data_classifier/{sampler}_valid_trajectory_pct"
+            ] = trajectory_metrics[full_data_valid_key]
+        if full_data_invalid_key in trajectory_metrics:
+            final_metrics[
+                f"final_eval/full_data_classifier/{sampler}_invalid_trajectory_pct"
+            ] = trajectory_metrics[full_data_invalid_key]
 
     linear_emd_key = "distribution_eval/linear_emd_mean"
     linear_mmd_key = "distribution_eval/linear_rbf_mmd2_mean"

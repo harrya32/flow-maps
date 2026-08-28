@@ -53,12 +53,12 @@ Model checkpoints are saved within the `checkpoints` folder under `--working_dir
 CITE and Multi default to `~/Desktop/flow-maps-data`. Set
 `CITE_MULTI_DATA_DIR` to use a different shared data directory.
 
-### Maizels PCA50 endpoint experiments
+### Maizels PCA50 experiments
 
-The Maizels integration follows the flow-map experiment protocol: it trains only
-on D3 -> D8 pairs and evaluates the learned velocity rollout against every
-intermediate day. The CITE-50 MFM architecture and metric defaults are used,
-with 10,000 optimizer steps each for geopath and flow training.
+The original endpoint configuration trains on D3 -> D8 pairs and evaluates the
+learned velocity rollout against every intermediate day. The CITE-50 MFM
+architecture and metric defaults are used, with 10,000 optimizer steps each for
+geopath and flow training.
 
 ```bash
 python -m mfm.train.main \
@@ -69,7 +69,35 @@ python -m mfm.train.main \
   --maizels_pair_mode none
 ```
 
-Available pair modes are:
+The three-marginal configurations observe D3, D3.8, and D8. They pass raw
+marginal minibatches through MFM's original adjacent-interval loop, which fits
+separate RBF metrics for D3 -> D3.8 and D3.8 -> D8. Independent MFM uses random
+minibatch alignment; OT-MFM applies MFM's native exact minibatch OT separately
+in each interval.
+
+```bash
+# Independent MFM
+python -m mfm.train.main \
+  --config_path configs/single_cell/50dims/i-mfm_maizels_3marginal.yaml \
+  --working_dir /path/to/output \
+  --maizels_dataset_path /path/to/celltype_classification_pca50_dataset.csv.gz
+
+# OT-MFM
+python -m mfm.train.main \
+  --config_path configs/single_cell/50dims/ot-mfm_maizels_3marginal.yaml \
+  --working_dir /path/to/output \
+  --maizels_dataset_path /path/to/celltype_classification_pca50_dataset.csv.gz
+```
+
+Both configurations reserve 10% of each observed marginal. Held-out D3 ->
+D3.8 and D3.8 -> D8 EMDs are logged under `validation_distribution/*`, including
+their raw and source-to-target-normalized mean. The omitted-day metrics remain
+enabled under `distribution_eval/*`; each omitted day is rolled out from the
+left observed endpoint of its interval, so these remain test diagnostics rather
+than model-selection criteria. Real experimental time is used by default
+(`D3=0`, `D3.8=0.16`, `D8=1`).
+
+For the original endpoint configuration, available pair modes are:
 
 - `none`: independent D3/D8 coupling;
 - `ot_plain`: exact OT without biological filtering;

@@ -80,13 +80,13 @@ VARIANTS = [
         "loss_point_entropy_weight": 0.1,
     },
     {
-        "mode": "bio_prior_ot_constrained_flow_map_w1000_e01",
+        "mode": "bio_prior_ot_constrained_flow_map_w350_e001",
         "base_slurm_id": 4,
         "pair_mode": "ot_endpoint_interpolant",
         "constraints_enabled": True,
         "path_mode": "loss_points_nll",
-        "weight": 1000.0,
-        "loss_point_entropy_weight": 0.1,
+        "weight": 350.0,
+        "loss_point_entropy_weight": 0.01,
     },
     {
         "mode": "bio_prior_constrained_flow_matching_w1000_e01",

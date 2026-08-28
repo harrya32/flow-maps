@@ -1,4 +1,4 @@
-"""Endpoint-only Maizels PCA50 data module for metric flow matching."""
+"""Maizels PCA50 data modules for metric flow matching."""
 
 from __future__ import annotations
 
@@ -29,6 +29,73 @@ PAIR_MODES = (
     "ot_endpoint_interpolant",
 )
 LEARNED_PATH_PRIOR_MODES = ("endpoint_interpolant", "ot_endpoint_interpolant")
+SCHEDULES = {
+    "d3_d8": ("D3", "D8"),
+    "d3_d3p8_d8": ("D3", "D3.8", "D8"),
+}
+
+
+def _canonical_schedule(value: str) -> str:
+    aliases = {
+        "endpoints": "d3_d8",
+        "d3-d8": "d3_d8",
+        "three_timepoint": "d3_d3p8_d8",
+        "three-timepoint": "d3_d3p8_d8",
+        "d3-d3.8-d8": "d3_d3p8_d8",
+    }
+    value = aliases.get(str(value).lower(), str(value).lower())
+    if value not in SCHEDULES:
+        raise ValueError(
+            f"maizels_schedule must be one of {sorted(SCHEDULES)}, got {value!r}."
+        )
+    return value
+
+
+def _canonical_time_mode(value: str) -> str:
+    aliases = {
+        "real": "real_time",
+        "physical": "real_time",
+        "physical_time": "real_time",
+        "equal": "equal_time",
+        "stage": "equal_time",
+    }
+    value = aliases.get(str(value).lower(), str(value).lower())
+    if value not in ("real_time", "equal_time"):
+        raise ValueError(
+            "maizels_time_mode must be 'real_time' or 'equal_time', " f"got {value!r}."
+        )
+    return value
+
+
+def _timepoint_values(retained_timepoints, time_mode: str):
+    """Return the global model clock for every Maizels observation day."""
+    if time_mode == "real_time":
+        source = maizels.parse_timepoint(maizels.TIMEPOINTS[0])
+        target = maizels.parse_timepoint(maizels.TIMEPOINTS[-1])
+        return [
+            (maizels.parse_timepoint(value) - source) / (target - source)
+            for value in maizels.TIMEPOINTS
+        ]
+
+    retained_indices = [
+        maizels.TIMEPOINTS.index(value) for value in retained_timepoints
+    ]
+    retained_values = [
+        index / float(len(retained_timepoints) - 1)
+        for index in range(len(retained_timepoints))
+    ]
+    values = [None] * len(maizels.TIMEPOINTS)
+    for interval_index, (left, right) in enumerate(
+        zip(retained_indices[:-1], retained_indices[1:])
+    ):
+        start_value = retained_values[interval_index]
+        end_value = retained_values[interval_index + 1]
+        for position in range(left, right + 1):
+            fraction = (position - left) / float(right - left)
+            values[position] = start_value + fraction * (end_value - start_value)
+    if any(value is None for value in values):
+        raise ValueError("Retained Maizels timepoints must span D3 through D8.")
+    return values
 
 
 def _prior_free_pair_mode(pair_mode: str) -> str:
@@ -93,7 +160,16 @@ class _LearnedGeoPathBuilder:
         return paths
 
 
-def _default_classifier_path() -> str:
+def _default_classifier_path(schedule: str) -> str:
+    if schedule == "d3_d3p8_d8":
+        repo_checkpoint = (
+            REPO_ROOT
+            / "outputs"
+            / "maizels_classifier_d3_d3p8_d8"
+            / "celltype_classifier_pca50_d3_d3p8_d8.pt"
+        )
+        return str(repo_checkpoint)
+
     repo_checkpoint = REPO_ROOT / "celltype_classifier_pca50.pt"
     if repo_checkpoint.exists():
         return str(repo_checkpoint)
@@ -108,8 +184,13 @@ def make_maizels_config(args) -> SimpleNamespace:
             f"maizels_pair_mode must be one of {PAIR_MODES}, got {pair_mode!r}."
         )
 
+    schedule = _canonical_schedule(getattr(args, "maizels_schedule", "d3_d8"))
+    time_mode = _canonical_time_mode(getattr(args, "maizels_time_mode", "real_time"))
+    retained_timepoints = SCHEDULES[schedule]
     dataset_location = str(args.maizels_dataset_path or args.data_path or "")
-    classifier_path = str(args.maizels_classifier_path or _default_classifier_path())
+    classifier_path = str(
+        args.maizels_classifier_path or _default_classifier_path(schedule)
+    )
     cache_dir = str(
         args.maizels_ot_cache_dir or (Path(args.working_dir) / ".maizels_ot_cache")
     )
@@ -119,6 +200,12 @@ def make_maizels_config(args) -> SimpleNamespace:
         dataset_location=dataset_location,
         source_time="D3",
         target_time="D8",
+        maizels_schedule=schedule,
+        maizels_time_mode=time_mode,
+        retained_timepoints=list(retained_timepoints),
+        timepoint_order=list(maizels.TIMEPOINTS),
+        timepoint_values=_timepoint_values(retained_timepoints, time_mode),
+        pair_time_bounds_in_label=len(retained_timepoints) > 2,
         maizels_holdout_fraction=float(args.maizels_holdout_fraction),
         maizels_holdout_n=0,
         maizels_holdout_seed=int(args.maizels_holdout_seed),
@@ -137,7 +224,11 @@ def make_maizels_config(args) -> SimpleNamespace:
         ot_infeasible_fallback=str(args.maizels_ot_infeasible_fallback),
         ot_cache_enabled=True,
         ot_cache_dir=cache_dir,
-        ot_cache_version="mfm_endpoint_v1",
+        ot_cache_version=(
+            "mfm_endpoint_v1"
+            if schedule == "d3_d8"
+            else f"mfm_{schedule}_{time_mode}_v1"
+        ),
         interpolant_path_kind="linear",
         interpolant_path_builder=None,
         ot_progress_enabled=bool(args.maizels_ot_progress_enabled),
@@ -152,7 +243,7 @@ def make_maizels_config(args) -> SimpleNamespace:
 
 
 class MaizelsEndpointDataModule(pl.LightningDataModule):
-    """D3 -> D8 paired training with every intermediate day reserved for evaluation."""
+    """Maizels endpoint pairs or raw adjacent observed marginals for MFM."""
 
     def __init__(self, args):
         super().__init__()
@@ -167,9 +258,24 @@ class MaizelsEndpointDataModule(pl.LightningDataModule):
         self.classifier_path = str(
             maizels.resolve_classifier_path(self.cfg.problem.classifier_path)
         )
-        self.num_timesteps = 2
-        self.times = torch.tensor([0.0, 1.0], dtype=torch.float32)
+        self.retained_timepoints = maizels.retained_timepoints(self.cfg)
+        self.num_timesteps = len(self.retained_timepoints)
+        self.times = torch.tensor(
+            [
+                maizels.normalized_time(timepoint, self.cfg)
+                for timepoint in self.retained_timepoints
+            ],
+            dtype=torch.float32,
+        )
+        self.uses_native_marginal_pairing = self.num_timesteps > 2
         self.requested_pair_mode = str(self.cfg.problem.maizels_pair_mode)
+        if self.uses_native_marginal_pairing and self.requested_pair_mode != "none":
+            raise ValueError(
+                "The three-marginal Maizels schedule takes raw D3, D3.8, and D8 "
+                "minibatches so that MFM can apply its native adjacent-marginal "
+                "pairing. Set --maizels_pair_mode none and choose independent MFM "
+                "or OT-MFM with --optimal_transport_method None or exact."
+            )
         self.geopath_pair_mode = (
             _prior_free_pair_mode(self.requested_pair_mode)
             if bool(args.mfm)
@@ -200,12 +306,19 @@ class MaizelsEndpointDataModule(pl.LightningDataModule):
         ]
 
     def _prepare_data(self):
+        self.all_timepoint_data = maizels.all_timepoint_data(
+            self.cfg.problem.dataset_location
+        )
+        if self.uses_native_marginal_pairing:
+            self._prepare_marginal_data()
+            return
+
+        self._prepare_endpoint_data()
+
+    def _prepare_endpoint_data(self):
         self.splits = maizels.endpoint_pool_splits(
             self.cfg,
             dataset_location=self.cfg.problem.dataset_location,
-        )
-        self.all_timepoint_data = maizels.all_timepoint_data(
-            self.cfg.problem.dataset_location
         )
 
         self._build_pair_loaders(self.geopath_pair_mode, stage="geopath")
@@ -232,6 +345,134 @@ class MaizelsEndpointDataModule(pl.LightningDataModule):
                 drop_last=False,
             ),
         ]
+
+    def _prepare_marginal_data(self):
+        """Expose raw observed marginals to MFM's existing adjacent-pair loop."""
+        self.timepoint_splits = maizels.timepoint_pool_splits(
+            self.cfg,
+            dataset_location=self.cfg.problem.dataset_location,
+        )
+        self.splits = maizels.endpoint_pool_splits(
+            self.cfg,
+            dataset_location=self.cfg.problem.dataset_location,
+        )
+
+        retained_pools = [
+            self.timepoint_splits[timepoint] for timepoint in self.retained_timepoints
+        ]
+        train_sizes = [int(pool["train_x"].shape[0]) for pool in retained_pools]
+        holdout_sizes = [int(pool["holdout_x"].shape[0]) for pool in retained_pools]
+        if min(train_sizes + holdout_sizes) <= 0:
+            raise RuntimeError(
+                "Three-marginal Maizels training requires non-empty train and "
+                "held-out pools at D3, D3.8, and D8. Increase "
+                "--maizels_holdout_fraction."
+            )
+
+        # Validation repeats each batch four times inside the original MFM
+        # geopath objective, so every retained marginal must use the same size.
+        self.batch_size = min(self.batch_size, min(train_sizes), min(holdout_sizes))
+        self.train_dataloaders = []
+        self.val_dataloaders = []
+        self.test_dataloaders = []
+        for pool in retained_pools:
+            train_x = torch.from_numpy(np.asarray(pool["train_x"], dtype=np.float32))
+            holdout_x = torch.from_numpy(
+                np.asarray(pool["holdout_x"], dtype=np.float32)
+            )
+            self.train_dataloaders.append(
+                DataLoader(
+                    train_x,
+                    batch_size=self.batch_size,
+                    shuffle=True,
+                    drop_last=True,
+                )
+            )
+            self.val_dataloaders.append(
+                DataLoader(
+                    holdout_x,
+                    batch_size=self.batch_size,
+                    shuffle=False,
+                    drop_last=True,
+                )
+            )
+            self.test_dataloaders.append(
+                DataLoader(
+                    holdout_x,
+                    batch_size=holdout_x.shape[0],
+                    shuffle=False,
+                    drop_last=False,
+                )
+            )
+
+        min_train_size = min(train_sizes)
+        self.metric_samples_dataloaders = [
+            DataLoader(
+                torch.from_numpy(np.asarray(pool["train_x"], dtype=np.float32)),
+                batch_size=min_train_size,
+                shuffle=True,
+                drop_last=False,
+            )
+            for pool in retained_pools
+        ]
+
+        ot_method = str(getattr(self.args, "optimal_transport_method", "None"))
+        coupling = (
+            "independent_minibatches"
+            if ot_method.lower() == "none"
+            else f"native_{ot_method}_minibatch_ot"
+        )
+        intervals = [
+            {
+                "source_time": source,
+                "target_time": target,
+                "t_start": maizels.normalized_time(source, self.cfg),
+                "t_end": maizels.normalized_time(target, self.cfg),
+            }
+            for source, target in zip(
+                self.retained_timepoints[:-1], self.retained_timepoints[1:]
+            )
+        ]
+        base_stats = {
+            "pair_mode": "none",
+            "coupling": coupling,
+            "retained_timepoints": list(self.retained_timepoints),
+            "intervals": intervals,
+            "batch_size": int(self.batch_size),
+        }
+        self.pair_stats = {
+            **base_stats,
+            "pair_stage": "geopath_and_flow",
+            "split": "train",
+            "timepoint_counts": dict(zip(self.retained_timepoints, train_sizes)),
+        }
+        self.validation_pair_stats = {
+            **base_stats,
+            "pair_stage": "geopath_and_flow",
+            "split": "heldout",
+            "timepoint_counts": dict(zip(self.retained_timepoints, holdout_sizes)),
+        }
+        self.active_pair_mode = "none"
+
+        eval_n = min(
+            int(self.args.maizels_eval_points_per_time),
+            int(self.splits["source_holdout_n"]),
+            int(self.splits["target_holdout_n"]),
+        )
+        self.eval_pairs, self.eval_pair_stats = maizels.make_endpoint_split_pair_pool(
+            self.cfg,
+            eval_n,
+            split="heldout",
+            dataset_location=self.cfg.problem.dataset_location,
+            pair_mode="none",
+            seed=int(self.args.seed_current) + 1718,
+        )
+        self.eval_pair_stats.update(
+            {
+                "pair_stage": "evaluation",
+                "interpolant_path_kind": "linear",
+            }
+        )
 
     def _build_pair_loaders(self, pair_mode: str, *, stage: str):
         self.cfg.problem.maizels_pair_mode = pair_mode

@@ -56,15 +56,26 @@ def rbf_mmd2(x: np.ndarray, y: np.ndarray, rng) -> float:
     return max(float(np.mean(values)), 0.0)
 
 
-def euler_rollout(flow_net, x0: torch.Tensor, tau: float, n_steps: int):
+def euler_rollout(
+    flow_net,
+    x0: torch.Tensor,
+    end_time: float,
+    n_steps: int,
+    *,
+    start_time: float = 0.0,
+):
     n_steps = max(1, int(n_steps))
-    dt = float(tau) / float(n_steps)
+    if end_time < start_time:
+        raise ValueError(
+            f"Euler rollout end_time ({end_time}) precedes start_time ({start_time})."
+        )
+    dt = (float(end_time) - float(start_time)) / float(n_steps)
     x = x0
     trajectory = [x0]
     for step in range(n_steps):
         t = torch.full(
             (x.shape[0], 1),
-            step * dt,
+            float(start_time) + step * dt,
             dtype=x.dtype,
             device=x.device,
         )
@@ -74,7 +85,7 @@ def euler_rollout(flow_net, x0: torch.Tensor, tau: float, n_steps: int):
 
 
 class MaizelsEvaluationCallback(pl.Callback):
-    """Evaluate D3 rollouts against every unseen intermediate-day population."""
+    """Track omitted-day tests and held-out observed-marginal validation EMDs."""
 
     def __init__(self, args, datamodule):
         super().__init__()
@@ -91,6 +102,37 @@ class MaizelsEvaluationCallback(pl.Callback):
     def on_train_end(self, trainer, pl_module):
         self._evaluate(trainer, pl_module)
 
+    def _heldout_pool(self, timepoint):
+        if hasattr(self.datamodule, "timepoint_splits"):
+            return np.asarray(
+                self.datamodule.timepoint_splits[timepoint]["holdout_x"],
+                dtype=np.float32,
+            )
+
+        retained = self.datamodule.retained_timepoints
+        if timepoint == retained[0]:
+            key = "source_holdout_x"
+        elif timepoint == retained[-1]:
+            key = "target_holdout_x"
+        else:
+            raise KeyError(f"No held-out Maizels pool for {timepoint}.")
+        return np.asarray(self.datamodule.splits[key], dtype=np.float32)
+
+    def _test_source_pool(self, timepoint):
+        if hasattr(self.datamodule, "timepoint_splits"):
+            return np.asarray(
+                self.datamodule.timepoint_splits[timepoint]["x"],
+                dtype=np.float32,
+            )
+        return np.asarray(self.datamodule.eval_pairs["x0"], dtype=np.float32)
+
+    @staticmethod
+    def _sample_rows(values, n, rng):
+        values = np.asarray(values, dtype=np.float32)
+        size = min(n, values.shape[0])
+        indices = rng.choice(values.shape[0], size=size, replace=False)
+        return values[indices]
+
     def _evaluate(self, trainer, pl_module):
         step = int(trainer.global_step)
         if not trainer.is_global_zero or step == self.last_evaluated_step:
@@ -101,21 +143,28 @@ class MaizelsEvaluationCallback(pl.Callback):
         was_training = flow_net.training
         flow_net.eval()
         device = pl_module.device
-        x0 = torch.as_tensor(self.datamodule.eval_pairs["x0"], dtype=torch.float32, device=device)
+        x0 = torch.as_tensor(
+            self.datamodule.eval_pairs["x0"],
+            dtype=torch.float32,
+            device=device,
+        )
         labels = np.asarray(self.datamodule.eval_pairs["label"], dtype=np.int32)
         source_type_ids = labels[:, 0]
         n_steps = int(self.args.maizels_eval_euler_steps)
+        eval_n = int(self.args.maizels_eval_points_per_time)
         seed = int(self.args.seed_current) + 1701
         rng = np.random.default_rng(seed)
         data = self.datamodule.all_timepoint_data
+        cfg = self.datamodule.cfg
+        retained = maizels.retained_timepoints(cfg)
 
-        source_day = maizels.parse_timepoint("D3")
-        target_day = maizels.parse_timepoint("D8")
+        source_day = maizels.parse_timepoint(retained[0])
+        target_day = maizels.parse_timepoint(retained[-1])
         timepoints = sorted(
             {
                 str(tp)
                 for tp, day in zip(data["timepoints"], data["time_values"])
-                if source_day < float(day) < target_day
+                if source_day < float(day) < target_day and str(tp) not in retained
             },
             key=maizels.parse_timepoint,
         )
@@ -128,11 +177,22 @@ class MaizelsEvaluationCallback(pl.Callback):
                 actual_all = np.asarray(
                     data["x"][data["timepoints"] == timepoint], dtype=np.float32
                 )
-                n = min(x0.shape[0], actual_all.shape[0])
-                actual_idx = rng.choice(actual_all.shape[0], size=n, replace=False)
-                actual = actual_all[actual_idx]
-                tau = (maizels.parse_timepoint(timepoint) - source_day) / (target_day - source_day)
-                prediction, _ = euler_rollout(flow_net, x0[:n], tau, n_steps)
+                interval_source, _ = maizels.retained_interval_for_timepoint(
+                    cfg, timepoint
+                )
+                source_all = self._test_source_pool(interval_source)
+                n = min(eval_n, source_all.shape[0], actual_all.shape[0])
+                source = self._sample_rows(source_all, n, rng)
+                actual = self._sample_rows(actual_all, n, rng)
+                start_time = maizels.normalized_time(interval_source, cfg)
+                end_time = maizels.normalized_time(timepoint, cfg)
+                prediction, _ = euler_rollout(
+                    flow_net,
+                    torch.as_tensor(source, dtype=torch.float32, device=device),
+                    end_time,
+                    n_steps,
+                    start_time=start_time,
+                )
                 prediction = prediction.detach().cpu().numpy().astype(np.float32)
 
                 mmd2 = rbf_mmd2(prediction, actual, rng)
@@ -144,7 +204,44 @@ class MaizelsEvaluationCallback(pl.Callback):
                 emd_values.append(emd)
                 plot_rows.append((timepoint, actual, prediction))
 
-            _, paths = euler_rollout(flow_net, x0, 1.0, n_steps)
+            validation_emd = []
+            validation_relative_emd = []
+            validation_rng = np.random.default_rng(seed + 101)
+            for interval_source, interval_target in zip(retained[:-1], retained[1:]):
+                source_all = self._heldout_pool(interval_source)
+                target_all = self._heldout_pool(interval_target)
+                n = min(eval_n, source_all.shape[0], target_all.shape[0])
+                source = self._sample_rows(source_all, n, validation_rng)
+                target = self._sample_rows(target_all, n, validation_rng)
+                prediction, _ = euler_rollout(
+                    flow_net,
+                    torch.as_tensor(source, dtype=torch.float32, device=device),
+                    maizels.normalized_time(interval_target, cfg),
+                    n_steps,
+                    start_time=maizels.normalized_time(interval_source, cfg),
+                )
+                prediction = prediction.detach().cpu().numpy().astype(np.float32)
+                emd = wasserstein.exact_emd(prediction, target)
+                baseline_emd = wasserstein.exact_emd(source, target)
+                relative_emd = emd / max(baseline_emd, 1e-12)
+                tag = str(interval_target).replace(".", "p").replace("/", "_")
+                metrics[f"validation_distribution/{tag}_euler_emd"] = emd
+                metrics[f"validation_distribution/{tag}_source_target_emd"] = (
+                    baseline_emd
+                )
+                metrics[f"validation_distribution/{tag}_euler_relative_emd"] = (
+                    relative_emd
+                )
+                validation_emd.append(emd)
+                validation_relative_emd.append(relative_emd)
+
+            _, paths = euler_rollout(
+                flow_net,
+                x0,
+                maizels.normalized_time(retained[-1], cfg),
+                n_steps,
+                start_time=maizels.normalized_time(retained[0], cfg),
+            )
 
         paths_np = paths[:, 1:, :].detach().cpu().numpy().astype(np.float32)
         validity = maizels.check_paths_with_classifier(
@@ -159,7 +256,15 @@ class MaizelsEvaluationCallback(pl.Callback):
         valid = np.asarray(validity["valid"], dtype=bool)
         metrics["distribution_eval/euler_rbf_mmd2_mean"] = float(np.mean(mmd_values))
         metrics["distribution_eval/euler_emd_mean"] = float(np.mean(emd_values))
-        metrics["maizels/model_euler_invalid_trajectory_pct"] = 100.0 * float(np.mean(~valid))
+        metrics["validation_distribution/euler_emd_mean"] = float(
+            np.mean(validation_emd)
+        )
+        metrics["validation_distribution/euler_relative_emd_mean"] = float(
+            np.mean(validation_relative_emd)
+        )
+        metrics["maizels/model_euler_invalid_trajectory_pct"] = 100.0 * float(
+            np.mean(~valid)
+        )
 
         metrics["plots/maizels_intermediate_distributions"] = wandb.Image(
             self._distribution_figure(plot_rows)

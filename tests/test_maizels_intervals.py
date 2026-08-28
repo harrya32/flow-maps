@@ -88,6 +88,13 @@ def test_three_timepoint_config_supports_real_and_equal_clocks():
     assert real_cfg.problem.interp_type == "time_rescaled_linear"
     assert real_cfg.problem.pair_time_bounds_in_label
     assert "maizels_classifier_d3_d3p8_d8" in real_cfg.problem.classifier_path
+    assert real_cfg.logging.maizels.full_data_classifier_path.endswith(
+        "celltype_classifier_pca50.pt"
+    )
+    assert (
+        real_cfg.logging.maizels.full_data_classifier_path
+        != real_cfg.problem.classifier_path
+    )
     assert real_cfg.logging.maizels.trajectory_diagnostics_enabled
     assert real_cfg.logging.output_name == "maizels_pca50_vanilla_flow_matching"
     assert equal_cfg.logging.output_name == real_cfg.logging.output_name
@@ -101,6 +108,10 @@ def test_default_config_preserves_endpoint_training():
     assert list(cfg.problem.retained_timepoints) == ["D3", "D8"]
     assert cfg.problem.interp_type == "linear"
     assert not cfg.problem.pair_time_bounds_in_label
+    assert (
+        cfg.logging.maizels.full_data_classifier_path
+        == cfg.problem.classifier_path
+    )
 
 
 def test_training_pool_contains_only_adjacent_retained_intervals(monkeypatch):
