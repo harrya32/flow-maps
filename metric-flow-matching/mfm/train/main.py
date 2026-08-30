@@ -363,7 +363,11 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     trainer.fit(
         flow_train, datamodule=datamodule, ckpt_path=args.resume_flow_model_ckpt
     )
-    trainer.test(flow_train, datamodule=datamodule)
+    trainer.test(
+        flow_train,
+        datamodule=datamodule,
+        ckpt_path="best" if args.data_type == "maizels" else None,
+    )
     wandb.finish()
     ##### ALGO 2: (Metric) Flow Matching END #####
 

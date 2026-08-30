@@ -7,7 +7,7 @@ Code for initializing common datasets.
 
 import functools
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Any, Callable, Dict
 
 import jax
 import jax.numpy as jnp
@@ -1020,16 +1020,41 @@ class DeviceBatchDataset:
         return next(self.cpu_iterator)
 
 
+def _compact_endpoint_pool_std(data: Dict[str, Any]) -> float:
+    """Exact scalar std of the virtual independently sampled pair pool."""
+    weighted_mean = 0.0
+    weighted_second_moment = 0.0
+    total_weight = 0.0
+    for interval in data["intervals"]:
+        pair_weight = float(interval["nominal_pairs"])
+        for role in ("source_time", "target_time"):
+            x = np.asarray(data["timepoints"][interval[role]]["x"])
+            scalar_weight = pair_weight * x.shape[1]
+            weighted_mean += scalar_weight * float(np.mean(x, dtype=np.float64))
+            x64 = np.asarray(x, dtype=np.float64)
+            weighted_second_moment += scalar_weight * float(np.mean(x64 * x64))
+            total_weight += scalar_weight
+    if total_weight <= 0.0:
+        raise RuntimeError("Dynamic minibatch OT endpoint pools are empty.")
+    mean = weighted_mean / total_weight
+    variance = max(weighted_second_moment / total_weight - mean * mean, 0.0)
+    return float(np.sqrt(variance))
+
+
 class CiteMultiMinibatchOTDataset:
     """Build CITE/Multi training pairs with fresh exact OT minibatches."""
 
-    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, np.ndarray]):
+    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, Any]):
         self.cfg = cfg
-        self.data = {
-            "x0": np.asarray(data["x0"], dtype=np.float32),
-            "x1": np.asarray(data["x1"], dtype=np.float32),
-            "label": np.asarray(data["label"], dtype=np.float32),
-        }
+        self.timepoint_pools = data if "timepoints" in data else None
+        self.data = None
+        if self.timepoint_pools is None:
+            # Compatibility for callers that still provide an expanded pair pool.
+            self.data = {
+                "x0": np.asarray(data["x0"], dtype=np.float32),
+                "x1": np.asarray(data["x1"], dtype=np.float32),
+                "label": np.asarray(data["label"], dtype=np.float32),
+            }
         self.pair_mode = str(
             getattr(
                 cfg.problem,
@@ -1053,13 +1078,22 @@ class CiteMultiMinibatchOTDataset:
         return seed
 
     def _sample(self, bs: int, seed: int) -> Dict[str, jnp.ndarray]:
-        paired, stats = cite_multi.couple_minibatch_ot_pair_pool(
-            self.cfg,
-            self.data,
-            int(bs),
-            seed=int(seed),
-            pair_mode=self.pair_mode,
-        )
+        if self.timepoint_pools is not None:
+            paired, stats = cite_multi.couple_minibatch_ot_timepoint_pools(
+                self.cfg,
+                self.timepoint_pools,
+                int(bs),
+                seed=int(seed),
+                pair_mode=self.pair_mode,
+            )
+        else:
+            paired, stats = cite_multi.couple_minibatch_ot_pair_pool(
+                self.cfg,
+                self.data,
+                int(bs),
+                seed=int(seed),
+                pair_mode=self.pair_mode,
+            )
         self.last_pair_stats = stats
         return {
             "x0": jnp.asarray(paired["x0"], dtype=jnp.float32),
@@ -1081,25 +1115,38 @@ class CiteMultiMinibatchOTDataset:
 class MaizelsMinibatchOTDataset:
     """Build Maizels training pairs with fresh raw-cost OT minibatches."""
 
-    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, np.ndarray]):
+    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, Any]):
         self.cfg = cfg
-        self.data = {
-            "x0": np.asarray(data["x0"], dtype=np.float32),
-            "x1": np.asarray(data["x1"], dtype=np.float32),
-            "label": np.asarray(data["label"], dtype=np.float32),
-        }
+        self.timepoint_pools = data if "timepoints" in data else None
+        self.data = None
+        if self.timepoint_pools is None:
+            # Compatibility for callers that still provide an expanded pair pool.
+            self.data = {
+                "x0": np.asarray(data["x0"], dtype=np.float32),
+                "x1": np.asarray(data["x1"], dtype=np.float32),
+                "label": np.asarray(data["label"], dtype=np.float32),
+            }
         self.pair_mode = str(getattr(cfg.problem, "maizels_pair_mode", "none"))
         self.cpu_rng = np.random.default_rng(int(cfg.training.seed) + 4301)
         self.last_pair_stats = None
 
     def _sample(self, bs: int, seed: int) -> Dict[str, jnp.ndarray]:
-        paired, stats = maizels.couple_minibatch_ot_pair_pool(
-            self.cfg,
-            self.data,
-            int(bs),
-            seed=int(seed),
-            pair_mode=self.pair_mode,
-        )
+        if self.timepoint_pools is not None:
+            paired, stats = maizels.couple_minibatch_ot_timepoint_pools(
+                self.cfg,
+                self.timepoint_pools,
+                int(bs),
+                seed=int(seed),
+                pair_mode=self.pair_mode,
+            )
+        else:
+            paired, stats = maizels.couple_minibatch_ot_pair_pool(
+                self.cfg,
+                self.data,
+                int(bs),
+                seed=int(seed),
+                pair_mode=self.pair_mode,
+            )
         self.last_pair_stats = stats
         return {
             "x0": jnp.asarray(paired["x0"], dtype=jnp.float32),
@@ -1118,7 +1165,7 @@ class MaizelsMinibatchOTDataset:
         return self._sample(int(self.cfg.optimization.bs), seed)
 
 
-def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, np.ndarray]):
+def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, Any]):
     """Create a paired dataset with an optional device-side training sampler."""
     pair_mode = str(
         getattr(
@@ -1321,22 +1368,37 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         )
 
     elif cfg.problem.target == "maizels_pca50":
-        paired, stats = maizels.make_pair_pool(
-            cfg,
-            dataset_location=getattr(cfg.problem, "dataset_location", None),
-        )
-        x0s = paired["x0"]
-        x1s = paired["x1"]
-        cfg.problem.n = int(x1s.shape[0])
-        cfg.problem.d = int(x1s.shape[1])
+        pair_mode = str(getattr(cfg.problem, "maizels_pair_mode", "none"))
+        if maizels.uses_minibatch_ot(cfg, pair_mode):
+            training_data, stats = maizels.make_minibatch_ot_training_pools(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            cfg.problem.n = int(training_data["nominal_n"])
+            cfg.problem.d = int(training_data["dimension"])
+            rescale_value = _compact_endpoint_pool_std(training_data)
+        else:
+            training_data, stats = maizels.make_pair_pool(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            x0s = training_data["x0"]
+            x1s = training_data["x1"]
+            cfg.problem.n = int(x1s.shape[0])
+            cfg.problem.d = int(x1s.shape[1])
+            rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
         cfg.problem.maizels_pair_stats = stats
-        rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
-        ds = paired_np_to_dataset(cfg, paired)
+        ds = paired_np_to_dataset(cfg, training_data)
         coupling_summary = (
             f", coupling=minibatch_ot({stats['ot_minibatch_size']}, raw_cost)"
             if stats.get("coupling") == "dynamic_minibatch_ot"
             else ""
         )
+        if stats.get("pair_pool_mode") == "direct_timepoint_pools":
+            coupling_summary += (
+                f", direct_pool={stats['stored_endpoint_cells']} cells/"
+                f"{stats['stored_endpoint_bytes'] / 1e6:.1f} MB"
+            )
         if "intervals" in stats:
             interval_summary = ", ".join(
                 f"{item['source_time']}->{item['target_time']}: "
@@ -1373,17 +1435,33 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             )
 
     elif cfg.problem.target == "cite_multi_pca100":
-        paired, stats = cite_multi.make_pair_pool(
-            cfg,
-            dataset_location=getattr(cfg.problem, "dataset_location", None),
+        pair_mode = str(
+            getattr(
+                cfg.problem,
+                "pair_mode",
+                getattr(cfg.problem, "maizels_pair_mode", "none"),
+            )
         )
-        x0s = paired["x0"]
-        x1s = paired["x1"]
-        cfg.problem.n = int(x1s.shape[0])
-        cfg.problem.d = int(x1s.shape[1])
+        if cite_multi.uses_minibatch_ot(pair_mode):
+            training_data, stats = cite_multi.make_minibatch_ot_training_pools(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            cfg.problem.n = int(training_data["nominal_n"])
+            cfg.problem.d = int(training_data["dimension"])
+            rescale_value = _compact_endpoint_pool_std(training_data)
+        else:
+            training_data, stats = cite_multi.make_pair_pool(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            x0s = training_data["x0"]
+            x1s = training_data["x1"]
+            cfg.problem.n = int(x1s.shape[0])
+            cfg.problem.d = int(x1s.shape[1])
+            rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
         cfg.problem.cite_multi_pair_stats = stats
-        rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
-        ds = paired_np_to_dataset(cfg, paired)
+        ds = paired_np_to_dataset(cfg, training_data)
         interval_summary = ", ".join(
             f"{item['source_time']}->{item['target_time']}: "
             f"{item['sampled_pairs']} pairs"
@@ -1399,6 +1477,11 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             if stats.get("coupling") == "dynamic_minibatch_ot"
             else ""
         )
+        if stats.get("pair_pool_mode") == "direct_timepoint_pools":
+            coupling_summary += (
+                f", direct_pool={stats['stored_endpoint_cells']} cells/"
+                f"{stats['stored_endpoint_bytes'] / 1e6:.1f} MB"
+            )
         print(
             "Loaded CITE/Multi PCA100 pairs: "
             f"dataset={stats['dataset_name']}, "

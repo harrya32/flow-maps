@@ -244,3 +244,32 @@ def test_dynamic_minibatch_ot_is_balanced_by_interval():
     np.testing.assert_allclose(unique_bounds, [[0.0, 0.16], [0.16, 1.0]])
     np.testing.assert_array_equal(counts, [4, 4])
     assert stats["coupling"] == "dynamic_minibatch_ot"
+
+
+def test_compact_dynamic_pool_preserves_maizels_interval_bounds(monkeypatch):
+    cfg = _cfg(pair_mode="ot_plain", n_pairs=500_000)
+    source_pools = {
+        "D3": _pool(3.0),
+        "D3.8": _pool(3.8),
+        "D8": _pool(8.0),
+    }
+    monkeypatch.setattr(
+        maizels,
+        "timepoint_pool_splits",
+        lambda cfg, dataset_location=None: source_pools,
+    )
+
+    pools, pool_stats = maizels.make_minibatch_ot_training_pools(cfg)
+    paired, batch_stats = maizels.couple_minibatch_ot_timepoint_pools(
+        cfg, pools, 8, seed=19
+    )
+
+    assert sum(item["x"].shape[0] for item in pools["timepoints"].values()) == 18
+    assert pool_stats["pair_pool_mode"] == "direct_timepoint_pools"
+    assert pool_stats["expanded_pair_rows_avoided"] == 500_000
+    bounds, counts = np.unique(
+        paired["label"][:, 2:4], axis=0, return_counts=True
+    )
+    np.testing.assert_allclose(bounds, [[0.0, 0.16], [0.16, 1.0]])
+    np.testing.assert_array_equal(counts, [4, 4])
+    assert batch_stats["pair_pool_mode"] == "direct_timepoint_pools"

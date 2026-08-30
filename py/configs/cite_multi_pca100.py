@@ -135,7 +135,7 @@ def get_config(
     cfg.network.n_neurons = 1024
     cfg.network.n_hidden = 2
 
-    cfg.optimization.total_steps = 5_000
+    cfg.optimization.total_steps = 10_000
 
 
     cfg.constraints.loss_point_entropy_weight = 0.03

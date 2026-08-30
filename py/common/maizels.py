@@ -415,6 +415,21 @@ def class_to_id_map(class_names: Sequence[str] = CLASS_NAMES) -> Dict[str, int]:
     return {name: idx for idx, name in enumerate(class_names)}
 
 
+def _cell_type_ids(
+    cell_types: np.ndarray, class_names: Sequence[str] = CLASS_NAMES
+) -> np.ndarray:
+    """Return validated integer ids, accepting names or pre-encoded ids."""
+    values = np.asarray(cell_types)
+    if values.dtype.kind in "iu":
+        ids = values.astype(np.int32, copy=False)
+    else:
+        mapping = class_to_id_map(class_names)
+        ids = np.asarray([mapping[str(value)] for value in values], dtype=np.int32)
+    if np.any(ids < 0) or np.any(ids >= len(class_names)):
+        raise ValueError("Cell-type pool contains an invalid class id.")
+    return ids
+
+
 def _make_celltype_mlp(n_features: int, n_classes: int, dropout: float = 0.2):
     import torch
     from torch import nn
@@ -2124,6 +2139,7 @@ def _make_minibatch_ot_pair_pool_from_endpoint_arrays(
     n_pairs: int,
     rng: np.random.Generator,
     pair_mode: str,
+    sample_with_replacement: bool = False,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     """Couple one Maizels batch with exact OT in the raw PCA space."""
     # Imported lazily because cite_multi imports this module for the shared
@@ -2139,6 +2155,7 @@ def _make_minibatch_ot_pair_pool_from_endpoint_arrays(
         n_pairs=int(n_pairs),
         rng=rng,
         pair_mode=pair_mode,
+        sample_with_replacement=sample_with_replacement,
         class_names=CLASS_NAMES,
         transition_edges=TRANSITION_EDGES,
     )
@@ -2219,6 +2236,7 @@ def _make_minibatch_ot_interval_pairs(
     n_pairs: int,
     rng: np.random.Generator,
     pair_mode: str,
+    sample_with_replacement: bool = False,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     paired, stats = _make_minibatch_ot_pair_pool_from_endpoint_arrays(
         cfg,
@@ -2229,6 +2247,7 @@ def _make_minibatch_ot_interval_pairs(
         n_pairs=int(n_pairs),
         rng=rng,
         pair_mode=pair_mode,
+        sample_with_replacement=sample_with_replacement,
     )
     paired = _add_time_bounds(cfg, paired, source_time, target_time)
     stats.update(
@@ -2253,6 +2272,227 @@ def _allocate_pairs(total: int, n_intervals: int) -> List[int]:
     for index in range(total % n_intervals):
         counts[index] += 1
     return counts
+
+
+def make_minibatch_ot_training_pools(
+    cfg, dataset_location: str | None = None
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Load compact Maizels train-timepoint pools for dynamic minibatch OT.
+
+    Each original training cell is retained once. Optimizer batches sample
+    endpoints from these populations directly, avoiding the expanded
+    ``problem.n`` independent-pair pool used by the compatibility path.
+    """
+    pair_mode = _canonical_maizels_pair_mode(
+        str(getattr(cfg.problem, "maizels_pair_mode", "none"))
+    )
+    if not uses_minibatch_ot(cfg, pair_mode):
+        raise ValueError(f"Pair mode {pair_mode!r} does not request minibatch OT.")
+
+    include_time_bounds = uses_retained_intervals(cfg)
+    retained = retained_timepoints(cfg)
+    if include_time_bounds:
+        split_pools = timepoint_pool_splits(cfg, dataset_location)
+    else:
+        splits = endpoint_pool_splits(cfg, dataset_location=dataset_location)
+        source_time = str(getattr(cfg.problem, "source_time", retained[0]))
+        target_time = str(getattr(cfg.problem, "target_time", retained[-1]))
+        retained = (source_time, target_time)
+        split_pools = {
+            source_time: {
+                "x": splits["source_x"],
+                "types": splits["source_types"],
+                "train_x": splits["source_train_x"],
+                "train_types": splits["source_train_types"],
+                "holdout_x": splits["source_holdout_x"],
+                "holdout_types": splits["source_holdout_types"],
+            },
+            target_time: {
+                "x": splits["target_x"],
+                "types": splits["target_types"],
+                "train_x": splits["target_train_x"],
+                "train_types": splits["target_train_types"],
+                "holdout_x": splits["target_holdout_x"],
+                "holdout_types": splits["target_holdout_types"],
+            },
+        }
+
+    interval_names = list(zip(retained[:-1], retained[1:]))
+    nominal_n = int(getattr(cfg.problem, "n", 100_000))
+    counts = _allocate_pairs(nominal_n, len(interval_names))
+    timepoints = {}
+    for timepoint in retained:
+        split = split_pools[timepoint]
+        x = np.asarray(split["train_x"], dtype=np.float32)
+        if x.shape[0] == 0:
+            raise RuntimeError(f"Maizels training pool for {timepoint} is empty.")
+        timepoints[timepoint] = {
+            "x": x,
+            "type_ids": _cell_type_ids(split["train_types"]),
+        }
+
+    intervals = []
+    interval_stats = {}
+    for (source_time, target_time), count in zip(interval_names, counts):
+        source = split_pools[source_time]
+        target = split_pools[target_time]
+        interval = {
+            "source_time": source_time,
+            "target_time": target_time,
+            "t_start": normalized_time(source_time, cfg),
+            "t_end": normalized_time(target_time, cfg),
+            "nominal_pairs": int(count),
+        }
+        intervals.append(interval)
+        interval_stats[
+            f"{source_time}_to_{target_time}".replace(".", "p")
+        ] = {
+            **interval,
+            "sampled_pairs": int(count),
+            "candidate_pairs": int(count),
+            "accepted_pairs": int(count),
+            "collected_accepted_pairs": int(count),
+            "endpoint_rejected": 0,
+            "interpolant_rejected": 0,
+            "candidate_acceptance_rate": 1.0,
+            "source_total_n": int(source["x"].shape[0]),
+            "source_train_n": int(source["train_x"].shape[0]),
+            "source_holdout_n": int(source["holdout_x"].shape[0]),
+            "target_total_n": int(target["x"].shape[0]),
+            "target_train_n": int(target["train_x"].shape[0]),
+            "target_holdout_n": int(target["holdout_x"].shape[0]),
+            "pair_mode": pair_mode,
+            "pair_pool_mode": "direct_timepoint_pools",
+            "coupling": "dynamic_minibatch_ot",
+            "ot_minibatch_size": int(
+                getattr(cfg.problem, "ot_minibatch_size", 128)
+            ),
+            "ot_cost": "raw_sqeuclidean",
+        }
+
+    stored_cells = sum(pool["x"].shape[0] for pool in timepoints.values())
+    stored_bytes = sum(
+        pool["x"].nbytes + pool["type_ids"].nbytes
+        for pool in timepoints.values()
+    )
+    compact = {
+        "timepoints": timepoints,
+        "intervals": tuple(intervals),
+        "nominal_n": nominal_n,
+        "dimension": int(next(iter(timepoints.values()))["x"].shape[1]),
+        "include_time_bounds": include_time_bounds,
+    }
+    stats = {
+        "retained_timepoints": list(retained),
+        "split": "train",
+        "pair_mode": pair_mode,
+        "sampled_pairs": nominal_n,
+        "candidate_pairs": nominal_n,
+        "endpoint_rejected": 0,
+        "interpolant_rejected": 0,
+        "candidate_acceptance_rate": 1.0,
+        "pair_pool_mode": "direct_timepoint_pools",
+        "coupling": "dynamic_minibatch_ot",
+        "ot_minibatch_size": int(
+            getattr(cfg.problem, "ot_minibatch_size", 128)
+        ),
+        "ot_cost": "raw_sqeuclidean",
+        "stored_endpoint_cells": int(stored_cells),
+        "stored_endpoint_bytes": int(stored_bytes),
+        "expanded_pair_rows_avoided": nominal_n,
+    }
+    if include_time_bounds:
+        stats["intervals"] = interval_stats
+    else:
+        only_stats = next(iter(interval_stats.values()))
+        stats.update(
+            {
+                "source_total_n": only_stats["source_total_n"],
+                "source_train_n": only_stats["source_train_n"],
+                "source_holdout_n": only_stats["source_holdout_n"],
+                "target_total_n": only_stats["target_total_n"],
+                "target_train_n": only_stats["target_train_n"],
+                "target_holdout_n": only_stats["target_holdout_n"],
+            }
+        )
+    return compact, stats
+
+
+def couple_minibatch_ot_timepoint_pools(
+    cfg,
+    pools: Dict[str, Any],
+    n_pairs: int,
+    *,
+    seed: int,
+    pair_mode: str | None = None,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """Couple a balanced batch directly from compact Maizels pools."""
+    if pair_mode is None:
+        pair_mode = getattr(cfg.problem, "maizels_pair_mode", "none")
+    pair_mode = _canonical_maizels_pair_mode(str(pair_mode))
+    if not uses_minibatch_ot(cfg, pair_mode):
+        raise ValueError(f"Pair mode {pair_mode!r} does not request minibatch OT.")
+
+    intervals = tuple(pools["intervals"])
+    counts = _allocate_pairs(int(n_pairs), len(intervals))
+    rng = np.random.default_rng(int(seed))
+    paired_parts = []
+    interval_stats = []
+    for interval, interval_n in zip(intervals, counts):
+        source_time = str(interval["source_time"])
+        target_time = str(interval["target_time"])
+        source = pools["timepoints"][source_time]
+        target = pools["timepoints"][target_time]
+        paired, stats = _make_minibatch_ot_pair_pool_from_endpoint_arrays(
+            cfg,
+            source["x"],
+            source["type_ids"],
+            target["x"],
+            target["type_ids"],
+            n_pairs=interval_n,
+            rng=rng,
+            pair_mode=pair_mode,
+            sample_with_replacement=True,
+        )
+        if bool(pools.get("include_time_bounds", False)):
+            paired = _add_time_bounds(cfg, paired, source_time, target_time)
+        stats.update(
+            {
+                "source_time": source_time,
+                "target_time": target_time,
+                "t_start": float(interval["t_start"]),
+                "t_end": float(interval["t_end"]),
+                "sampled_pairs": int(paired["x0"].shape[0]),
+            }
+        )
+        paired_parts.append(paired)
+        interval_stats.append(stats)
+
+    result = {
+        key: np.concatenate([part[key] for part in paired_parts], axis=0)
+        for key in ("x0", "x1", "label")
+    }
+    permutation = rng.permutation(result["x0"].shape[0])
+    result = {key: value[permutation] for key, value in result.items()}
+    summary = {
+        "pair_mode": pair_mode,
+        "coupling": "dynamic_minibatch_ot",
+        "pair_pool_mode": "direct_timepoint_pools",
+        "sampled_pairs": int(result["x0"].shape[0]),
+        "ot_minibatch_size": int(getattr(cfg.problem, "ot_minibatch_size", 128)),
+        "ot_cost": "raw_sqeuclidean",
+    }
+    if bool(pools.get("include_time_bounds", False)):
+        summary["intervals"] = interval_stats
+    else:
+        summary.update(interval_stats[0])
+        summary.update(
+            {
+                "coupling": "dynamic_minibatch_ot",
+                "pair_pool_mode": "direct_timepoint_pools",
+            }
+        )
+    return result, summary
 
 
 def _make_retained_interval_pair_pool(

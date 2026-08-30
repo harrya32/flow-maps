@@ -292,6 +292,23 @@ def uses_minibatch_ot(pair_mode: str) -> bool:
     }
 
 
+def _cell_type_ids(
+    cell_types: np.ndarray, class_names: Sequence[str] = CLASS_NAMES
+) -> np.ndarray:
+    """Return validated integer ids, accepting names or pre-encoded ids."""
+    values = np.asarray(cell_types)
+    if values.dtype.kind in "iu":
+        ids = values.astype(np.int32, copy=False)
+    else:
+        class_to_id = maizels.class_to_id_map(class_names)
+        ids = np.asarray(
+            [class_to_id[str(value)] for value in values], dtype=np.int32
+        )
+    if np.any(ids < 0) or np.any(ids >= len(class_names)):
+        raise ValueError("Cell-type pool contains an invalid class id.")
+    return ids
+
+
 def _add_time_bounds(
     paired: Dict[str, np.ndarray], source_time: str, target_time: str
 ) -> Dict[str, np.ndarray]:
@@ -474,13 +491,25 @@ def _make_batched_masked_minibatch_ot_pairs(
     pair_mode: str,
     ot_batch_size: int,
     max_attempts: int,
+    sample_with_replacement: bool = False,
     class_names: Sequence[str] = CLASS_NAMES,
     transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     """Solve many masked OT blocks while batching classifier inference."""
     class_names = tuple(str(name) for name in class_names)
     transition_edges = tuple((str(src), str(dst)) for src, dst in transition_edges)
-    class_to_id = maizels.class_to_id_map(class_names)
+    source_types = np.asarray(source_types)
+    target_types = np.asarray(target_types)
+    source_type_ids = (
+        _cell_type_ids(source_types, class_names)
+        if source_types.dtype.kind in "iu"
+        else None
+    )
+    target_type_ids = (
+        _cell_type_ids(target_types, class_names)
+        if target_types.dtype.kind in "iu"
+        else None
+    )
     lineage_transition_mode = maizels.lineage_transition_mode_from_config(cfg)
     reachable = maizels.build_transition_reachable(
         lineage_transition_mode,
@@ -503,31 +532,36 @@ def _make_batched_masked_minibatch_ot_pairs(
     )
 
     def draw_state(output_size: int) -> Dict[str, Any]:
-        candidate_size = min(
-            ot_batch_size,
-            int(output_size),
-            source_x.shape[0],
-            target_x.shape[0],
-        )
+        candidate_size = min(ot_batch_size, int(output_size))
+        if not sample_with_replacement:
+            candidate_size = min(
+                candidate_size, source_x.shape[0], target_x.shape[0]
+            )
         last_error = None
         for _ in range(max_attempts):
             source_draw = rng.choice(
-                source_x.shape[0], size=candidate_size, replace=False
+                source_x.shape[0],
+                size=candidate_size,
+                replace=sample_with_replacement,
             )
             target_draw = rng.choice(
-                target_x.shape[0], size=candidate_size, replace=False
+                target_x.shape[0],
+                size=candidate_size,
+                replace=sample_with_replacement,
             )
             source_batch = source_x[source_draw]
             target_batch = target_x[target_draw]
-            source_type_batch = source_types[source_draw]
-            target_type_batch = target_types[target_draw]
-            source_ids = np.asarray(
-                [class_to_id[str(value)] for value in source_type_batch],
-                dtype=np.int32,
+            source_ids = _cell_type_ids(
+                source_types[source_draw]
+                if source_type_ids is None
+                else source_type_ids[source_draw],
+                class_names,
             )
-            target_ids = np.asarray(
-                [class_to_id[str(value)] for value in target_type_batch],
-                dtype=np.int32,
+            target_ids = _cell_type_ids(
+                target_types[target_draw]
+                if target_type_ids is None
+                else target_type_ids[target_draw],
+                class_names,
             )
             allowed = class_mask[source_ids[:, None], target_ids[None, :]]
             if allowed.any():
@@ -741,6 +775,7 @@ def _make_minibatch_ot_pairs_from_arrays(
     n_pairs: int,
     rng: np.random.Generator,
     pair_mode: str,
+    sample_with_replacement: bool = False,
     class_names: Sequence[str] = CLASS_NAMES,
     transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
@@ -765,35 +800,60 @@ def _make_minibatch_ot_pairs_from_arrays(
             pair_mode=pair_mode,
             ot_batch_size=ot_batch_size,
             max_attempts=max_attempts,
+            sample_with_replacement=sample_with_replacement,
             class_names=class_names,
             transition_edges=transition_edges,
         )
 
-    class_to_id = maizels.class_to_id_map(class_names)
+    source_types = np.asarray(source_types)
+    target_types = np.asarray(target_types)
+    source_type_ids = (
+        _cell_type_ids(source_types, class_names)
+        if source_types.dtype.kind in "iu"
+        else None
+    )
+    target_type_ids = (
+        _cell_type_ids(target_types, class_names)
+        if target_types.dtype.kind in "iu"
+        else None
+    )
     paired_parts = []
     block_stats = []
     remaining = int(n_pairs)
 
     while remaining > 0:
         output_size = min(ot_batch_size, remaining)
-        candidate_size = min(
-            ot_batch_size,
-            output_size,
-            source_x.shape[0],
-            target_x.shape[0],
-        )
+        candidate_size = min(ot_batch_size, output_size)
+        if not sample_with_replacement:
+            candidate_size = min(
+                candidate_size, source_x.shape[0], target_x.shape[0]
+            )
         last_error = None
         for _ in range(max_attempts):
             source_draw = rng.choice(
-                source_x.shape[0], size=candidate_size, replace=False
+                source_x.shape[0],
+                size=candidate_size,
+                replace=sample_with_replacement,
             )
             target_draw = rng.choice(
-                target_x.shape[0], size=candidate_size, replace=False
+                target_x.shape[0],
+                size=candidate_size,
+                replace=sample_with_replacement,
             )
             source_batch = source_x[source_draw]
             target_batch = target_x[target_draw]
-            source_type_batch = source_types[source_draw]
-            target_type_batch = target_types[target_draw]
+            source_type_batch = _cell_type_ids(
+                source_types[source_draw]
+                if source_type_ids is None
+                else source_type_ids[source_draw],
+                class_names,
+            )
+            target_type_batch = _cell_type_ids(
+                target_types[target_draw]
+                if target_type_ids is None
+                else target_type_ids[target_draw],
+                class_names,
+            )
             try:
                 cost = _squared_euclidean_cost(source_batch, target_batch)
                 source_idx, target_idx, stats = _sample_dense_ot_plan(
@@ -818,14 +878,8 @@ def _make_minibatch_ot_pairs_from_arrays(
                 f"after {max_attempts} attempts."
             ) from last_error
 
-        source_ids = np.asarray(
-            [class_to_id[str(value)] for value in source_type_batch[source_idx]],
-            dtype=np.int32,
-        )
-        target_ids = np.asarray(
-            [class_to_id[str(value)] for value in target_type_batch[target_idx]],
-            dtype=np.int32,
-        )
+        source_ids = source_type_batch[source_idx]
+        target_ids = target_type_batch[target_idx]
         paired_parts.append(
             {
                 "x0": source_batch[source_idx].astype(np.float32, copy=False),
@@ -889,6 +943,7 @@ def _make_minibatch_ot_interval_pairs(
     n_pairs: int,
     rng: np.random.Generator,
     pair_mode: str,
+    sample_with_replacement: bool = False,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     paired, stats = _make_minibatch_ot_pairs_from_arrays(
         cfg,
@@ -899,6 +954,7 @@ def _make_minibatch_ot_interval_pairs(
         n_pairs=n_pairs,
         rng=rng,
         pair_mode=pair_mode,
+        sample_with_replacement=sample_with_replacement,
     )
     paired = _add_time_bounds(paired, source_time, target_time)
     stats.update(
@@ -921,6 +977,167 @@ def _allocate_pairs(total: int, n_intervals: int) -> List[int]:
     for index in range(total % n_intervals):
         counts[index] += 1
     return counts
+
+
+def make_minibatch_ot_training_pools(
+    cfg, dataset_location: str | None = None
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Load compact train-timepoint pools for dynamic minibatch OT.
+
+    Unlike :func:`make_pair_pool`, this does not materialize ``problem.n``
+    independent endpoint pairs. Each original training cell is stored once and
+    sampled with replacement when an optimizer batch is requested.
+    """
+    pair_mode = _canonical_pair_mode(_training_pair_mode(cfg))
+    if not uses_minibatch_ot(pair_mode):
+        raise ValueError(f"Pair mode {pair_mode!r} does not request minibatch OT.")
+
+    split_pools = _timepoint_splits(cfg, dataset_location)
+    retained = retained_timepoints(cfg)
+    interval_names = list(zip(retained[:-1], retained[1:]))
+    nominal_n = int(getattr(cfg.problem, "n", 500_000))
+    counts = _allocate_pairs(nominal_n, len(interval_names))
+
+    timepoints = {}
+    for timepoint in retained:
+        split = split_pools[timepoint]
+        x = np.asarray(split["train_x"], dtype=np.float32)
+        if x.shape[0] == 0:
+            raise RuntimeError(
+                f"CITE/Multi training pool for day {timepoint} is empty."
+            )
+        timepoints[timepoint] = {
+            "x": x,
+            "type_ids": _cell_type_ids(split["train_types"]),
+        }
+
+    intervals = []
+    interval_stats = {}
+    for (source_time, target_time), count in zip(interval_names, counts):
+        source = split_pools[source_time]
+        target = split_pools[target_time]
+        interval = {
+            "source_time": source_time,
+            "target_time": target_time,
+            "t_start": normalized_time(source_time),
+            "t_end": normalized_time(target_time),
+            "nominal_pairs": int(count),
+        }
+        intervals.append(interval)
+        interval_stats[f"{source_time}_to_{target_time}"] = {
+            **interval,
+            "sampled_pairs": int(count),
+            "candidate_pairs": int(count),
+            "accepted_pairs": int(count),
+            "collected_accepted_pairs": int(count),
+            "endpoint_rejected": 0,
+            "interpolant_rejected": 0,
+            "candidate_acceptance_rate": 1.0,
+            "source_total_n": int(source["x"].shape[0]),
+            "source_train_n": int(source["train_x"].shape[0]),
+            "source_holdout_n": int(source["holdout_x"].shape[0]),
+            "target_total_n": int(target["x"].shape[0]),
+            "target_train_n": int(target["train_x"].shape[0]),
+            "target_holdout_n": int(target["holdout_x"].shape[0]),
+            "pair_mode": pair_mode,
+            "pair_pool_mode": "direct_timepoint_pools",
+            "coupling": "dynamic_minibatch_ot",
+            "ot_minibatch_size": int(
+                getattr(cfg.problem, "ot_minibatch_size", 128)
+            ),
+        }
+
+    stored_cells = sum(pool["x"].shape[0] for pool in timepoints.values())
+    stored_bytes = sum(
+        pool["x"].nbytes + pool["type_ids"].nbytes
+        for pool in timepoints.values()
+    )
+    compact = {
+        "timepoints": timepoints,
+        "intervals": tuple(intervals),
+        "nominal_n": nominal_n,
+        "dimension": int(next(iter(timepoints.values()))["x"].shape[1]),
+        "include_time_bounds": True,
+    }
+    stats = {
+        "dataset_name": _dataset_name_from_cfg(cfg),
+        "heldout_timepoint": str(getattr(cfg.problem, "heldout_timepoint", "4")),
+        "retained_timepoints": list(retained),
+        "split": "train",
+        "pair_mode": pair_mode,
+        "sampled_pairs": nominal_n,
+        "candidate_pairs": nominal_n,
+        "endpoint_rejected": 0,
+        "interpolant_rejected": 0,
+        "candidate_acceptance_rate": 1.0,
+        "intervals": interval_stats,
+        "pair_pool_mode": "direct_timepoint_pools",
+        "coupling": "dynamic_minibatch_ot",
+        "ot_minibatch_size": int(
+            getattr(cfg.problem, "ot_minibatch_size", 128)
+        ),
+        "stored_endpoint_cells": int(stored_cells),
+        "stored_endpoint_bytes": int(stored_bytes),
+        "expanded_pair_rows_avoided": nominal_n,
+    }
+    return compact, stats
+
+
+def couple_minibatch_ot_timepoint_pools(
+    cfg,
+    pools: Dict[str, Any],
+    n_pairs: int,
+    *,
+    seed: int,
+    pair_mode: str | None = None,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """Couple a balanced batch directly from compact timepoint pools."""
+    if pair_mode is None:
+        pair_mode = _training_pair_mode(cfg)
+    pair_mode = _canonical_pair_mode(pair_mode)
+    if not uses_minibatch_ot(pair_mode):
+        raise ValueError(f"Pair mode {pair_mode!r} does not request minibatch OT.")
+
+    intervals = tuple(pools["intervals"])
+    counts = _allocate_pairs(int(n_pairs), len(intervals))
+    rng = np.random.default_rng(int(seed))
+    paired_parts = []
+    interval_stats = []
+    for interval, interval_n in zip(intervals, counts):
+        source_time = str(interval["source_time"])
+        target_time = str(interval["target_time"])
+        source = pools["timepoints"][source_time]
+        target = pools["timepoints"][target_time]
+        paired, stats = _make_minibatch_ot_interval_pairs(
+            cfg,
+            source["x"],
+            source["type_ids"],
+            target["x"],
+            target["type_ids"],
+            source_time=source_time,
+            target_time=target_time,
+            n_pairs=interval_n,
+            rng=rng,
+            pair_mode=pair_mode,
+            sample_with_replacement=True,
+        )
+        paired_parts.append(paired)
+        interval_stats.append(stats)
+
+    result = {
+        key: np.concatenate([part[key] for part in paired_parts], axis=0)
+        for key in ("x0", "x1", "label")
+    }
+    permutation = rng.permutation(result["x0"].shape[0])
+    result = {key: value[permutation] for key, value in result.items()}
+    return result, {
+        "pair_mode": pair_mode,
+        "coupling": "dynamic_minibatch_ot",
+        "pair_pool_mode": "direct_timepoint_pools",
+        "sampled_pairs": int(result["x0"].shape[0]),
+        "ot_minibatch_size": int(getattr(cfg.problem, "ot_minibatch_size", 128)),
+        "intervals": interval_stats,
+    }
 
 
 def _make_retained_interval_pair_pool(

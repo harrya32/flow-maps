@@ -197,22 +197,48 @@ def initialize_flow_map(
     # define the network
     net = FlowMap(network_config)
 
-    # initialize the parameters
+    # Apple's experimental Metal backend cannot currently lower the `erf`
+    # operation used by Flax's default truncated-normal Dense initializer.
+    # Initialize the same parameters on CPU, then transfer them to Metal; all
+    # subsequent optimizer and training work remains on the Metal device.
+    training_device = None
+    initialization_device = None
+    if jax.default_backend().lower() == "metal":
+        training_device = jax.devices()[0]
+        try:
+            initialization_device = jax.devices("cpu")[0]
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "jax-metal requires the CPU backend for parameter "
+                "initialization. Set JAX_PLATFORMS=METAL,cpu."
+            ) from exc
+
     ex_s = ex_t = 0.0
     ex_label = 0
-    prng_key, skey = jax.random.split(prng_key)
+    with jax.default_device(initialization_device):
+        if initialization_device is not None:
+            print(
+                "Initializing parameters on CPU for jax-metal compatibility; "
+                "training remains on Metal."
+            )
+            ex_input = jax.device_put(ex_input, initialization_device)
+            prng_key = jax.device_put(prng_key, initialization_device)
 
-    params = net.init(
-        {"params": prng_key, "constants": skey},
-        ex_s,
-        ex_t,
-        ex_input,
-        ex_label,
-        train=False,
-        init_weights=True,  # This triggers initialization of all weight params
-    )
+        prng_key, skey = jax.random.split(prng_key)
+        params = net.init(
+            {"params": prng_key, "constants": skey},
+            ex_s,
+            ex_t,
+            ex_input,
+            ex_label,
+            train=False,
+            init_weights=True,  # This triggers initialization of all weight params
+        )
+        prng_key = jax.random.split(prng_key)[0]
 
-    prng_key = jax.random.split(prng_key)[0]
+    if training_device is not None:
+        params = jax.device_put(params, training_device)
+        prng_key = jax.device_put(prng_key, training_device)
 
     print(f"Number of parameters: {ravel_pytree(params)[0].size}")
 

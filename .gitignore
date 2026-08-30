@@ -5,6 +5,7 @@ datasets/
 .cache/
 .codex/
 .vscode/
+.venv-flowmaps-metal/
 wandb/
 __pycache__/
 .ipynb_checkpoints/

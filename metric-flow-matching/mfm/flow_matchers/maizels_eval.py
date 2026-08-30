@@ -102,6 +102,11 @@ class MaizelsEvaluationCallback(pl.Callback):
     def on_train_end(self, trainer, pl_module):
         self._evaluate(trainer, pl_module)
 
+    def on_test_start(self, trainer, pl_module):
+        # ``main`` enters this stage with ckpt_path="best", after Lightning has
+        # restored the checkpoint selected by FlowNet/val_loss_cfm.
+        self._evaluate(trainer, pl_module, force=True, final_best=True)
+
     def _heldout_pool(self, timepoint):
         if hasattr(self.datamodule, "timepoint_splits"):
             return np.asarray(
@@ -133,9 +138,11 @@ class MaizelsEvaluationCallback(pl.Callback):
         indices = rng.choice(values.shape[0], size=size, replace=False)
         return values[indices]
 
-    def _evaluate(self, trainer, pl_module):
+    def _evaluate(self, trainer, pl_module, *, force=False, final_best=False):
         step = int(trainer.global_step)
-        if not trainer.is_global_zero or step == self.last_evaluated_step:
+        if not trainer.is_global_zero or (
+            not force and step == self.last_evaluated_step
+        ):
             return
         self.last_evaluated_step = step
 
@@ -266,6 +273,41 @@ class MaizelsEvaluationCallback(pl.Callback):
             np.mean(~valid)
         )
 
+        final_metrics = {}
+        if final_best:
+            for key, value in list(metrics.items()):
+                if key.startswith("distribution_eval/"):
+                    suffix = key.removeprefix("distribution_eval/")
+                    final_metrics[f"final_eval/{suffix}"] = value
+            final_metrics.update(
+                {
+                    "final_eval/euler_mean_emd": metrics[
+                        "distribution_eval/euler_emd_mean"
+                    ],
+                    "final_eval/euler_mean_rbf_mmd2": metrics[
+                        "distribution_eval/euler_rbf_mmd2_mean"
+                    ],
+                    "final_eval/euler_valid_trajectory_pct": 100.0
+                    * float(np.mean(valid)),
+                    "final_eval/euler_invalid_trajectory_pct": 100.0
+                    * float(np.mean(~valid)),
+                    "final_eval/validation_euler_emd_mean": metrics[
+                        "validation_distribution/euler_emd_mean"
+                    ],
+                    "final_eval/validation_euler_relative_emd_mean": metrics[
+                        "validation_distribution/euler_relative_emd_mean"
+                    ],
+                    "final_eval/best_step": step,
+                }
+            )
+            checkpoint_callback = getattr(trainer, "checkpoint_callback", None)
+            best_score = getattr(checkpoint_callback, "best_model_score", None)
+            if best_score is not None:
+                if torch.is_tensor(best_score):
+                    best_score = best_score.detach().cpu().item()
+                final_metrics["final_eval/best_validation_loss"] = float(best_score)
+            metrics.update(final_metrics)
+
         metrics["plots/maizels_intermediate_distributions"] = wandb.Image(
             self._distribution_figure(plot_rows)
         )
@@ -278,6 +320,23 @@ class MaizelsEvaluationCallback(pl.Callback):
             )
         )
         wandb.log(metrics)
+        if final_best and wandb.run is not None and hasattr(wandb.run, "summary"):
+            for key, value in final_metrics.items():
+                wandb.run.summary[key] = value
+            best_path = getattr(
+                getattr(trainer, "checkpoint_callback", None),
+                "best_model_path",
+                "",
+            )
+            if best_path:
+                wandb.run.summary["final_eval/best_checkpoint_path"] = best_path
+        if final_best:
+            print(
+                "Final best-model Maizels evaluation: "
+                f"test_mean_EMD={final_metrics['final_eval/euler_mean_emd']:.8g}, "
+                "invalid_trajectory_pct="
+                f"{final_metrics['final_eval/euler_invalid_trajectory_pct']:.8g}"
+            )
         plt.close("all")
         if was_training:
             flow_net.train()

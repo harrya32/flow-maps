@@ -97,6 +97,12 @@ left observed endpoint of its interval, so these remain test diagnostics rather
 than model-selection criteria. Real experimental time is used by default
 (`D3=0`, `D3.8=0.16`, `D8=1`).
 
+After training, Lightning reloads the flow checkpoint with the lowest
+`FlowNet/val_loss_cfm` and reruns these diagnostics. Its final test values are
+also written to the W&B summary under `final_eval/*`, including
+`final_eval/euler_mean_emd` and
+`final_eval/euler_invalid_trajectory_pct`.
+
 For the original endpoint configuration, available pair modes are:
 
 - `none`: independent D3/D8 coupling;

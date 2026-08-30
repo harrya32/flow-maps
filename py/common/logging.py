@@ -4275,6 +4275,8 @@ def log_metrics(
     loss_fn_args: Tuple,
     prng_key: jnp.ndarray,
     step_time: float,
+    *,
+    compute_validation: bool = True,
 ) -> Tuple[jnp.ndarray, Dict[str, float]]:
     """Log some metrics to wandb, make a figure, and checkpoint the parameters."""
 
@@ -4299,13 +4301,15 @@ def log_metrics(
     except Exception as e:
         print(f"Warning: Constraint metric computation failed: {e}")
 
-    # Log held-out lineage-dataset validation loss if configured.
-    try:
-        metrics.update(
-            compute_maizels_validation_metrics(cfg, statics, train_state, step)
-        )
-    except Exception as e:
-        print(f"Warning: lineage validation metric computation failed: {e}")
+    # Keep the relatively expensive held-out objective on its configured
+    # validation cadence, independently of per-step training scalar logging.
+    if compute_validation:
+        try:
+            metrics.update(
+                compute_maizels_validation_metrics(cfg, statics, train_state, step)
+            )
+        except Exception as e:
+            print(f"Warning: lineage validation metric computation failed: {e}")
 
     # Log endpoint distribution matching errors if configured.
     try:

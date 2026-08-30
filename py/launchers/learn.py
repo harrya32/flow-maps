@@ -88,6 +88,11 @@ def train_loop(
     best_step = None
     best_params_for_evaluation = None
     checks_without_improvement = 0
+    maizels_cfg = getattr(cfg.logging, "maizels", None)
+    validation_enabled = maizels_cfg is not None and bool(
+        getattr(maizels_cfg, "validation_enabled", False)
+    )
+    validation_check_freq = max(1, early_check_freq)
 
     if early_enabled:
         print(
@@ -122,6 +127,11 @@ def train_loop(
             and step_num >= early_warmup_steps
             and (step_num % early_check_freq) == 0
         )
+        should_log_validation = (
+            validation_enabled
+            and step_num >= early_warmup_steps
+            and (step_num % validation_check_freq) == 0
+        )
 
         metrics = {}
         if (
@@ -130,6 +140,7 @@ def train_loop(
             or should_save
             or should_fid
             or should_check_early_stopping
+            or should_log_validation
         ):
             prng_key, metrics = logging.log_metrics(
                 cfg,
@@ -140,6 +151,7 @@ def train_loop(
                 loss_fn_args,
                 prng_key,
                 end_time - start_time,
+                compute_validation=should_log_validation,
             )
 
         if should_check_early_stopping:
