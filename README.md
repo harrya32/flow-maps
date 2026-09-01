@@ -139,7 +139,11 @@ dataset under `cite-classifiers/` and `multi-classifiers/`: `all_days`,
 `except_day3`, and `except_day4`. The flow config automatically uses the
 matching `except_day*` classifier for pair filtering and lineage losses, while
 the `all_days` classifier is reserved for evaluation. This prevents the held-out
-day from leaking into flow training.
+day from leaking into flow training. A matching `*_loss_curve.png` showing the
+training and validation losses is saved beside every checkpoint pair. The
+script's automatic device selection uses CUDA when available and CPU otherwise;
+MPS remains available explicitly but is not selected automatically because its
+BatchNorm running statistics can become unstable in this workload.
 
 The config looks for the downloaded H5ADs under `~/Desktop/flow-maps-data`;
 use `CITE_MULTI_DATA_DIR` or `--dataset_location` to override the data directory.

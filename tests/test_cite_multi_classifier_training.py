@@ -85,3 +85,25 @@ def test_classifier_split_is_stratified_ninety_ten():
         np.bincount(prepared["split_y"]["validation"], minlength=7),
         np.ones(7, dtype=int),
     )
+
+
+def test_auto_device_avoids_mps_batchnorm_instability():
+    class AvailableMPS:
+        @staticmethod
+        def is_available():
+            return True
+
+    class UnavailableCUDA:
+        @staticmethod
+        def is_available():
+            return False
+
+    class FakeTorch:
+        cuda = UnavailableCUDA()
+        backends = type("Backends", (), {"mps": AvailableMPS()})()
+
+        @staticmethod
+        def device(name):
+            return name
+
+    assert classifiers.choose_device(FakeTorch, "auto") == "cpu"

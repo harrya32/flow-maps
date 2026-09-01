@@ -13,7 +13,8 @@ Every model uses a stratified 90/10 train/validation split.  Its scaler is fit
 only on the 90% training split, and the checkpoint with the lowest validation
 cross-entropy is saved.  The MLP and export schema match the Maizels classifier
 used by the flow code.  Both ``.pt`` and ``.npz`` files are written because the
-hard diagnostics use PyTorch while differentiable flow constraints use JAX.
+hard diagnostics use PyTorch while differentiable flow constraints use JAX. A
+training/validation loss-curve PNG is saved beside each checkpoint pair.
 
 Outputs are placed under ``cite-classifiers`` and ``multi-classifiers`` in the
 repository root by default.
@@ -199,7 +200,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
         default="auto",
-        help="Training device (default: CUDA, then MPS, then CPU).",
+        help=(
+            "Training device. Auto uses CUDA when available and CPU otherwise; "
+            "MPS is opt-in because its BatchNorm training can be unstable."
+        ),
     )
     parser.add_argument(
         "--log-every",
@@ -299,8 +303,6 @@ def choose_device(torch: Any, requested: str) -> Any:
     if requested == "auto":
         if torch.cuda.is_available():
             requested = "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            requested = "mps"
         else:
             requested = "cpu"
     if requested == "cuda" and not torch.cuda.is_available():
@@ -309,6 +311,13 @@ def choose_device(torch: Any, requested: str) -> Any:
         hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
     ):
         raise RuntimeError("--device mps was requested, but MPS is unavailable")
+    if requested == "mps":
+        print(
+            "warning: MPS is opt-in because BatchNorm running statistics can "
+            "become numerically unstable; use --device cpu if validation "
+            "collapses or export verification fails.",
+            file=sys.stderr,
+        )
     return torch.device(requested)
 
 
@@ -625,6 +634,7 @@ def save_plots(
     confusion: Any,
     class_names: Sequence[str],
     prefix: Path,
+    loss_curve_path: Path,
 ) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -641,6 +651,25 @@ def save_plots(
     for axis in axes:
         axis.grid(alpha=0.2)
     fig.savefig(prefix.with_name(prefix.name + "_training.png"), dpi=180)
+    plt.close(fig)
+
+    fig, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
+    axis.plot(history["epoch"], history["train_loss"], label="training")
+    axis.plot(history["epoch"], history["validation_loss"], label="validation")
+    best_row = history.loc[history["validation_loss"].idxmin()]
+    axis.scatter(
+        [best_row["epoch"]],
+        [best_row["validation_loss"]],
+        color="black",
+        marker="*",
+        s=90,
+        zorder=3,
+        label=f"best validation (epoch {int(best_row['epoch'])})",
+    )
+    axis.set(xlabel="Epoch", ylabel="Cross-entropy loss", title="Classifier loss")
+    axis.grid(alpha=0.2)
+    axis.legend()
+    fig.savefig(loss_curve_path, dpi=180)
     plt.close(fig)
 
     fig, axis = plt.subplots(figsize=(7, 6), constrained_layout=True)
@@ -881,7 +910,25 @@ def train_one_variant(
     with torch.no_grad():
         torch_values = model(torch.from_numpy(verification_x)).numpy()
     numpy_values = numpy_logits(np, numpy_state, verification_x)
-    export_max_abs_error = float(np.max(np.abs(torch_values - numpy_values)))
+    finite_torch = bool(np.isfinite(torch_values).all())
+    finite_numpy = bool(np.isfinite(numpy_values).all())
+    export_max_abs_error = (
+        float(np.max(np.abs(torch_values - numpy_values)))
+        if finite_torch and finite_numpy
+        else float("nan")
+    )
+    if not finite_torch or not finite_numpy:
+        device_hint = (
+            " This is a known failure mode of MPS BatchNorm; rerun this "
+            "variant with --device cpu."
+            if device.type == "mps"
+            else ""
+        )
+        raise RuntimeError(
+            "Classifier export produced non-finite logits "
+            f"(PyTorch finite={finite_torch}, NumPy finite={finite_numpy})."
+            + device_hint
+        )
     if not np.allclose(torch_values, numpy_values, rtol=1e-5, atol=1e-5):
         raise RuntimeError(
             "NumPy checkpoint verification failed: maximum absolute logit error "
@@ -998,7 +1045,16 @@ def train_one_variant(
         index=False,
         compression="gzip",
     )
-    save_plots(matplotlib, np, history, confusion, class_names, report_prefix)
+    loss_curve_path = output_dir / f"{stem}_loss_curve.png"
+    save_plots(
+        matplotlib,
+        np,
+        history,
+        confusion,
+        class_names,
+        report_prefix,
+        loss_curve_path,
+    )
 
     print(
         f"[{run_label}] Validation loss={metrics['validation_loss']:.4f}, "
@@ -1009,6 +1065,7 @@ def train_one_variant(
     )
     print(f"[{run_label}] Saved {pt_path}", flush=True)
     print(f"[{run_label}] Saved {npz_path}", flush=True)
+    print(f"[{run_label}] Saved {loss_curve_path}", flush=True)
     print(f"[{run_label}] Reports: {report_dir}", flush=True)
     return metrics
 
