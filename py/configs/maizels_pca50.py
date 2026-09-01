@@ -307,7 +307,7 @@ def get_config(
     config.logging.wandb_project = "self-distill-flow-maps"
 
     config.logging.wandb_name = f"maizels_pca50_{variant_name}"
-    config.logging.wandb_entity = os.getenv("WANDB_ENTITY", "your-username")
+    config.logging.wandb_entity = os.getenv("WANDB_ENTITY", "harryamad-university-of-cambridge")
     config.logging.output_folder = output_folder
     config.logging.output_name = config.logging.wandb_name
     config.logging.comparison_mode = variant_name

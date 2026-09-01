@@ -22,14 +22,38 @@ from common import cite_multi
 from configs.maizels_pca50 import get_config as _maizels_config
 
 
-def _resolve_classifier_path(dataset_name: str, classifier_path: str | None) -> str:
+def _classifier_directory(dataset_name: str) -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / f"{dataset_name}-classifiers"
+
+
+def _resolve_classifier_path(
+    dataset_name: str,
+    heldout_day: str,
+    classifier_path: str | None,
+) -> str:
+    """Resolve the observed-days-only classifier used during flow training."""
     if classifier_path:
         return str(Path(classifier_path).expanduser().resolve())
     env_path = os.getenv("CITE_MULTI_CLASSIFIER_PATH", "")
     if env_path:
         return str(Path(env_path).expanduser().resolve())
-    repo_root = Path(__file__).resolve().parents[2]
-    return str((repo_root / f"celltype_classifier_{dataset_name}_pca100.pt").resolve())
+    filename = f"celltype_classifier_{dataset_name}_pca100_except_day{heldout_day}.pt"
+    return str((_classifier_directory(dataset_name) / filename).resolve())
+
+
+def _resolve_full_data_classifier_path(
+    dataset_name: str,
+    full_data_classifier_path: str | None,
+) -> str:
+    """Resolve the all-days classifier reserved for flow-model evaluation."""
+    if full_data_classifier_path:
+        return str(Path(full_data_classifier_path).expanduser().resolve())
+    env_path = os.getenv("CITE_MULTI_FULL_DATA_CLASSIFIER_PATH", "")
+    if env_path:
+        return str(Path(env_path).expanduser().resolve())
+    filename = f"celltype_classifier_{dataset_name}_pca100_all_days.pt"
+    return str((_classifier_directory(dataset_name) / filename).resolve())
 
 
 def get_config(
@@ -39,6 +63,7 @@ def get_config(
     dataset_name: str | None = None,
     heldout_day: str | int | None = None,
     classifier_path: str | None = None,
+    full_data_classifier_path: str | None = None,
 ) -> ml_collections.ConfigDict:
     """Return a Maizels-equivalent config for a CITE or Multi leave-one-day-out run."""
     dataset_name = cite_multi.canonical_dataset_name(
@@ -76,8 +101,7 @@ def get_config(
     )
     cfg.problem.timepoint_order = list(cite_multi.TIMEPOINTS)
     cfg.problem.timepoint_values = [
-        cite_multi.NORMALIZED_TIMES[timepoint]
-        for timepoint in cite_multi.TIMEPOINTS
+        cite_multi.NORMALIZED_TIMES[timepoint] for timepoint in cite_multi.TIMEPOINTS
     ]
     cfg.problem.interp_type = "time_rescaled_linear"
     cfg.problem.interp_uses_labels = True
@@ -101,11 +125,18 @@ def get_config(
     ]
     cfg.problem.classifier_path = _resolve_classifier_path(
         dataset_name,
+        heldout_day,
         classifier_path,
     )
 
-    # The complete Maizels logging suite remains enabled, but distributional
-    # evaluation is restricted to the one day omitted from training.
+    # As in the three-marginal Maizels experiment, classifiers trained on only
+    # the observed marginals drive pair filtering and differentiable lineage
+    # losses. The all-days classifier is held back for evaluation.
+    cfg.logging.maizels.full_data_classifier_path = _resolve_full_data_classifier_path(
+        dataset_name,
+        full_data_classifier_path,
+    )
+
     cfg.logging.wandb_name = (
         f"{dataset_name}_pca100_holdout_day{heldout_day}_{variant_name}"
     )
@@ -115,9 +146,9 @@ def get_config(
     cfg.logging.maizels.distribution_eval_max_timepoints = 1
     # Keep the generic exact-EMD/MMD diagnostic bounded here. The MFM-compatible
     # evaluator below is the CITE/Multi full-population evaluation.
-    cfg.logging.maizels.distribution_eval_source_pool = "auto"
-    cfg.logging.maizels.distribution_eval_source_max_points = 1024
-    cfg.logging.maizels.distribution_eval_points_per_time = 1024
+    cfg.logging.maizels.distribution_eval_source_pool = "all"
+    cfg.logging.maizels.distribution_eval_source_max_points = 0
+    cfg.logging.maizels.distribution_eval_points_per_time = 0
 
     # Exact reproduction of the original CITE/Multi MFM test protocol. A slash
     # in ``mfm/test_EMD`` gives the metric its own W&B pane.
@@ -137,9 +168,8 @@ def get_config(
 
     cfg.optimization.total_steps = 10_000
 
-
-    cfg.constraints.loss_point_entropy_weight = 0.03
-    cfg.constraints.weight = 10000.0
+    cfg.constraints.loss_point_entropy_weight = 0.1
+    cfg.constraints.weight = 50000.0
 
     cfg.logging.visual_ema_factor = None
 

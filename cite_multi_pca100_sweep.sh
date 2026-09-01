@@ -22,8 +22,8 @@ MODE_NAMES=(
   "bio_prior_flow_matching"
   "bio_prior_flow_map"
   "bio_prior_constrained_flow_map"
-  "ot_bio_prior_flow_map"
-  "ot_bio_prior_constrained_flow_map"
+  "bio_prior_ot_flow_map"
+  "bio_prior_ot_constrained_flow_map"
   "ot_flow_map"
 )
 
@@ -87,7 +87,7 @@ for dataset in "${dataset_values[@]}"; do
         mode_name="${MODE_NAMES[slurm_id]}"
         run_name="${dataset}_holdout_day${heldout_day}_${mode_name}_seed${seed}"
         command=(
-          "${PYTHON_BIN}" py/launchers/learn.py
+          .venv-flowmaps-metal/bin/python py/launchers/learn.py
           --cfg_path "${CFG_PATH}"
           --slurm_id "${slurm_id}"
           --dataset_name "${dataset}"
@@ -99,10 +99,15 @@ for dataset in "${dataset_values[@]}"; do
         echo "==> ${run_name}"
         if [[ "${DRY_RUN}" == "1" ]]; then
           printf 'CITE_MULTI_SEED=%q ' "${seed}"
+          printf 'ENABLE_PJRT_COMPATIBILITY=1 '
+          printf 'JAX_PLATFORMS=METAL,cpu '
           printf '%q ' "${command[@]}"
           printf '\n'
         else
-          CITE_MULTI_SEED="${seed}" "${command[@]}"
+          CITE_MULTI_SEED="${seed}" \
+            ENABLE_PJRT_COMPATIBILITY=1 \
+            JAX_PLATFORMS=METAL,cpu \
+            "${command[@]}"
         fi
       done
     done

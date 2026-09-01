@@ -19,6 +19,7 @@ def get_config(
     dataset_name: str | None = None,
     heldout_day: str | int | None = None,
     classifier_path: str | None = None,
+    full_data_classifier_path: str | None = None,
 ):
     cfg = _base_get_config(
         slurm_id,
@@ -27,6 +28,7 @@ def get_config(
         dataset_name=dataset_name,
         heldout_day=heldout_day,
         classifier_path=classifier_path,
+        full_data_classifier_path=full_data_classifier_path,
     )
     seed = int(os.getenv("CITE_MULTI_SEED", str(cfg.training.seed)))
     if seed < 0:

@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
-"""Train Maizels-style cell-type classifiers for the CITE and Multi data.
+"""Train evaluation and leave-one-day-out classifiers for CITE and Multi.
 
-Each H5AD contains its own 100-dimensional PCA embedding.  The PCA coordinate
-systems are dataset-specific, so this script trains one classifier per file.
-The architecture and data split mirror
-``Maizels2023aa/analysis/celltype-classification``:
+Each H5AD has its own 100-dimensional PCA coordinate system, so the two
+datasets need separate classifiers.  For every requested dataset this script
+trains exactly three models:
 
-* stratified 70/15/15 train/validation/test split (seed 0 by default),
-* StandardScaler fitted only on the training split,
-* tempered inverse-frequency weights and lightly smoothed cross entropy,
-* Linear(100, 128) -> BN -> ReLU -> Dropout -> Linear(128, 64) -> BN
-  -> ReLU -> Dropout -> Linear(64, n_cell_types), and
-* AdamW with validation-accuracy early stopping.
+* ``all_days`` uses days 2, 3, 4, and 7 and is reserved for flow evaluation;
+* ``except_day3`` is the classifier used while training a day-3-held-out flow;
+* ``except_day4`` is the classifier used while training a day-4-held-out flow.
 
-The two small departures from the original loss were selected on the
-validation split because full inverse-frequency weighting made the 81/141-cell
-BP class produce many false positives.  The original Maizels behavior remains
-available with ``--class-weight-power 1 --label-smoothing 0
---selection-metric validation_loss --max-epochs 200 --patience 100``.
+Every model uses a stratified 90/10 train/validation split.  Its scaler is fit
+only on the 90% training split, and the checkpoint with the lowest validation
+cross-entropy is saved.  The MLP and export schema match the Maizels classifier
+used by the flow code.  Both ``.pt`` and ``.npz`` files are written because the
+hard diagnostics use PyTorch while differentiable flow constraints use JAX.
 
-The default outputs are PyTorch checkpoints in the repository root, matching
-the existing Maizels checkpoint convention, plus NumPy exports usable by the
-JAX/NumPy classifier implementation and diagnostic reports under
-``outputs/celltype_classification``.
+Outputs are placed under ``cite-classifiers`` and ``multi-classifiers`` in the
+repository root by default.
 
 Example
 -------
@@ -49,7 +43,7 @@ DEFAULT_DATA_DIR = Path(
         str(Path.home() / "Desktop" / "flow-maps-data"),
     )
 ).expanduser()
-DEFAULT_REPORT_DIR = REPO_ROOT / "outputs" / "celltype_classification"
+DEFAULT_VARIANTS = ("all_days", "except_day3", "except_day4")
 
 
 @dataclass(frozen=True)
@@ -64,11 +58,37 @@ DATASET_SPECS: Mapping[str, DatasetSpec] = {
 }
 
 
+@dataclass(frozen=True)
+class ClassifierVariant:
+    key: str
+    excluded_day: str | None
+    usage: str
+
+
+CLASSIFIER_VARIANTS: Mapping[str, ClassifierVariant] = {
+    "all_days": ClassifierVariant(
+        key="all_days",
+        excluded_day=None,
+        usage="flow_evaluation",
+    ),
+    "except_day3": ClassifierVariant(
+        key="except_day3",
+        excluded_day="3",
+        usage="flow_training_when_day3_is_held_out",
+    ),
+    "except_day4": ClassifierVariant(
+        key="except_day4",
+        excluded_day="4",
+        usage="flow_training_when_day4_is_held_out",
+    ),
+}
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train separate Maizels-style classifiers on the 100-PC CITE and "
-            "Multi embeddings."
+            "Train the all-days and day-3/day-4 leave-one-out classifiers on "
+            "the 100-PC CITE and Multi embeddings."
         )
     )
     parser.add_argument(
@@ -97,19 +117,35 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional explicit path to op_train_multi_targets_0.h5ad.",
     )
     parser.add_argument(
+        "--variants",
+        nargs="+",
+        choices=tuple(CLASSIFIER_VARIANTS),
+        default=list(DEFAULT_VARIANTS),
+        help="Classifier variants to train (default: all three).",
+    )
+    parser.add_argument(
+        "--output-root",
         "--model-dir",
+        dest="output_root",
         type=Path,
         default=REPO_ROOT,
-        help=f"Checkpoint output directory (default: {REPO_ROOT}).",
+        help=(
+            "Parent of cite-classifiers and multi-classifiers "
+            f"(default: {REPO_ROOT})."
+        ),
     )
     parser.add_argument(
         "--report-dir",
         type=Path,
-        default=DEFAULT_REPORT_DIR,
-        help=f"Metrics/plot output directory (default: {DEFAULT_REPORT_DIR}).",
+        default=None,
+        help=(
+            "Optional report root. By default reports are stored in a reports "
+            "subdirectory beside each dataset's checkpoints."
+        ),
     )
     parser.add_argument("--pca-key", default="X_pca")
     parser.add_argument("--label-key", default="cell_type")
+    parser.add_argument("--day-key", default="day")
     parser.add_argument(
         "--n-pcs",
         type=int,
@@ -158,20 +194,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "classes (default: 0.25; use 1 for the original Maizels rule)."
         ),
     )
-    parser.add_argument(
-        "--selection-metric",
-        choices=(
-            "validation_loss",
-            "validation_accuracy",
-            "validation_balanced_accuracy",
-            "validation_macro_f1",
-        ),
-        default="validation_accuracy",
-        help=(
-            "Validation quantity used for checkpointing and early stopping "
-            "(default: validation_accuracy)."
-        ),
-    )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
         "--device",
@@ -188,7 +210,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Replace existing checkpoints for the requested datasets.",
+        help="Replace existing checkpoints for the requested variants.",
     )
     args = parser.parse_args(argv)
 
@@ -250,8 +272,27 @@ def resolve_input_path(args: argparse.Namespace, dataset: str) -> Path:
     return path.expanduser().resolve()
 
 
-def checkpoint_stem(dataset: str, n_pcs: int) -> str:
-    return f"celltype_classifier_{dataset}_pca{n_pcs}"
+def classifier_output_dir(output_root: Path, dataset: str) -> Path:
+    """Return the dataset-specific checkpoint directory required by the configs."""
+    return output_root.expanduser().resolve() / f"{dataset}-classifiers"
+
+
+def checkpoint_stem(dataset: str, n_pcs: int, variant: str) -> str:
+    if variant not in CLASSIFIER_VARIANTS:
+        raise KeyError(f"Unknown classifier variant {variant!r}.")
+    return f"celltype_classifier_{dataset}_pca{n_pcs}_{variant}"
+
+
+def checkpoint_path(
+    output_root: Path,
+    dataset: str,
+    n_pcs: int,
+    variant: str,
+    suffix: str = ".pt",
+) -> Path:
+    return classifier_output_dir(output_root, dataset) / (
+        checkpoint_stem(dataset, n_pcs, variant) + suffix
+    )
 
 
 def choose_device(torch: Any, requested: str) -> Any:
@@ -285,6 +326,7 @@ def load_dataset(
     path: Path,
     pca_key: str,
     label_key: str,
+    day_key: str,
     n_pcs: int,
 ) -> Dict[str, Any]:
     if not path.is_file():
@@ -311,6 +353,11 @@ def load_dataset(
                 f"{path.name} has no adata.obs[{label_key!r}]; available keys: "
                 f"{list(adata.obs.columns)}"
             )
+        if day_key not in adata.obs:
+            raise KeyError(
+                f"{path.name} has no adata.obs[{day_key!r}]; available keys: "
+                f"{list(adata.obs.columns)}"
+            )
 
         label_series = adata.obs[label_key]
         missing = label_series.isna()
@@ -327,11 +374,16 @@ def load_dataset(
 
         labels = stripped.astype(str).to_numpy()
         cell_ids = np.asarray(adata.obs_names.astype(str))
-        days = (
-            adata.obs["day"].astype("string").astype(str).to_numpy()
-            if "day" in adata.obs
-            else np.full(adata.n_obs, "", dtype=str)
-        )
+        day_series = adata.obs[day_key]
+        missing_days = day_series.isna()
+        days = day_series.astype("string").str.strip()
+        missing_days = missing_days | days.eq("").fillna(True)
+        if bool(missing_days.any()):
+            raise ValueError(
+                f"{path.name} has {int(missing_days.sum())} missing/empty "
+                f"{day_key!r} values"
+            )
+        days = days.astype(str).to_numpy()
         feature_names = [str(name) for name in adata.var_names]
         return {
             "x": x,
@@ -346,6 +398,23 @@ def load_dataset(
     finally:
         if getattr(adata, "file", None) is not None:
             adata.file.close()
+
+
+def select_variant_rows(
+    np: Any,
+    data: Mapping[str, Any],
+    variant: ClassifierVariant,
+) -> Any:
+    """Return source-row indices after applying the variant's day exclusion."""
+    if variant.excluded_day is None:
+        return np.arange(data["n_cells"], dtype=np.int64)
+    selected = np.flatnonzero(data["days"] != variant.excluded_day)
+    excluded_count = int(data["n_cells"] - len(selected))
+    if excluded_count == 0:
+        raise ValueError(
+            f"Cannot train {variant.key}: day {variant.excluded_day} is absent."
+        )
+    return selected.astype(np.int64, copy=False)
 
 
 def make_model(
@@ -383,6 +452,7 @@ def make_loaders(
     torch: Any,
     x: Any,
     y: Any,
+    class_names: Sequence[str],
     seed: int,
     batch_size: int,
     num_workers: int,
@@ -394,51 +464,44 @@ def make_loaders(
 
     indices = np.arange(len(y))
     label_encoder = LabelEncoder()
-    y_encoded = label_encoder.fit_transform(y).astype(np.int64, copy=False)
+    label_encoder.fit(np.asarray(class_names))
+    y_encoded = label_encoder.transform(y).astype(np.int64, copy=False)
 
     class_counts_all = np.bincount(y_encoded, minlength=len(label_encoder.classes_))
-    if bool((class_counts_all < 4).any()):
+    if bool((class_counts_all < 2).any()):
         too_small = {
             str(label_encoder.classes_[idx]): int(count)
             for idx, count in enumerate(class_counts_all)
-            if count < 4
+            if count < 2
         }
         raise ValueError(
-            "Every class needs at least four cells for the stratified 70/15/15 "
+            "Every class needs at least two cells for the stratified 90/10 "
             f"split; too-small classes: {too_small}"
         )
 
-    train_idx, heldout_idx = train_test_split(
+    train_idx, val_idx = train_test_split(
         indices,
-        test_size=0.30,
+        test_size=0.10,
         random_state=seed,
         stratify=y_encoded,
     )
-    val_idx, test_idx = train_test_split(
-        heldout_idx,
-        test_size=0.50,
-        random_state=seed,
-        stratify=y_encoded[heldout_idx],
-    )
-    split_indices = {"train": train_idx, "validation": val_idx, "test": test_idx}
+    split_indices = {"train": train_idx, "validation": val_idx}
 
     scaler = StandardScaler()
     split_x = {
         "train": scaler.fit_transform(x[train_idx]).astype(np.float32),
         "validation": scaler.transform(x[val_idx]).astype(np.float32),
-        "test": scaler.transform(x[test_idx]).astype(np.float32),
     }
     split_y = {
         "train": y_encoded[train_idx],
         "validation": y_encoded[val_idx],
-        "test": y_encoded[test_idx],
     }
 
     pin_memory = device.type == "cuda"
     generator = torch.Generator()
     generator.manual_seed(seed)
     loaders: Dict[str, Any] = {}
-    for split in ("train", "validation", "test"):
+    for split in ("train", "validation"):
         dataset = TensorDataset(
             torch.from_numpy(split_x[split]), torch.from_numpy(split_y[split])
         )
@@ -533,20 +596,6 @@ def evaluate(
     )
 
 
-def predict(torch: Any, model: Any, loader: Any, device: Any) -> Tuple[Any, Any]:
-    truth: List[Any] = []
-    predictions: List[Any] = []
-    model.eval()
-    with torch.no_grad():
-        for features, labels in loader:
-            logits = model(features.to(device, non_blocking=True))
-            truth.append(labels.numpy())
-            predictions.append(logits.argmax(dim=1).cpu().numpy())
-    import numpy as np
-
-    return np.concatenate(truth), np.concatenate(predictions)
-
-
 def state_dict_to_numpy(np: Any, state_dict: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         key: value.detach().cpu().numpy()
@@ -560,12 +609,9 @@ def numpy_logits(np: Any, arrays: Mapping[str, Any], x: Any) -> Any:
         return values @ arrays[f"{prefix}.weight"].T + arrays[f"{prefix}.bias"]
 
     def batch_norm(values: Any, prefix: str) -> Any:
-        return (
-            (values - arrays[f"{prefix}.running_mean"])
-            / np.sqrt(arrays[f"{prefix}.running_var"] + 1e-5)
-            * arrays[f"{prefix}.weight"]
-            + arrays[f"{prefix}.bias"]
-        )
+        return (values - arrays[f"{prefix}.running_mean"]) / np.sqrt(
+            arrays[f"{prefix}.running_var"] + 1e-5
+        ) * arrays[f"{prefix}.weight"] + arrays[f"{prefix}.bias"]
 
     hidden = np.maximum(batch_norm(linear(x, "net.0"), "net.1"), 0.0)
     hidden = np.maximum(batch_norm(linear(hidden, "net.4"), "net.5"), 0.0)
@@ -589,9 +635,7 @@ def save_plots(
     axes[0].set(xlabel="Epoch", ylabel="Cross-entropy", title="Loss")
     axes[0].legend()
     axes[1].plot(history["epoch"], history["train_accuracy"], label="train")
-    axes[1].plot(
-        history["epoch"], history["validation_accuracy"], label="validation"
-    )
+    axes[1].plot(history["epoch"], history["validation_accuracy"], label="validation")
     axes[1].set(xlabel="Epoch", ylabel="Accuracy", title="Accuracy", ylim=(0, 1.01))
     axes[1].legend()
     for axis in axes:
@@ -603,7 +647,7 @@ def save_plots(
     image = axis.imshow(confusion, cmap="Blues")
     axis.set_xticks(np.arange(len(class_names)), class_names, rotation=45, ha="right")
     axis.set_yticks(np.arange(len(class_names)), class_names)
-    axis.set(xlabel="Predicted", ylabel="True", title="Test confusion matrix")
+    axis.set(xlabel="Predicted", ylabel="True", title="Validation confusion matrix")
     threshold = float(confusion.max()) / 2.0
     for row in range(confusion.shape[0]):
         for column in range(confusion.shape[1]):
@@ -622,19 +666,20 @@ def save_plots(
     plt.close(fig)
 
 
-def train_one(
+def train_one_variant(
     args: argparse.Namespace,
     dataset: str,
+    variant: ClassifierVariant,
+    input_path: Path,
+    data: Mapping[str, Any],
     dependencies: Mapping[str, Any],
     device: Any,
 ) -> Dict[str, Any]:
-    ad = dependencies["anndata"]
     matplotlib = dependencies["matplotlib"]
     np = dependencies["numpy"]
     pd = dependencies["pandas"]
     torch = dependencies["torch"]
     from sklearn.metrics import (
-        accuracy_score,
         balanced_accuracy_score,
         classification_report,
         confusion_matrix,
@@ -642,11 +687,17 @@ def train_one(
     )
     from torch import nn
 
-    input_path = resolve_input_path(args, dataset)
-    stem = checkpoint_stem(dataset, args.n_pcs)
-    pt_path = args.model_dir / f"{stem}.pt"
-    npz_path = args.model_dir / f"{stem}.npz"
-    report_prefix = args.report_dir / stem
+    run_label = f"{dataset}/{variant.key}"
+    output_dir = classifier_output_dir(args.output_root, dataset)
+    stem = checkpoint_stem(dataset, args.n_pcs, variant.key)
+    pt_path = output_dir / f"{stem}.pt"
+    npz_path = output_dir / f"{stem}.npz"
+    report_dir = (
+        output_dir / "reports"
+        if args.report_dir is None
+        else args.report_dir.expanduser().resolve() / f"{dataset}-classifiers"
+    )
+    report_prefix = report_dir / stem
     if not args.overwrite:
         existing = [path for path in (pt_path, npz_path) if path.exists()]
         if existing:
@@ -656,13 +707,16 @@ def train_one(
                 + ". Pass --overwrite to replace them."
             )
 
-    print(f"\n[{dataset}] Reading {input_path}", flush=True)
-    data = load_dataset(ad, np, input_path, args.pca_key, args.label_key, args.n_pcs)
+    selected_indices = select_variant_rows(np, data, variant)
+    selected_x = data["x"][selected_indices]
+    selected_labels = data["labels"][selected_indices]
+    all_class_names = sorted(str(value) for value in np.unique(data["labels"]))
     loaders, prepared, class_counts_all = make_loaders(
         np,
         torch,
-        data["x"],
-        data["labels"],
+        selected_x,
+        selected_labels,
+        all_class_names,
         args.seed,
         args.batch_size,
         args.num_workers,
@@ -671,21 +725,24 @@ def train_one(
     label_encoder = prepared["label_encoder"]
     class_names = [str(value) for value in label_encoder.classes_]
     split_sizes = {
-        split: int(len(indices))
-        for split, indices in prepared["split_indices"].items()
+        split: int(len(indices)) for split, indices in prepared["split_indices"].items()
     }
     counts_text = ", ".join(
         f"{name}={int(count)}" for name, count in zip(class_names, class_counts_all)
     )
     print(
-        f"[{dataset}] {data['n_cells']} cells, {data['stored_n_pcs']} stored PCs; "
-        f"using {args.n_pcs} PCs on {device}",
+        f"\n[{run_label}] {len(selected_indices)}/{data['n_cells']} cells, "
+        f"{data['stored_n_pcs']} stored PCs; using {args.n_pcs} PCs on {device}",
         flush=True,
     )
-    print(f"[{dataset}] Classes: {counts_text}", flush=True)
+    if variant.excluded_day is not None:
+        print(
+            f"[{run_label}] Excluded every day-{variant.excluded_day} cell.", flush=True
+        )
+    print(f"[{run_label}] Classes: {counts_text}", flush=True)
     print(
-        f"[{dataset}] Split: train={split_sizes['train']}, "
-        f"validation={split_sizes['validation']}, test={split_sizes['test']}",
+        f"[{run_label}] Split: train={split_sizes['train']}, "
+        f"validation={split_sizes['validation']}",
         flush=True,
     )
 
@@ -693,13 +750,11 @@ def train_one(
     model = make_model(
         nn, args.n_pcs, len(class_names), args.dropout, args.hidden_dims
     ).to(device)
-    train_counts = np.bincount(
-        prepared["split_y"]["train"], minlength=len(class_names)
-    )
+    train_counts = np.bincount(prepared["split_y"]["train"], minlength=len(class_names))
     inverse_frequency_weights = len(prepared["split_y"]["train"]) / (
         len(class_names) * train_counts
     )
-    class_weights = inverse_frequency_weights ** args.class_weight_power
+    class_weights = inverse_frequency_weights**args.class_weight_power
     criterion = nn.CrossEntropyLoss(
         weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device),
         label_smoothing=args.label_smoothing,
@@ -710,7 +765,7 @@ def train_one(
     scheduler = (
         torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode="max",
+            mode="min",
             factor=args.lr_factor,
             patience=args.lr_patience,
             min_lr=1e-6,
@@ -719,10 +774,11 @@ def train_one(
         else None
     )
 
-    best_selection_score = -float("inf")
+    best_validation_loss = float("inf")
     best_epoch = 0
     best_state: Dict[str, Any] | None = None
     best_validation_metrics: Dict[str, float] | None = None
+    early_stopping_loss = float("inf")
     epochs_without_improvement = 0
     history_rows: List[Dict[str, Any]] = []
     started = time.monotonic()
@@ -730,8 +786,8 @@ def train_one(
         train_loss, train_accuracy = run_epoch(
             torch, model, loaders["train"], criterion, device, optimizer
         )
-        validation_loss, validation_accuracy, validation_true, validation_pred = evaluate(
-            np, torch, model, loaders["validation"], criterion, device
+        validation_loss, validation_accuracy, validation_true, validation_pred = (
+            evaluate(np, torch, model, loaders["validation"], criterion, device)
         )
         validation_balanced_accuracy = float(
             balanced_accuracy_score(validation_true, validation_pred)
@@ -739,17 +795,11 @@ def train_one(
         validation_macro_f1 = float(
             f1_score(validation_true, validation_pred, average="macro")
         )
-        selection_score = {
-            "validation_loss": -validation_loss,
-            "validation_accuracy": validation_accuracy,
-            "validation_balanced_accuracy": validation_balanced_accuracy,
-            "validation_macro_f1": validation_macro_f1,
-        }[args.selection_metric]
         if scheduler is not None:
-            scheduler.step(selection_score)
-        improved = selection_score > best_selection_score + args.min_delta
-        if improved:
-            best_selection_score = selection_score
+            scheduler.step(validation_loss)
+        is_best = validation_loss < best_validation_loss
+        if is_best:
+            best_validation_loss = float(validation_loss)
             best_epoch = epoch
             best_state = copy.deepcopy(model.state_dict())
             best_validation_metrics = {
@@ -758,6 +808,9 @@ def train_one(
                 "balanced_accuracy": validation_balanced_accuracy,
                 "macro_f1": validation_macro_f1,
             }
+        improved_for_patience = validation_loss < early_stopping_loss - args.min_delta
+        if improved_for_patience:
+            early_stopping_loss = float(validation_loss)
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
@@ -770,15 +823,14 @@ def train_one(
                 "validation_accuracy": validation_accuracy,
                 "validation_balanced_accuracy": validation_balanced_accuracy,
                 "validation_macro_f1": validation_macro_f1,
-                "selection_score": selection_score,
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
-                "is_best": improved,
+                "is_best": is_best,
             }
         )
-        if epoch == 1 or epoch % args.log_every == 0 or improved:
-            marker = " *" if improved else ""
+        if epoch == 1 or epoch % args.log_every == 0 or is_best:
+            marker = " *" if is_best else ""
             print(
-                f"[{dataset}] epoch {epoch:03d}/{args.max_epochs}: "
+                f"[{run_label}] epoch {epoch:03d}/{args.max_epochs}: "
                 f"train loss={train_loss:.4f} acc={train_accuracy:.4f}; "
                 f"val loss={validation_loss:.4f} acc={validation_accuracy:.4f} "
                 f"bal_acc={validation_balanced_accuracy:.4f} "
@@ -787,7 +839,7 @@ def train_one(
             )
         if epochs_without_improvement >= args.patience:
             print(
-                f"[{dataset}] Early stopping after {epoch} epochs "
+                f"[{run_label}] Early stopping after {epoch} epochs "
                 f"(best epoch {best_epoch}).",
                 flush=True,
             )
@@ -796,13 +848,19 @@ def train_one(
     if best_state is None or best_validation_metrics is None:
         raise RuntimeError("Training did not produce a valid checkpoint")
     model.load_state_dict(best_state)
-    y_true, y_pred = predict(torch, model, loaders["test"], device)
+    (
+        selected_validation_loss,
+        selected_validation_accuracy,
+        y_true,
+        y_pred,
+    ) = evaluate(np, torch, model, loaders["validation"], criterion, device)
     metrics = {
         "best_epoch": int(best_epoch),
-        "test_accuracy": float(accuracy_score(y_true, y_pred)),
-        "test_balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
-        "test_macro_f1": float(f1_score(y_true, y_pred, average="macro")),
-        "test_weighted_f1": float(f1_score(y_true, y_pred, average="weighted")),
+        "validation_loss": float(selected_validation_loss),
+        "validation_accuracy": float(selected_validation_accuracy),
+        "validation_balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "validation_macro_f1": float(f1_score(y_true, y_pred, average="macro")),
+        "validation_weighted_f1": float(f1_score(y_true, y_pred, average="weighted")),
     }
     report = classification_report(
         y_true,
@@ -812,16 +870,14 @@ def train_one(
         output_dict=True,
         zero_division=0,
     )
-    confusion = confusion_matrix(
-        y_true, y_pred, labels=np.arange(len(class_names))
-    )
+    confusion = confusion_matrix(y_true, y_pred, labels=np.arange(len(class_names)))
 
     model = model.to("cpu").eval()
-    cpu_state = {
-        key: value.detach().cpu() for key, value in model.state_dict().items()
-    }
+    cpu_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
     numpy_state = state_dict_to_numpy(np, cpu_state)
-    verification_x = prepared["split_x"]["test"][: min(256, split_sizes["test"])]
+    verification_x = prepared["split_x"]["validation"][
+        : min(256, split_sizes["validation"])
+    ]
     with torch.no_grad():
         torch_values = model(torch.from_numpy(verification_x)).numpy()
     numpy_values = numpy_logits(np, numpy_state, verification_x)
@@ -835,22 +891,31 @@ def train_one(
     elapsed_seconds = float(time.monotonic() - started)
     metadata = {
         "dataset": dataset,
+        "variant": variant.key,
+        "usage": variant.usage,
+        "excluded_day": variant.excluded_day,
+        "included_days": sorted(
+            str(value) for value in np.unique(data["days"][selected_indices])
+        ),
         "source_h5ad": str(input_path),
         "pca_key": args.pca_key,
         "label_key": args.label_key,
+        "day_key": args.day_key,
         "class_names": class_names,
         # Kept for compatibility with the original Maizels checkpoint schema.
         "selected_genes": data["feature_names"],
         "n_pcs": int(args.n_pcs),
         "stored_n_pcs": int(data["stored_n_pcs"]),
-        "n_cells": int(data["n_cells"]),
+        "n_source_cells": int(data["n_cells"]),
+        "n_cells": int(len(selected_indices)),
+        "n_excluded_cells": int(data["n_cells"] - len(selected_indices)),
         "n_features": int(data["n_features"]),
         "scaler_mean": prepared["scaler"].mean_.astype(float).tolist(),
         "scaler_scale": prepared["scaler"].scale_.astype(float).tolist(),
         "seed": int(args.seed),
         "best_epoch": int(best_epoch),
         "split_sizes": split_sizes,
-        "split_fractions": {"train": 0.70, "validation": 0.15, "test": 0.15},
+        "split_fractions": {"train": 0.90, "validation": 0.10},
         "architecture": [
             int(args.n_pcs),
             int(args.hidden_dims[0]),
@@ -869,16 +934,16 @@ def train_one(
         "min_delta": float(args.min_delta),
         "class_weights": class_weights.astype(float).tolist(),
         "class_weight_power": float(args.class_weight_power),
-        "selection_metric": args.selection_metric,
-        "best_selection_score": float(best_selection_score),
+        "selection_metric": "validation_loss",
+        "best_validation_loss": float(best_validation_loss),
         "best_validation_metrics": best_validation_metrics,
-        "test_metrics": metrics,
+        "validation_metrics": metrics,
         "numpy_export_max_abs_error": export_max_abs_error,
         "elapsed_seconds": elapsed_seconds,
     }
 
-    args.model_dir.mkdir(parents=True, exist_ok=True)
-    args.report_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_dir.mkdir(parents=True, exist_ok=True)
     torch.save({"model_state_dict": cpu_state, "metadata": metadata}, pt_path)
     np.savez_compressed(
         npz_path,
@@ -887,6 +952,8 @@ def train_one(
         scaler_scale=prepared["scaler"].scale_.astype(np.float32),
         n_pcs=np.asarray(args.n_pcs, dtype=np.int64),
         dataset=np.asarray(dataset),
+        variant=np.asarray(variant.key),
+        excluded_day=np.asarray(variant.excluded_day or ""),
         **numpy_state,
     )
 
@@ -896,24 +963,29 @@ def train_one(
     )
     metrics_row = {
         "dataset": dataset,
+        "variant": variant.key,
+        "excluded_day": variant.excluded_day,
         "n_pcs": int(args.n_pcs),
         "class_weight_power": float(args.class_weight_power),
         "label_smoothing": float(args.label_smoothing),
-        "selection_metric": args.selection_metric,
+        "selection_metric": "validation_loss",
         **metrics,
     }
     pd.DataFrame([metrics_row]).to_csv(
-        report_prefix.with_name(report_prefix.name + "_test_metrics.csv"), index=False
+        report_prefix.with_name(report_prefix.name + "_validation_metrics.csv"),
+        index=False,
     )
     pd.DataFrame(report).transpose().to_csv(
-        report_prefix.with_name(report_prefix.name + "_classification_report.csv")
+        report_prefix.with_name(
+            report_prefix.name + "_validation_classification_report.csv"
+        )
     )
     pd.DataFrame(confusion, index=class_names, columns=class_names).to_csv(
-        report_prefix.with_name(report_prefix.name + "_confusion_matrix.csv")
+        report_prefix.with_name(report_prefix.name + "_validation_confusion_matrix.csv")
     )
-    split_name = np.full(data["n_cells"], "", dtype="<U10")
-    for name, indices in prepared["split_indices"].items():
-        split_name[indices] = name
+    split_name = np.full(data["n_cells"], "excluded", dtype="<U10")
+    for name, local_indices in prepared["split_indices"].items():
+        split_name[selected_indices[local_indices]] = name
     pd.DataFrame(
         {
             "cell_id": data["cell_ids"],
@@ -929,14 +1001,15 @@ def train_one(
     save_plots(matplotlib, np, history, confusion, class_names, report_prefix)
 
     print(
-        f"[{dataset}] Test accuracy={metrics['test_accuracy']:.4f}, "
-        f"balanced accuracy={metrics['test_balanced_accuracy']:.4f}, "
-        f"macro F1={metrics['test_macro_f1']:.4f}",
+        f"[{run_label}] Validation loss={metrics['validation_loss']:.4f}, "
+        f"accuracy={metrics['validation_accuracy']:.4f}, "
+        f"balanced accuracy={metrics['validation_balanced_accuracy']:.4f}, "
+        f"macro F1={metrics['validation_macro_f1']:.4f}",
         flush=True,
     )
-    print(f"[{dataset}] Saved {pt_path}", flush=True)
-    print(f"[{dataset}] Saved {npz_path}", flush=True)
-    print(f"[{dataset}] Reports: {args.report_dir}", flush=True)
+    print(f"[{run_label}] Saved {pt_path}", flush=True)
+    print(f"[{run_label}] Saved {npz_path}", flush=True)
+    print(f"[{run_label}] Reports: {report_dir}", flush=True)
     return metrics
 
 
@@ -946,20 +1019,52 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         dependencies = import_dependencies()
         device = choose_device(dependencies["torch"], args.device)
-        all_metrics = {}
+        all_metrics: Dict[str, Dict[str, Any]] = {}
         for dataset in args.datasets:
-            all_metrics[dataset] = train_one(args, dataset, dependencies, device)
-    except (FileExistsError, FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
+            input_path = resolve_input_path(args, dataset)
+            print(f"\n[{dataset}] Reading {input_path}", flush=True)
+            data = load_dataset(
+                dependencies["anndata"],
+                dependencies["numpy"],
+                input_path,
+                args.pca_key,
+                args.label_key,
+                args.day_key,
+                args.n_pcs,
+            )
+            all_metrics[dataset] = {}
+            for variant_name in args.variants:
+                variant = CLASSIFIER_VARIANTS[variant_name]
+                all_metrics[dataset][variant_name] = train_one_variant(
+                    args,
+                    dataset,
+                    variant,
+                    input_path,
+                    data,
+                    dependencies,
+                    device,
+                )
+    except (
+        FileExistsError,
+        FileNotFoundError,
+        KeyError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     print("\nSummary")
-    for dataset, metrics in all_metrics.items():
-        print(
-            f"  {dataset}: accuracy={metrics['test_accuracy']:.4f}, "
-            f"balanced_accuracy={metrics['test_balanced_accuracy']:.4f}, "
-            f"macro_f1={metrics['test_macro_f1']:.4f}"
-        )
+    for dataset, variants in all_metrics.items():
+        for variant_name, metrics in variants.items():
+            print(
+                f"  {dataset}/{variant_name}: "
+                f"val_loss={metrics['validation_loss']:.4f}, "
+                f"accuracy={metrics['validation_accuracy']:.4f}, "
+                "balanced_accuracy="
+                f"{metrics['validation_balanced_accuracy']:.4f}, "
+                f"macro_f1={metrics['validation_macro_f1']:.4f}"
+            )
     return 0
 
 

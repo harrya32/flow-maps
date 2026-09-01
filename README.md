@@ -118,6 +118,8 @@ python py/launchers/learn.py \
     --output_folder /path/to/outputs
 
 # CITE or Multi, training on three timepoints and evaluating the omitted day.
+python scripts/train_cite_multi_celltype_classifiers.py
+
 python py/launchers/learn.py \
     --cfg_path configs.cite_multi_pca100 \
     --slurm_id 3 \
@@ -131,10 +133,18 @@ For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
 vanilla flow matching, 1 vanilla flow map, 2 prior-filtered flow matching, 3
 prior-filtered flow map, 4 prior-filtered constrained flow map, 5 masked-OT
 prior-filtered flow map, and 6 its differentiably constrained counterpart.
-The config looks for the downloaded H5ADs under `~/Desktop/flow-maps-data` and
-for `celltype_classifier_{cite,multi}_pca100.{pt,npz}` in the repository root;
-use `CITE_MULTI_DATA_DIR` or `--dataset_location` to override the data directory,
-and `--classifier_path` to override the classifier location.
+The classifier script makes a stratified 90/10 train/validation split, selects
+the lowest-validation-loss checkpoint, and writes three `.pt`/`.npz` pairs per
+dataset under `cite-classifiers/` and `multi-classifiers/`: `all_days`,
+`except_day3`, and `except_day4`. The flow config automatically uses the
+matching `except_day*` classifier for pair filtering and lineage losses, while
+the `all_days` classifier is reserved for evaluation. This prevents the held-out
+day from leaking into flow training.
+
+The config looks for the downloaded H5ADs under `~/Desktop/flow-maps-data`;
+use `CITE_MULTI_DATA_DIR` or `--dataset_location` to override the data directory.
+Use `--classifier_path` to override the observed-days training classifier and
+`--full_data_classifier_path` to override the all-days evaluation classifier.
 On every Maizels visual/distribution evaluation step it also logs
 `mfm/test_EMD` in a separate W&B pane, using MFM's original predecessor-day,
 100-step Euler, full-population exact-EMD test protocol. It additionally logs

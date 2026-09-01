@@ -123,6 +123,7 @@ def main() -> None:
     parser.add_argument("--dataset_name", choices=("cite", "multi"), default=None)
     parser.add_argument("--heldout_day", choices=("3", "4"), default=None)
     parser.add_argument("--classifier_path", default=None)
+    parser.add_argument("--full_data_classifier_path", default=None)
     parser.add_argument(
         "--maizels_ot_coupling",
         choices=("global_ot", "minibatch_ot"),
@@ -153,6 +154,7 @@ def main() -> None:
         "dataset_name": args.dataset_name,
         "heldout_day": args.heldout_day,
         "classifier_path": args.classifier_path,
+        "full_data_classifier_path": args.full_data_classifier_path,
         "maizels_ot_coupling": args.maizels_ot_coupling,
         "maizels_schedule": args.maizels_schedule,
         "maizels_time_mode": args.maizels_time_mode,

@@ -261,7 +261,13 @@ def parse_command_line_arguments():
         "--classifier_path",
         type=str,
         default=None,
-        help="Optional cell-type classifier override for lineage-aware configs.",
+        help="Optional training-time cell-type classifier override.",
+    )
+    parser.add_argument(
+        "--full_data_classifier_path",
+        type=str,
+        default=None,
+        help="Optional all-data classifier override for evaluation diagnostics.",
     )
     parser.add_argument(
         "--early_stopping_patience",
@@ -302,6 +308,7 @@ def setup_config_dict():
         "dataset_name": args.dataset_name,
         "heldout_day": args.heldout_day,
         "classifier_path": args.classifier_path,
+        "full_data_classifier_path": args.full_data_classifier_path,
         "early_stopping_patience": args.early_stopping_patience,
         "maizels_ot_coupling": args.maizels_ot_coupling,
         "maizels_schedule": args.maizels_schedule,

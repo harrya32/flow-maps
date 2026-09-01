@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Measure CITE/Multi coupling and interpolant rejection rates.
 
-This applies the same mechanics and defaults used by the Maizels experiment:
+This applies the same mechanics and defaults used by the Maizels experiment.
+The classifier excludes the same internal day as the flow run, so the
+rejection-rate diagnostic does not leak that held-out marginal into training:
 
 * source and target are the first/last observed days (2 and 7 here),
 * annotated endpoint pairs are checked with descendant reachability,
@@ -50,7 +52,9 @@ DEFAULT_DATA_DIR = Path(
     )
 ).expanduser()
 CELL_TYPES = ("HSC", "EryP", "NeuP", "MasP", "MkP", "BP", "MoP")
-TRANSITION_EDGES = tuple(("HSC", cell_type) for cell_type in CELL_TYPES if cell_type != "HSC")
+TRANSITION_EDGES = tuple(
+    ("HSC", cell_type) for cell_type in CELL_TYPES if cell_type != "HSC"
+)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -68,7 +72,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--cite-path", type=Path, default=None)
     parser.add_argument("--multi-path", type=Path, default=None)
-    parser.add_argument("--model-dir", type=Path, default=REPO_ROOT)
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=REPO_ROOT,
+        help="Parent of cite-classifiers and multi-classifiers.",
+    )
+    parser.add_argument("--heldout-day", choices=("3", "4"), default="4")
     parser.add_argument("--source-day", default="2")
     parser.add_argument("--target-day", default="7")
     parser.add_argument("--pca-key", default="X_pca")
@@ -137,7 +147,10 @@ def dataset_path(args: argparse.Namespace, dataset: str) -> Path:
 
 
 def classifier_path(args: argparse.Namespace, dataset: str, n_pcs: int = 100) -> Path:
-    return (args.model_dir / f"celltype_classifier_{dataset}_pca{n_pcs}.pt").expanduser().resolve()
+    filename = (
+        f"celltype_classifier_{dataset}_pca{n_pcs}_except_day{args.heldout_day}.pt"
+    )
+    return (args.model_dir / f"{dataset}-classifiers" / filename).expanduser().resolve()
 
 
 def load_endpoints(
@@ -253,9 +266,7 @@ def sampled_interpolant_stats(
         "classifier_points_confident": 0,
     }
     pair_counts: Dict[str, Counter[str]] = defaultdict(Counter)
-    taus = np.linspace(
-        0.0, 1.0, args.n_check_times + 2, dtype=np.float32
-    )[1:-1]
+    taus = np.linspace(0.0, 1.0, args.n_check_times + 2, dtype=np.float32)[1:-1]
 
     for start in range(0, len(valid_positions), args.pair_chunk_size):
         positions = valid_positions[start : start + args.pair_chunk_size]
@@ -294,9 +305,7 @@ def sampled_interpolant_stats(
             final_type_ids=target_type_ids,
         )
         valid = np.asarray(validity["valid"], dtype=bool)
-        rejected_checkpoint = np.asarray(
-            validity["rejected_at_checkpoint"], dtype=bool
-        )
+        rejected_checkpoint = np.asarray(validity["rejected_at_checkpoint"], dtype=bool)
         rejected_final = np.asarray(validity["rejected_at_final"], dtype=bool)
         stats["interpolants_rejected"] += int((~valid).sum())
         stats["rejected_at_checkpoint"] += int(rejected_checkpoint.sum())
@@ -324,8 +333,7 @@ def sampled_interpolant_stats(
         stats["accepted_after_both_filters"] / args.num_pairs
     )
     stats["classifier_points_confident_rate"] = float(
-        stats["classifier_points_confident"]
-        / max(stats["classifier_points_total"], 1)
+        stats["classifier_points_confident"] / max(stats["classifier_points_total"], 1)
     )
     stats["by_endpoint_type_pair"] = {
         key: {
@@ -346,7 +354,9 @@ def projected_rejection_stats(
         return {"target_accepted_pairs": target_accepted_pairs, "feasible": False}
     candidates = int(math.ceil(target_accepted_pairs / acceptance_rate))
     endpoint_rate = float(sampled["sampled_endpoint_rejected_rate"])
-    interpolant_rate = float(sampled["interpolants_rejected"] / sampled["sampled_pairs"])
+    interpolant_rate = float(
+        sampled["interpolants_rejected"] / sampled["sampled_pairs"]
+    )
     endpoint_rejected = int(round(candidates * endpoint_rate))
     interpolant_rejected = int(round(candidates * interpolant_rate))
     return {
@@ -407,6 +417,7 @@ def inspect_dataset(args: argparse.Namespace, dataset: str) -> Dict[str, Any]:
         "dataset": dataset,
         "dataset_path": str(path),
         "classifier_path": str(checkpoint),
+        "heldout_day": str(args.heldout_day),
         "source_day": str(args.source_day),
         "target_day": str(args.target_day),
         "source_n": int(len(source_x)),
