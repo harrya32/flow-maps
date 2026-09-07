@@ -162,3 +162,23 @@ def test_cached_full_model_is_not_requested_again_when_schedule_is_missing(
     assert len(commands) == 1
     assert "--all-days" not in commands[0]
     assert "--train-times" in commands[0]
+
+
+def test_npz_only_checkpoints_do_not_require_pytorch(tmp_path):
+    cfg = schiebinger_lsd.get_config(
+        3,
+        schiebinger_train_times="2.5,7.5,12.5,17.5",
+    )
+    full_path = tmp_path / "full.pt"
+    training_path = tmp_path / "selected.pt"
+    full_path.with_suffix(".npz").touch()
+    training_path.with_suffix(".npz").touch()
+    cfg.logging.maizels.full_data_classifier_path = str(full_path)
+    cfg.problem.full_data_classifier_path = str(full_path)
+    cfg.problem.training_classifier_path = str(training_path)
+    cfg.problem.classifier_path = str(training_path)
+
+    def runner(*args, **kwargs):
+        raise AssertionError("The classifier trainer must not run for NPZ exports.")
+
+    automatic.ensure_schiebinger_classifiers(cfg, runner=runner)

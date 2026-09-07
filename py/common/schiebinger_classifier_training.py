@@ -98,14 +98,20 @@ def resolve_classifier_python(configured: str | None = None) -> str:
 
 
 def checkpoint_pair_complete(pt_path: str | Path) -> bool:
+    """Return whether the runtime-ready NumPy checkpoint exists.
+
+    Flow training and evaluation resolve configured ``.pt`` paths to the
+    sibling ``.npz`` export.  The original PyTorch checkpoint is useful for
+    retraining but is not required for inference.
+    """
     path = Path(pt_path).expanduser().resolve()
-    return path.is_file() and path.with_suffix(".npz").is_file()
+    return path.with_suffix(".npz").is_file()
 
 
 def checkpoint_pair_partial(pt_path: str | Path) -> bool:
+    """Return whether only an unusable PyTorch checkpoint is present."""
     path = Path(pt_path).expanduser().resolve()
-    present = (path.is_file(), path.with_suffix(".npz").is_file())
-    return any(present) and not all(present)
+    return path.is_file() and not path.with_suffix(".npz").is_file()
 
 
 def ensure_schiebinger_classifiers(
@@ -235,8 +241,8 @@ def ensure_schiebinger_classifiers(
             ]
             if still_missing:
                 raise RuntimeError(
-                    "Schiebinger classifier trainer returned without complete "
-                    f".pt/.npz checkpoint pairs: {still_missing}."
+                    "Schiebinger classifier trainer returned without usable "
+                    f".npz checkpoints: {still_missing}."
                 )
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)

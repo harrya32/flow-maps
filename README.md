@@ -158,7 +158,8 @@ The all-days classifier is reserved for evaluation. At Schiebinger flow startup,
 `learn.py` creates it if absent and, only for a slurm ID that enables
 endpoint-interpolant filtering or a lineage constraint loss, also creates a
 second classifier trained on exactly the selected `--schiebinger_train_times`.
-Complete `.pt`/`.npz` pairs are reused, and a file lock prevents concurrent
+Existing `.npz` exports are reused without PyTorch (the corresponding `.pt`
+file is optional at runtime), and a file lock prevents concurrent
 jobs with the same schedule from training the same model twice. Set
 `SCHIEBINGER_CLASSIFIER_PYTHON` if the flow-training Python has no PyTorch; the
 launcher otherwise discovers the usual sibling `mfm_env`, `torchcfm`, or
