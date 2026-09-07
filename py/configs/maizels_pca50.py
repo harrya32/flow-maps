@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Sequence
 
 import ml_collections
 
@@ -30,6 +31,64 @@ SCHEDULES = {
     "d3_d8": ("D3", "D8"),
     "d3_d3p8_d8": ("D3", "D3.8", "D8"),
 }
+
+DEFAULT_HPARAM_VAL_TIMES = ("D3.4", "D6")
+
+
+def _parse_hparam_val_times(
+    value: str | Sequence[str] | None,
+    evaluation_timepoints: Sequence[str],
+) -> tuple[str, ...]:
+    """Return validated held-out days reserved for hyperparameter selection."""
+    if value is None:
+        value = os.getenv(
+            "MAIZELS_HPARAM_VAL_TIMES",
+            ",".join(DEFAULT_HPARAM_VAL_TIMES),
+        )
+    if isinstance(value, str):
+        if value.strip().lower() in ("", "none"):
+            requested = ()
+        else:
+            requested = tuple(item.strip() for item in value.split(",") if item.strip())
+    else:
+        requested = tuple(str(item).strip() for item in value)
+
+    by_value = {float(item[1:]): item for item in TIMEPOINTS}
+    canonical = []
+    for item in requested:
+        text = item[1:] if item.upper().startswith("D") else item
+        try:
+            timepoint = by_value[float(text)]
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                f"Unknown Maizels hparam validation time {item!r}; choose from "
+                f"{list(TIMEPOINTS)}."
+            ) from exc
+        if timepoint not in canonical:
+            canonical.append(timepoint)
+
+    unavailable = [item for item in canonical if item not in evaluation_timepoints]
+    if unavailable:
+        raise ValueError(
+            "Maizels hparam validation times must be held out by the selected "
+            f"schedule; unavailable values: {unavailable}."
+        )
+    return tuple(item for item in TIMEPOINTS if item in canonical)
+
+
+def get_hparam_sweep_spec(slurm_id: int) -> dict:
+    """Describe which grid dimensions affect a Maizels variant."""
+    variant_name, _, _, constraints_enabled, path_mode = variants[
+        int(slurm_id) % len(variants)
+    ]
+    return {
+        "variant_name": variant_name,
+        "learning_rate": True,
+        "constraint_weight": bool(constraints_enabled),
+        "entropy_weight": bool(
+            constraints_enabled and "nll" in str(path_mode or "")
+        ),
+    }
 
 
 def _canonical_schedule(value: str | None) -> str:
@@ -169,6 +228,10 @@ def get_config(
     classifier_path: str | None = None,
     maizels_schedule: str | None = None,
     maizels_time_mode: str | None = None,
+    hparam_val_times: str | Sequence[str] | None = None,
+    learning_rate: float | None = None,
+    constraint_weight: float | None = None,
+    entropy_weight: float | None = None,
 ) -> ml_collections.ConfigDict:
     import jax
 
@@ -222,6 +285,12 @@ def get_config(
     config.problem.evaluation_timepoints = [
         value for value in TIMEPOINTS if value not in retained_timepoints
     ]
+    config.problem.hparam_val_times = list(
+        _parse_hparam_val_times(
+            hparam_val_times,
+            config.problem.evaluation_timepoints,
+        )
+    )
     config.problem.timepoint_order = list(TIMEPOINTS)
     config.problem.timepoint_values = _timepoint_values(retained_timepoints, time_mode)
     config.problem.interp_type = (
@@ -287,7 +356,11 @@ def get_config(
     config.problem.ot_minibatch_max_resamples = 20
     config.problem.ot_minibatch_infeasible_fallback = "partial"
     config.optimization.diag_fraction = diag_fraction
-    config.optimization.learning_rate = 1e-3
+    if learning_rate is not None and float(learning_rate) <= 0:
+        raise ValueError("learning_rate must be positive.")
+    config.optimization.learning_rate = float(
+        1e-3 if learning_rate is None else learning_rate
+    )
     config.optimization.clip = 10.0
     config.optimization.total_steps = 10_000
     config.optimization.total_samples = (
@@ -426,6 +499,38 @@ def get_config(
     config.constraints.velocity_rollout_loss_scope = "endpoints" #path, endpoints
     config.constraints.lineage_transition_mode = "same_as_problem"
     config.constraints.stage2_only = False
+
+    entropy_relevant = bool(
+        config.constraints.enabled and "nll" in str(config.constraints.path_mode)
+    )
+    if constraint_weight is not None:
+        if not config.constraints.enabled:
+            raise ValueError(
+                "constraint_weight is not relevant for this unconstrained Slurm ID."
+            )
+        if float(constraint_weight) < 0:
+            raise ValueError("constraint_weight must be non-negative.")
+        config.constraints.weight = float(constraint_weight)
+    if entropy_weight is not None:
+        if not entropy_relevant:
+            raise ValueError(
+                "entropy_weight is relevant only to an enabled NLL lineage constraint."
+            )
+        if float(entropy_weight) < 0:
+            raise ValueError("entropy_weight must be non-negative.")
+        config.constraints.loss_point_entropy_weight = float(entropy_weight)
+
+    override_tags = []
+    if learning_rate is not None:
+        override_tags.append(f"lr{float(learning_rate):g}")
+    if constraint_weight is not None:
+        override_tags.append(f"cw{float(constraint_weight):g}")
+    if entropy_weight is not None:
+        override_tags.append(f"ew{float(entropy_weight):g}")
+    if override_tags:
+        suffix = "_".join(override_tags).replace(".", "p").replace("-", "m")
+        config.logging.wandb_name = f"{config.logging.wandb_name}_{suffix}"
+        config.logging.output_name = config.logging.wandb_name
 
     # Network config.
     config.network = ml_collections.ConfigDict()

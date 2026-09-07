@@ -195,6 +195,22 @@ the CITE/Multi-specific lineage graph. They report the shared
 best validation-loss checkpoint, alongside `test_EMD`/`mfm/test_EMD` and
 `final_eval/euler_mean_rbf_mmd2`.
 
+Run a resumable Maizels hyperparameter grid with:
+
+```bash
+python scripts/sweep_maizels_hparams.py \
+    --slurm-id 3 \
+    --dataset-location /path/to/Maizels2023aa
+```
+
+The default grid uses the `D3,D3.8,D8` training schedule and minimizes mean EMD
+at the held-out validation times `D3.4,D6`. Learning rate is always swept;
+constraint and entropy weights are added only for variants that use them.
+Results are appended to `outputs/maizels_hparam_sweep/slurm_<id>_results.csv`,
+and completed combinations are skipped when the command is resumed. Override
+the grids with `--learning-rates`, `--constraint-weights`, and
+`--entropy-weights`.
+
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
 `optimization.bs`; because each optimizer batch is balanced across two retained

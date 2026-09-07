@@ -83,6 +83,7 @@ def test_three_timepoint_config_supports_real_and_equal_clocks():
         "D6",
         "D7",
     ]
+    assert list(real_cfg.problem.hparam_val_times) == ["D3.4", "D6"]
     assert np.isclose(real_cfg.problem.timepoint_values[4], 0.16)
     assert np.isclose(equal_cfg.problem.timepoint_values[4], 0.5)
     assert real_cfg.problem.interp_type == "time_rescaled_linear"
@@ -112,6 +113,22 @@ def test_default_config_preserves_endpoint_training():
         cfg.logging.maizels.full_data_classifier_path
         == cfg.problem.classifier_path
     )
+
+
+def test_hparam_validation_times_are_configurable_and_must_be_held_out():
+    cfg = maizels_pca50.get_config(
+        0,
+        maizels_schedule="d3_d3p8_d8",
+        hparam_val_times="D3.2,7",
+    )
+    assert list(cfg.problem.hparam_val_times) == ["D3.2", "D7"]
+
+    with np.testing.assert_raises_regex(ValueError, "must be held out"):
+        maizels_pca50.get_config(
+            0,
+            maizels_schedule="d3_d3p8_d8",
+            hparam_val_times="D3.8",
+        )
 
 
 def test_constrained_ot_flow_matching_uses_velocity_constraint():

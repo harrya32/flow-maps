@@ -113,6 +113,20 @@ VARIANTS = [
 ]
 
 
+def get_hparam_sweep_spec(slurm_id: int) -> dict:
+    """Describe the hyperparameters consumed by a constraint-sweep variant."""
+    variant = VARIANTS[int(slurm_id) % len(VARIANTS)]
+    constraints_enabled = bool(variant["constraints_enabled"])
+    return {
+        "variant_name": variant["mode"],
+        "learning_rate": True,
+        "constraint_weight": constraints_enabled,
+        "entropy_weight": bool(
+            constraints_enabled and "nll" in str(variant["path_mode"])
+        ),
+    }
+
+
 def get_config(
     slurm_id: int,
     dataset_location: str = "",
@@ -122,6 +136,10 @@ def get_config(
     classifier_path=None,
     maizels_schedule=None,
     maizels_time_mode=None,
+    hparam_val_times=None,
+    learning_rate=None,
+    constraint_weight=None,
+    entropy_weight=None,
 ):
     variant = VARIANTS[slurm_id % len(VARIANTS)]
     cfg = _base_get_config(
@@ -133,6 +151,8 @@ def get_config(
         classifier_path=classifier_path,
         maizels_schedule=maizels_schedule,
         maizels_time_mode=maizels_time_mode,
+        hparam_val_times=hparam_val_times,
+        learning_rate=learning_rate,
     )
     seed = int(os.getenv("MAIZELS_SEED", str(cfg.training.seed)))
 
@@ -146,6 +166,25 @@ def get_config(
     cfg.constraints.loss_point_entropy_weight = variant.get(
         "loss_point_entropy_weight", 0.0
     )
+    if constraint_weight is not None:
+        if not cfg.constraints.enabled:
+            raise ValueError(
+                "constraint_weight is not relevant for this unconstrained Slurm ID."
+            )
+        if float(constraint_weight) < 0:
+            raise ValueError("constraint_weight must be non-negative.")
+        cfg.constraints.weight = float(constraint_weight)
+    if entropy_weight is not None:
+        entropy_relevant = bool(
+            cfg.constraints.enabled and "nll" in str(cfg.constraints.path_mode)
+        )
+        if not entropy_relevant:
+            raise ValueError(
+                "entropy_weight is relevant only to an enabled NLL lineage constraint."
+            )
+        if float(entropy_weight) < 0:
+            raise ValueError("entropy_weight must be non-negative.")
+        cfg.constraints.loss_point_entropy_weight = float(entropy_weight)
     cfg.constraints.velocity_rollout_loss_scope = variant.get(
         "velocity_rollout_loss_scope",
         getattr(cfg.constraints, "velocity_rollout_loss_scope", "endpoints"),
@@ -170,6 +209,16 @@ def get_config(
 
     mode = variant["mode"]
     run_name = f"maizels_pca50_{mode}_seed{seed}"
+    override_tags = []
+    if learning_rate is not None:
+        override_tags.append(f"lr{float(learning_rate):g}")
+    if constraint_weight is not None:
+        override_tags.append(f"cw{float(constraint_weight):g}")
+    if entropy_weight is not None:
+        override_tags.append(f"ew{float(entropy_weight):g}")
+    if override_tags:
+        suffix = "_".join(override_tags).replace(".", "p").replace("-", "m")
+        run_name = f"{run_name}_{suffix}"
     cfg.logging.wandb_name = run_name
     cfg.logging.output_name = run_name
     cfg.logging.comparison_mode = mode

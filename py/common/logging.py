@@ -2407,6 +2407,31 @@ def _log_maizels_distribution_eval(
         "linear_rbf_mmd2": [],
         "linear_emd": [],
     }
+    configured_hparam_val_times = (
+        getattr(cfg.problem, "hparam_val_times", None)
+        if getattr(cfg.problem, "target", None) == "maizels_pca50"
+        else None
+    )
+    hparam_val_values = (
+        None
+        if configured_hparam_val_times is None
+        else {
+            maizels.parse_timepoint(value)
+            for value in configured_hparam_val_times
+        }
+    )
+    test_time_emd = {
+        "direct": [],
+        "flowmap": [],
+        "euler": [],
+        "linear": [],
+    }
+    hparam_val_time_emd = {
+        "direct": [],
+        "flowmap": [],
+        "euler": [],
+        "linear": [],
+    }
 
     for timepoint in timepoints:
         actual_all = data["x"][data["timepoints"] == timepoint].astype(np.float32)
@@ -2525,10 +2550,26 @@ def _log_maizels_distribution_eval(
             metrics[f"distribution_eval/{tag}_{name}_emd"] = emd
             aggregate[f"{name}_rbf_mmd2"].append(mmd2)
             aggregate[f"{name}_emd"].append(emd)
+            if hparam_val_values is not None:
+                if maizels.parse_timepoint(timepoint) in hparam_val_values:
+                    hparam_val_time_emd[name].append(emd)
+                else:
+                    test_time_emd[name].append(emd)
 
     for key, values in aggregate.items():
         if values:
             metrics[f"distribution_eval/{key}_mean"] = float(np.mean(values))
+    if hparam_val_values is not None:
+        for name, values in test_time_emd.items():
+            if values:
+                metrics[f"distribution_eval/{name}_mean_emd_test_times"] = float(
+                    np.mean(values)
+                )
+        for name, values in hparam_val_time_emd.items():
+            if values:
+                metrics[
+                    f"distribution_eval/{name}_mean_emd_hparam_val_times"
+                ] = float(np.mean(values))
 
     if metrics:
         wandb.log(metrics)
@@ -3058,6 +3099,10 @@ def log_maizels_final_evaluation(
 
     for sampler in ("direct", "flowmap", "euler"):
         emd_key = f"distribution_eval/{sampler}_emd_mean"
+        test_emd_key = f"distribution_eval/{sampler}_mean_emd_test_times"
+        hparam_val_emd_key = (
+            f"distribution_eval/{sampler}_mean_emd_hparam_val_times"
+        )
         mmd_key = f"distribution_eval/{sampler}_rbf_mmd2_mean"
         valid_key = f"maizels/model_{sampler}_valid_trajectory_pct"
         full_data_valid_key = (
@@ -3070,6 +3115,14 @@ def log_maizels_final_evaluation(
             final_metrics[f"final_eval/{sampler}_mean_emd"] = distribution_metrics[
                 emd_key
             ]
+        if test_emd_key in distribution_metrics:
+            final_metrics[f"final_eval/{sampler}_mean_emd_test_times"] = (
+                distribution_metrics[test_emd_key]
+            )
+        if hparam_val_emd_key in distribution_metrics:
+            final_metrics[
+                f"final_eval/{sampler}_mean_emd_hparam_val_times"
+            ] = distribution_metrics[hparam_val_emd_key]
         if mmd_key in distribution_metrics:
             final_metrics[f"final_eval/{sampler}_mean_rbf_mmd2"] = (
                 distribution_metrics[mmd_key]
@@ -3088,12 +3141,24 @@ def log_maizels_final_evaluation(
             ] = trajectory_metrics[full_data_invalid_key]
 
     linear_emd_key = "distribution_eval/linear_emd_mean"
+    linear_test_emd_key = "distribution_eval/linear_mean_emd_test_times"
+    linear_hparam_val_emd_key = (
+        "distribution_eval/linear_mean_emd_hparam_val_times"
+    )
     linear_mmd_key = "distribution_eval/linear_rbf_mmd2_mean"
     interpolant_valid_key = "maizels/interpolant_valid_trajectory_pct"
     if linear_emd_key in distribution_metrics:
         final_metrics["final_eval/linear_mean_emd"] = distribution_metrics[
             linear_emd_key
         ]
+    if linear_test_emd_key in distribution_metrics:
+        final_metrics["final_eval/linear_mean_emd_test_times"] = (
+            distribution_metrics[linear_test_emd_key]
+        )
+    if linear_hparam_val_emd_key in distribution_metrics:
+        final_metrics["final_eval/linear_mean_emd_hparam_val_times"] = (
+            distribution_metrics[linear_hparam_val_emd_key]
+        )
     if linear_mmd_key in distribution_metrics:
         final_metrics["final_eval/linear_mean_rbf_mmd2"] = distribution_metrics[
             linear_mmd_key

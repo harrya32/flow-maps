@@ -27,6 +27,7 @@ tf.config.set_visible_devices([], "GPU")  # Hide all GPUs from TensorFlow
 import argparse
 import importlib
 import inspect
+import json
 import time
 from typing import Dict, Tuple
 
@@ -57,7 +58,7 @@ def train_loop(
     statics: state_utils.StaticArgs,
     train_state: state_utils.EMATrainState,
     prng_key: np.ndarray,
-) -> None:
+) -> Dict[str, float]:
     """Carry out the training loop."""
 
     pbar = tqdm(range(cfg.optimization.total_steps))
@@ -89,6 +90,7 @@ def train_loop(
     best_step = None
     best_params_for_evaluation = None
     checks_without_improvement = 0
+    final_metrics = {}
     maizels_cfg = getattr(cfg.logging, "maizels", None)
     validation_enabled = maizels_cfg is not None and bool(
         getattr(maizels_cfg, "validation_enabled", False)
@@ -231,13 +233,14 @@ def train_loop(
             evaluation_metric = float(best_metric)
             print(f"Evaluating the best model from step {evaluation_step}.")
 
-        logging.log_maizels_final_evaluation(
+        final_metrics = logging.log_maizels_final_evaluation(
             cfg,
             train_state,
             params_for_evaluation,
             best_step=evaluation_step,
             best_metric=evaluation_metric,
         )
+    return final_metrics
 
 
 def parse_command_line_arguments():
@@ -298,6 +301,39 @@ def parse_command_line_arguments():
         help="Use elapsed-day or equally spaced retained-interval model time.",
     )
     parser.add_argument(
+        "--hparam_val_times",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated held-out Maizels days used for hyperparameter "
+            "validation and excluded from test-only aggregate EMD metrics."
+        ),
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=None,
+        help="Optional learning-rate override for configurations that expose it.",
+    )
+    parser.add_argument(
+        "--constraint_weight",
+        type=float,
+        default=None,
+        help="Optional lineage-constraint weight override.",
+    )
+    parser.add_argument(
+        "--entropy_weight",
+        type=float,
+        default=None,
+        help="Optional classifier-entropy weight override for NLL constraints.",
+    )
+    parser.add_argument(
+        "--final_metrics_path",
+        type=str,
+        default=None,
+        help="Optional JSON destination for final evaluation metrics.",
+    )
+    parser.add_argument(
         "--schiebinger_train_times",
         type=str,
         default=None,
@@ -319,8 +355,8 @@ def parse_command_line_arguments():
     return parser.parse_args()
 
 
-def setup_config_dict():
-    args = parse_command_line_arguments()
+def setup_config_dict(args=None):
+    args = args or parse_command_line_arguments()
     cfg_module = importlib.import_module(args.cfg_path)
     get_config = cfg_module.get_config
     supported = inspect.signature(get_config).parameters
@@ -333,6 +369,10 @@ def setup_config_dict():
         "maizels_ot_coupling": args.maizels_ot_coupling,
         "maizels_schedule": args.maizels_schedule,
         "maizels_time_mode": args.maizels_time_mode,
+        "hparam_val_times": args.hparam_val_times,
+        "learning_rate": args.learning_rate,
+        "constraint_weight": args.constraint_weight,
+        "entropy_weight": args.entropy_weight,
         "schiebinger_train_times": args.schiebinger_train_times,
         "schiebinger_n_pcs": args.schiebinger_n_pcs,
     }
@@ -342,6 +382,21 @@ def setup_config_dict():
         if value is not None and name in supported
     }
     return get_config(args.slurm_id, args.dataset_location, args.output_folder, **kwargs)
+
+
+def write_final_metrics(path: str, metrics: Dict[str, float]) -> None:
+    """Atomically write final scalar metrics for an external sweep driver."""
+    destination = pathlib.Path(path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    serializable = {}
+    for key, value in metrics.items():
+        array = np.asarray(jax.device_get(value))
+        serializable[str(key)] = array.item() if array.ndim == 0 else array.tolist()
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    with temporary.open("w") as handle:
+        json.dump(serializable, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, destination)
 
 
 def setup_state(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray) -> Tuple[
@@ -401,7 +456,8 @@ def setup_state(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray) -> Tuple[
 
 if __name__ == "__main__":
     print("Entering main. Setting up config dict and PRNG key.")
-    cfg = setup_config_dict()
+    args = parse_command_line_arguments()
+    cfg = setup_config_dict(args)
     schiebinger_classifier_training.ensure_schiebinger_classifiers(cfg)
 
     # Populate JAX device information for single-node multi-GPU training
@@ -422,4 +478,6 @@ if __name__ == "__main__":
     print("Config dict set up. Setting up static arguments and training state.")
     cfg, statics, train_state, prng_key = setup_state(cfg, prng_key)
 
-    train_loop(cfg, statics, train_state, prng_key)
+    final_metrics = train_loop(cfg, statics, train_state, prng_key)
+    if args.final_metrics_path:
+        write_final_metrics(args.final_metrics_path, final_metrics)
