@@ -39,12 +39,45 @@ def test_maizels_config_applies_only_relevant_overrides():
         learning_rate=3e-4,
         constraint_weight=350.0,
         entropy_weight=0.1,
+        seed=2,
     )
     assert constrained.optimization.learning_rate == 3e-4
     assert constrained.constraints.weight == 350.0
     assert constrained.constraints.loss_point_entropy_weight == 0.1
+    assert constrained.training.seed == 2
 
     with pytest.raises(ValueError, match="not relevant"):
         maizels_pca50.get_config(3, constraint_weight=350.0)
     with pytest.raises(ValueError, match="relevant only"):
         maizels_pca50.get_config(3, entropy_weight=0.1)
+
+
+def test_seed_summary_uses_mean_validation_emd_across_completed_seeds():
+    setting = {
+        "setting_id": "setting-a",
+        "slurm_id": 3,
+        "variant_name": "bio_prior_flow_map",
+        "maizels_schedule": "d3_d3p8_d8",
+        "maizels_time_mode": "real_time",
+        "hparam_val_times": "D3.4,D6",
+        "learning_rate": 1e-3,
+        "constraint_weight": "",
+        "entropy_weight": "",
+    }
+    metric = "final_eval/direct_mean_emd_hparam_val_times"
+    rows = [
+        {
+            "setting_id": "setting-a",
+            "status": "complete",
+            "seed": seed,
+            metric: value,
+        }
+        for seed, value in zip((0, 1, 2), (1.0, 2.0, 3.0))
+    ]
+
+    summary = sweep.summarize_settings(rows, [setting], (0, 1, 2), metric)[0]
+
+    assert summary["status"] == "complete"
+    assert summary["objective_mean"] == 2.0
+    assert summary["objective_std"] == 1.0
+    assert summary["n_seeds_completed"] == 3

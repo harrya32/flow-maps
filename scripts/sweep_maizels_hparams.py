@@ -18,6 +18,7 @@ import json
 import math
 import os
 import shlex
+import statistics
 import subprocess
 import sys
 import time
@@ -36,8 +37,10 @@ DEFAULT_ENTROPY_WEIGHTS = (0.0, 0.01, 0.1)
 
 BASE_COLUMNS = [
     "run_id",
+    "setting_id",
     "status",
     "slurm_id",
+    "seed",
     "variant_name",
     "maizels_schedule",
     "maizels_time_mode",
@@ -54,6 +57,25 @@ BASE_COLUMNS = [
     "error",
 ]
 
+SUMMARY_BASE_COLUMNS = [
+    "setting_id",
+    "status",
+    "slurm_id",
+    "variant_name",
+    "maizels_schedule",
+    "maizels_time_mode",
+    "hparam_val_times",
+    "learning_rate",
+    "constraint_weight",
+    "entropy_weight",
+    "seeds",
+    "n_seeds_planned",
+    "n_seeds_completed",
+    "objective_metric",
+    "objective_mean",
+    "objective_std",
+]
+
 
 def parse_float_grid(text: str, name: str) -> tuple[float, ...]:
     try:
@@ -64,6 +86,20 @@ def parse_float_grid(text: str, name: str) -> tuple[float, ...]:
         raise argparse.ArgumentTypeError(f"{name} cannot be empty.")
     if len(set(values)) != len(values):
         raise argparse.ArgumentTypeError(f"{name} contains duplicate values.")
+    return values
+
+
+def parse_seed_grid(text: str) -> tuple[int, ...]:
+    try:
+        values = tuple(int(item.strip()) for item in text.split(",") if item.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("seeds must be comma-separated integers.") from exc
+    if not values:
+        raise argparse.ArgumentTypeError("seeds cannot be empty.")
+    if any(value < 0 for value in values):
+        raise argparse.ArgumentTypeError("seeds must be non-negative.")
+    if len(set(values)) != len(values):
+        raise argparse.ArgumentTypeError("seeds contains duplicate values.")
     return values
 
 
@@ -99,7 +135,7 @@ def _float_slug(value: float | None) -> str:
     return f"{float(value):g}".replace("-", "m").replace(".", "p").replace("+", "")
 
 
-def run_id_for(
+def setting_id_for(
     *,
     cfg_path: str,
     slurm_id: int,
@@ -127,6 +163,11 @@ def run_id_for(
     return "_".join(parts + [digest])
 
 
+def run_id_for(setting_id: str, seed: int) -> str:
+    digest = hashlib.sha1(f"{setting_id}:{int(seed)}".encode("utf-8")).hexdigest()[:6]
+    return f"{setting_id}_seed{int(seed)}_{digest}"
+
+
 def read_rows(path: Path) -> List[Dict[str, str]]:
     if not path.exists():
         return []
@@ -148,12 +189,94 @@ def write_rows(path: Path, rows: List[Dict[str, object]]) -> None:
     os.replace(temporary, path)
 
 
+def write_summary_rows(path: Path, rows: List[Dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    extra_columns = sorted(
+        {key for row in rows for key in row if key not in SUMMARY_BASE_COLUMNS}
+    )
+    fieldnames = SUMMARY_BASE_COLUMNS + extra_columns
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(temporary, path)
+
+
+def summarize_settings(
+    rows: List[Dict[str, object]],
+    settings: List[Dict[str, object]],
+    seeds: tuple[int, ...],
+    objective_metric: str,
+) -> List[Dict[str, object]]:
+    """Aggregate completed per-seed metrics for each hyperparameter setting."""
+    summaries = []
+    expected_seeds = set(seeds)
+    for setting in settings:
+        matching = [
+            row
+            for row in rows
+            if row.get("setting_id") == setting["setting_id"]
+            and row.get("status") == "complete"
+            and int(row["seed"]) in expected_seeds
+        ]
+        completed_seeds = {int(row["seed"]) for row in matching}
+        metric_names = sorted(
+            {
+                key
+                for row in matching
+                for key, value in row.items()
+                if key.startswith("final_eval/")
+                and str(value) != ""
+                and _is_finite_number(value)
+            }
+        )
+        summary = {
+            **setting,
+            "status": (
+                "complete"
+                if completed_seeds == expected_seeds
+                else "partial" if completed_seeds else "failed"
+            ),
+            "seeds": ",".join(str(seed) for seed in seeds),
+            "n_seeds_planned": len(seeds),
+            "n_seeds_completed": len(completed_seeds),
+            "objective_metric": objective_metric,
+            "objective_mean": "",
+            "objective_std": "",
+        }
+        for metric_name in metric_names:
+            values = [
+                float(row[metric_name])
+                for row in matching
+                if metric_name in row and _is_finite_number(row[metric_name])
+            ]
+            if not values:
+                continue
+            mean = statistics.fmean(values)
+            std = statistics.stdev(values) if len(values) > 1 else 0.0
+            summary[f"{metric_name}_mean_across_seeds"] = mean
+            summary[f"{metric_name}_std_across_seeds"] = std
+            if metric_name == objective_metric:
+                summary["objective_mean"] = mean
+                summary["objective_std"] = std
+        summaries.append(summary)
+    return summaries
+
+
 def upsert_row(rows: List[Dict[str, object]], row: Dict[str, object]) -> None:
     for index, existing in enumerate(rows):
         if existing.get("run_id") == row["run_id"]:
             rows[index] = row
             return
     rows.append(row)
+
+
+def _is_finite_number(value: object) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -174,6 +297,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Root for per-run checkpoints, metric JSON files, and the CSV.",
     )
     parser.add_argument("--output-csv", default=None)
+    parser.add_argument("--summary-csv", default=None)
+    parser.add_argument(
+        "--seeds",
+        default="0,1,2",
+        help="Comma-separated training seeds repeated for every grid setting.",
+    )
     parser.add_argument(
         "--learning-rates",
         default=",".join(f"{value:g}" for value in DEFAULT_LEARNING_RATES),
@@ -267,6 +396,7 @@ def main(argv=None) -> int:
         args.constraint_weights, "constraint weights"
     )
     entropy_weights = parse_float_grid(args.entropy_weights, "entropy weights")
+    seeds = parse_seed_grid(args.seeds)
     if any(value <= 0 for value in learning_rates):
         raise ValueError("All learning rates must be positive.")
     if any(value < 0 for value in constraint_weights + entropy_weights):
@@ -282,6 +412,11 @@ def main(argv=None) -> int:
         if args.output_csv
         else output_root / f"slurm_{args.slurm_id}_results.csv"
     )
+    summary_csv_path = (
+        Path(args.summary_csv).expanduser().resolve()
+        if args.summary_csv
+        else output_root / f"slurm_{args.slurm_id}_summary.csv"
+    )
     rows: List[Dict[str, object]] = list(read_rows(csv_path))
     completed = {
         str(row["run_id"])
@@ -294,16 +429,18 @@ def main(argv=None) -> int:
         ignored.append("constraint weight")
     if not bool(spec["entropy_weight"]):
         ignored.append("entropy weight")
+    total_runs = len(grid) * len(seeds)
     print(
-        f"Variant {variant_name!r}: {len(grid)} grid runs; objective="
-        f"{objective_metric}."
+        f"Variant {variant_name!r}: {len(grid)} settings x {len(seeds)} seeds "
+        f"= {total_runs} runs; objective={objective_metric}."
     )
     if ignored:
         print("Not sweeping irrelevant dimensions: " + ", ".join(ignored) + ".")
 
-    current_run_ids = set()
-    for index, values in enumerate(grid, start=1):
-        run_id = run_id_for(
+    settings = []
+    planned_runs = []
+    for values in grid:
+        setting_id = setting_id_for(
             cfg_path=args.cfg_path,
             slurm_id=args.slurm_id,
             schedule=args.maizels_schedule,
@@ -311,9 +448,29 @@ def main(argv=None) -> int:
             hparam_val_times=args.hparam_val_times,
             values=values,
         )
-        current_run_ids.add(run_id)
+        setting = {
+            "setting_id": setting_id,
+            "slurm_id": args.slurm_id,
+            "variant_name": variant_name,
+            "maizels_schedule": args.maizels_schedule,
+            "maizels_time_mode": args.maizels_time_mode,
+            "hparam_val_times": args.hparam_val_times,
+            "learning_rate": values["learning_rate"],
+            "constraint_weight": (
+                "" if values["constraint_weight"] is None else values["constraint_weight"]
+            ),
+            "entropy_weight": (
+                "" if values["entropy_weight"] is None else values["entropy_weight"]
+            ),
+        }
+        settings.append(setting)
+        for seed in seeds:
+            planned_runs.append((setting_id, values, seed))
+
+    for index, (setting_id, values, seed) in enumerate(planned_runs, start=1):
+        run_id = run_id_for(setting_id, seed)
         if run_id in completed and not args.rerun_completed:
-            print(f"[{index}/{len(grid)}] Skipping completed {run_id}.")
+            print(f"[{index}/{total_runs}] Skipping completed {run_id}.")
             continue
 
         run_root = output_root / run_id
@@ -338,6 +495,8 @@ def main(argv=None) -> int:
             args.hparam_val_times,
             "--learning_rate",
             f"{values['learning_rate']:g}",
+            "--seed",
+            str(seed),
             "--final_metrics_path",
             str(metrics_path),
         ]
@@ -352,7 +511,7 @@ def main(argv=None) -> int:
                 ["--early_stopping_patience", str(args.early_stopping_patience)]
             )
 
-        print(f"[{index}/{len(grid)}] {run_id}")
+        print(f"[{index}/{total_runs}] {run_id}")
         print(shlex.join(command))
         if args.dry_run:
             continue
@@ -389,15 +548,19 @@ def main(argv=None) -> int:
 
         row: Dict[str, object] = {
             "run_id": run_id,
+            "setting_id": setting_id,
             "status": status,
             "slurm_id": args.slurm_id,
+            "seed": seed,
             "variant_name": variant_name,
             "maizels_schedule": args.maizels_schedule,
             "maizels_time_mode": args.maizels_time_mode,
             "hparam_val_times": args.hparam_val_times,
             "learning_rate": values["learning_rate"],
             "constraint_weight": (
-                "" if values["constraint_weight"] is None else values["constraint_weight"]
+                ""
+                if values["constraint_weight"] is None
+                else values["constraint_weight"]
             ),
             "entropy_weight": (
                 "" if values["entropy_weight"] is None else values["entropy_weight"]
@@ -413,23 +576,27 @@ def main(argv=None) -> int:
         }
         upsert_row(rows, row)
         write_rows(csv_path, rows)
+        write_summary_rows(
+            summary_csv_path,
+            summarize_settings(rows, settings, seeds, objective_metric),
+        )
         print(f"Recorded {status} result in {csv_path}.")
         if status != "complete" and args.fail_fast:
             return result.returncode or 1
 
-    completed_rows = [
+    summary_rows = summarize_settings(rows, settings, seeds, objective_metric)
+    if not args.dry_run:
+        write_summary_rows(summary_csv_path, summary_rows)
+    completed_settings = [
         row
-        for row in rows
-        if row.get("run_id") in current_run_ids
-        and row.get("status") == "complete"
-        and row.get("objective_metric") == objective_metric
-        and str(row.get("objective_value", "")) != ""
+        for row in summary_rows
+        if row["status"] == "complete" and _is_finite_number(row["objective_mean"])
     ]
-    if completed_rows:
-        best = min(completed_rows, key=lambda row: float(row["objective_value"]))
+    if completed_settings:
+        best = min(completed_settings, key=lambda row: float(row["objective_mean"]))
         print(
-            f"Best {objective_metric}={float(best['objective_value']):.8g}: "
-            f"{best['run_id']}"
+            f"Best mean {objective_metric}={float(best['objective_mean']):.8g} "
+            f"across seeds {args.seeds}: {best['setting_id']}"
         )
     elif not args.dry_run:
         print("No grid run completed successfully.")

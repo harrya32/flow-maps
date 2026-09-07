@@ -316,6 +316,12 @@ def parse_command_line_arguments():
         help="Optional learning-rate override for configurations that expose it.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional training-seed override for configurations that expose it.",
+    )
+    parser.add_argument(
         "--constraint_weight",
         type=float,
         default=None,
@@ -371,6 +377,7 @@ def setup_config_dict(args=None):
         "maizels_time_mode": args.maizels_time_mode,
         "hparam_val_times": args.hparam_val_times,
         "learning_rate": args.learning_rate,
+        "seed": args.seed,
         "constraint_weight": args.constraint_weight,
         "entropy_weight": args.entropy_weight,
         "schiebinger_train_times": args.schiebinger_train_times,

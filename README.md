@@ -204,12 +204,14 @@ python scripts/sweep_maizels_hparams.py \
 ```
 
 The default grid uses the `D3,D3.8,D8` training schedule and minimizes mean EMD
-at the held-out validation times `D3.4,D6`. Learning rate is always swept;
+at the held-out validation times `D3.4,D6`. Each setting runs with seeds
+`0,1,2`; change them with `--seeds`. Learning rate is always swept, while
 constraint and entropy weights are added only for variants that use them.
-Results are appended to `outputs/maizels_hparam_sweep/slurm_<id>_results.csv`,
-and completed combinations are skipped when the command is resumed. Override
-the grids with `--learning-rates`, `--constraint-weights`, and
-`--entropy-weights`.
+Per-seed results go to
+`outputs/maizels_hparam_sweep/slurm_<id>_results.csv`; across-seed means and
+standard deviations go to the corresponding `slurm_<id>_summary.csv`.
+Completed runs are skipped when the command is resumed. Override the grids with
+`--learning-rates`, `--constraint-weights`, and `--entropy-weights`.
 
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks

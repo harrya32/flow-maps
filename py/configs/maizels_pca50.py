@@ -232,6 +232,7 @@ def get_config(
     learning_rate: float | None = None,
     constraint_weight: float | None = None,
     entropy_weight: float | None = None,
+    seed: int | None = None,
 ) -> ml_collections.ConfigDict:
     import jax
 
@@ -258,7 +259,9 @@ def get_config(
     config.training.loss_type = loss_type
     config.training.tmin = 0.0
     config.training.tmax = 1.0
-    config.training.seed = 0
+    if seed is not None and int(seed) < 0:
+        raise ValueError("seed must be non-negative.")
+    config.training.seed = int(0 if seed is None else seed)
     config.training.ema_facs = [0.999, 0.9999]
     config.training.ndevices = jax.device_count()
     #config.training.teacher_ema_factor = 0.999
@@ -521,6 +524,8 @@ def get_config(
         config.constraints.loss_point_entropy_weight = float(entropy_weight)
 
     override_tags = []
+    if seed is not None:
+        override_tags.append(f"seed{int(seed)}")
     if learning_rate is not None:
         override_tags.append(f"lr{float(learning_rate):g}")
     if constraint_weight is not None:

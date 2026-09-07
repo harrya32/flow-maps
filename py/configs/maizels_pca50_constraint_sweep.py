@@ -140,6 +140,7 @@ def get_config(
     learning_rate=None,
     constraint_weight=None,
     entropy_weight=None,
+    seed=None,
 ):
     variant = VARIANTS[slurm_id % len(VARIANTS)]
     cfg = _base_get_config(
@@ -153,8 +154,11 @@ def get_config(
         maizels_time_mode=maizels_time_mode,
         hparam_val_times=hparam_val_times,
         learning_rate=learning_rate,
+        seed=seed,
     )
-    seed = int(os.getenv("MAIZELS_SEED", str(cfg.training.seed)))
+    seed = int(
+        seed if seed is not None else os.getenv("MAIZELS_SEED", str(cfg.training.seed))
+    )
 
     cfg.training.seed = seed
     cfg.problem.maizels_pair_mode = variant.get(
