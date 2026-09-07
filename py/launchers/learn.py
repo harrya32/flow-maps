@@ -37,6 +37,7 @@ import common.interpolant as interpolant
 import common.logging as logging
 import common.loss_args as loss_args
 import common.losses as losses
+import common.schiebinger_classifier_training as schiebinger_classifier_training
 import common.state_utils as state_utils
 import common.updates as updates
 import jax
@@ -296,6 +297,25 @@ def parse_command_line_arguments():
         default=None,
         help="Use elapsed-day or equally spaced retained-interval model time.",
     )
+    parser.add_argument(
+        "--schiebinger_train_times",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated Schiebinger training days. The earliest and latest "
+            "selected days define the window; omitted internal days are eval and "
+            "observations outside the window are ignored."
+        ),
+    )
+    parser.add_argument(
+        "--schiebinger_n_pcs",
+        type=int,
+        default=None,
+        help=(
+            "Number of stored Schiebinger HVG principal components to use. "
+            "Defaults to 5."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -313,6 +333,8 @@ def setup_config_dict():
         "maizels_ot_coupling": args.maizels_ot_coupling,
         "maizels_schedule": args.maizels_schedule,
         "maizels_time_mode": args.maizels_time_mode,
+        "schiebinger_train_times": args.schiebinger_train_times,
+        "schiebinger_n_pcs": args.schiebinger_n_pcs,
     }
     kwargs = {
         name: value
@@ -380,6 +402,7 @@ def setup_state(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray) -> Tuple[
 if __name__ == "__main__":
     print("Entering main. Setting up config dict and PRNG key.")
     cfg = setup_config_dict()
+    schiebinger_classifier_training.ensure_schiebinger_classifiers(cfg)
 
     # Populate JAX device information for single-node multi-GPU training
     cfg.training.ndevices = jax.device_count()

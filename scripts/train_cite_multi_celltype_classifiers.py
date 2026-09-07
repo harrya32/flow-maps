@@ -64,6 +64,7 @@ class ClassifierVariant:
     key: str
     excluded_day: str | None
     usage: str
+    included_days: Tuple[str, ...] | None = None
 
 
 CLASSIFIER_VARIANTS: Mapping[str, ClassifierVariant] = {
@@ -415,6 +416,18 @@ def select_variant_rows(
     variant: ClassifierVariant,
 ) -> Any:
     """Return source-row indices after applying the variant's day exclusion."""
+    if variant.included_days is not None:
+        requested = tuple(str(day) for day in variant.included_days)
+        available = set(str(day) for day in data["days"])
+        missing = [day for day in requested if day not in available]
+        if missing:
+            raise ValueError(
+                f"Cannot train {variant.key}: requested days are absent: {missing}."
+            )
+        selected = np.flatnonzero(np.isin(data["days"], requested))
+        if selected.size == 0:
+            raise ValueError(f"Cannot train {variant.key}: no rows were selected.")
+        return selected.astype(np.int64, copy=False)
     if variant.excluded_day is None:
         return np.arange(data["n_cells"], dtype=np.int64)
     selected = np.flatnonzero(data["days"] != variant.excluded_day)
@@ -717,8 +730,16 @@ def train_one_variant(
     from torch import nn
 
     run_label = f"{dataset}/{variant.key}"
-    output_dir = classifier_output_dir(args.output_root, dataset)
-    stem = checkpoint_stem(dataset, args.n_pcs, variant.key)
+    configured_output_dir = getattr(args, "classifier_output_dir", None)
+    output_dir = (
+        Path(configured_output_dir).expanduser().resolve()
+        if configured_output_dir is not None
+        else classifier_output_dir(args.output_root, dataset)
+    )
+    stem = str(
+        getattr(args, "checkpoint_stem_override", "")
+        or checkpoint_stem(dataset, args.n_pcs, variant.key)
+    )
     pt_path = output_dir / f"{stem}.pt"
     npz_path = output_dir / f"{stem}.npz"
     report_dir = (
@@ -767,6 +788,11 @@ def train_one_variant(
     if variant.excluded_day is not None:
         print(
             f"[{run_label}] Excluded every day-{variant.excluded_day} cell.", flush=True
+        )
+    if variant.included_days is not None:
+        print(
+            f"[{run_label}] Included only days {list(variant.included_days)}.",
+            flush=True,
         )
     print(f"[{run_label}] Classes: {counts_text}", flush=True)
     print(
@@ -941,6 +967,9 @@ def train_one_variant(
         "variant": variant.key,
         "usage": variant.usage,
         "excluded_day": variant.excluded_day,
+        "requested_included_days": (
+            None if variant.included_days is None else list(variant.included_days)
+        ),
         "included_days": sorted(
             str(value) for value in np.unique(data["days"][selected_indices])
         ),
@@ -1001,6 +1030,7 @@ def train_one_variant(
         dataset=np.asarray(dataset),
         variant=np.asarray(variant.key),
         excluded_day=np.asarray(variant.excluded_day or ""),
+        included_days=np.asarray(variant.included_days or (), dtype=str),
         **numpy_state,
     )
 

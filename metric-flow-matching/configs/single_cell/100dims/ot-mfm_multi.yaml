@@ -16,3 +16,6 @@ alpha_metric: 1
 metric_epochs: 200
 mfm: true
 seeds: [42]
+cite_multi_eval_enabled: true
+cite_multi_eval_check_times: 50
+cite_multi_eval_source_max_points: 0

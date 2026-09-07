@@ -120,22 +120,43 @@ def _resolve_full_data_classifier_path() -> str:
 
 
 variants = [
+    # (run name, pair mode, diagonal fraction, constraint enabled, path mode)
     # ID 0: vanilla flow matching.
-    ("vanilla_flow_matching", "none", 1.0, False),
+    ("vanilla_flow_matching", "none", 1.0, False, None),
     # ID 1: vanilla flow map.
-    ("vanilla_flow_map", "none", 0.75, False),
+    ("vanilla_flow_map", "none", 0.75, False, None),
     # ID 2: bio-prior flow matching.
-    ("bio_prior_flow_matching", "endpoint_interpolant", 1.0, False),
+    ("bio_prior_flow_matching", "endpoint_interpolant", 1.0, False, None),
     # ID 3: bio-prior flow map.
-    ("bio_prior_flow_map", "endpoint_interpolant", 0.75, False),
+    ("bio_prior_flow_map", "endpoint_interpolant", 0.75, False, None),
     # ID 4: bio-prior flow map with differentiable lineage constraint.
-    ("bio_prior_constrained_flow_map", "endpoint_interpolant", 0.75, True),
+    (
+        "bio_prior_constrained_flow_map",
+        "endpoint_interpolant",
+        0.75,
+        True,
+        "loss_points_nll",
+    ),
     # ID 5: bio-prior flow map with OT couplings.
-    ("bio_prior_ot_flow_map", "ot_endpoint_interpolant", 0.75, False),
+    ("bio_prior_ot_flow_map", "ot_endpoint_interpolant", 0.75, False, None),
     # ID 6: bio-prior flow map with OT couplings and differentiable lineage constraint.
-    ("bio_prior_ot_constrained_flow_map", "ot_endpoint_interpolant", 0.75, True),
+    (
+        "bio_prior_ot_constrained_flow_map",
+        "ot_endpoint_interpolant",
+        0.75,
+        True,
+        "loss_points_nll",
+    ),
     # ID 7: ot plain flow map.
-    ("ot_flow_map", "ot_plain", 0.75, False),
+    ("ot_flow_map", "ot_plain", 0.75, False, None),
+    # ID 8: bio-prior flow matching with OT couplings and a velocity constraint.
+    (
+        "bio_prior_ot_constrained_flow_matching",
+        "ot_endpoint_interpolant",
+        1.0,
+        True,
+        "velocity_loss_points_nll",
+    ),
 ]
 
 
@@ -151,9 +172,13 @@ def get_config(
 ) -> ml_collections.ConfigDict:
     import jax
 
-    variant_name, pair_mode, diag_fraction, use_lineage_constraint = variants[
-        slurm_id % len(variants)
-    ]
+    (
+        variant_name,
+        pair_mode,
+        diag_fraction,
+        use_lineage_constraint,
+        constraint_path_mode,
+    ) = variants[slurm_id % len(variants)]
     loss_type = "lsd"
     psd_type = None
     stopgrad_type = "convex"
@@ -383,7 +408,7 @@ def get_config(
     config.constraints = ml_collections.ConfigDict()
     config.constraints.enabled = use_lineage_constraint
     config.constraints.type = "maizels_lineage_path"
-    config.constraints.path_mode = "loss_points_nll" #velocity_loss_points_nll, loss_points_nll, direct
+    config.constraints.path_mode = constraint_path_mode or "loss_points_nll"
     config.constraints.path_n_times = 10
     config.constraints.euler_steps = 10
     config.constraints.constraint_batch_size = 32

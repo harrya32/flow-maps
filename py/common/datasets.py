@@ -16,7 +16,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from ml_collections import config_dict
 
-from . import cite_multi, maizels
+from . import cite_multi, maizels, schiebinger
 
 _SCHIEBINGER_SERUM_URLS = [
     "https://figshare.com/ndownloader/files/35858033",
@@ -582,26 +582,23 @@ def _load_schiebinger_anndata(cfg: config_dict.ConfigDict):
         return _SCHIEBINGER_CACHE[cache_key]
 
     try:
-        import scanpy as sc
-    except ModuleNotFoundError:
-        sc = None
-    try:
         import anndata as ad
     except ModuleNotFoundError:
         ad = None
 
-    if sc is None and ad is None:
-        raise ImportError("Either scanpy or anndata is required for Schiebinger loading.")
-
     # Prefer explicit serum file if requested and available.
     if subset_to_serum and subset_path.exists():
-        adata = sc.read(subset_path) if sc is not None else ad.read_h5ad(subset_path)
+        if ad is None:
+            raise ImportError("anndata is required for local Schiebinger loading.")
+        adata = ad.read_h5ad(subset_path)
         _SCHIEBINGER_CACHE[cache_key] = adata
         return adata
 
     # Fall back to full local file and subset in-memory if needed.
     if base_path.exists():
-        adata = sc.read(base_path) if sc is not None else ad.read_h5ad(base_path)
+        if ad is None:
+            raise ImportError("anndata is required for local Schiebinger loading.")
+        adata = ad.read_h5ad(base_path)
         if subset_to_serum:
             if "serum" not in adata.obs:
                 raise RuntimeError(
@@ -611,8 +608,11 @@ def _load_schiebinger_anndata(cfg: config_dict.ConfigDict):
         _SCHIEBINGER_CACHE[cache_key] = adata
         return adata
 
-    # Optional URL fallback requires scanpy backup_url support.
-    if sc is None:
+    # Optional URL fallback requires scanpy backup_url support. Import it only
+    # here; precomputed local PCA files do not otherwise need Scanpy at runtime.
+    try:
+        import scanpy as sc
+    except ModuleNotFoundError:
         raise RuntimeError(
             "Could not find local Schiebinger .h5ad and scanpy is unavailable for URL fallback."
         )
@@ -664,24 +664,20 @@ def load_schiebinger_embedding(
     adata = _load_schiebinger_anndata(cfg)
     embedding_key = getattr(cfg.problem, "embedding_key", "X_pca")
     n_pcs = int(getattr(cfg.problem, "n_pcs", 5))
-    pca_random_state = int(
-        getattr(cfg.problem, "pca_random_state", getattr(cfg.training, "seed", 0))
-    )
     whiten_pca = bool(getattr(cfg.problem, "whiten_pca", False))
     time_key = getattr(cfg.problem, "time_key", "day")
 
     if embedding_key == "X_pca":
         rep = adata.obsm.get("X_pca")
         if rep is None or rep.shape[1] < n_pcs:
-            try:
-                import scanpy as sc
-            except ModuleNotFoundError:
-                sc = None
-            if sc is not None:
-                sc.pp.pca(adata, n_comps=n_pcs, random_state=pca_random_state)
-                rep = adata.obsm["X_pca"]
-            else:
-                rep = _run_pca_fallback(_to_dense_float32(adata.X), n_pcs, pca_random_state)
+            stored = 0 if rep is None else int(rep.shape[1])
+            raise ValueError(
+                "Schiebinger flow training requires a precomputed X_pca with "
+                f"at least {n_pcs} components, but {stored} were stored. Run "
+                "scripts/create_schiebinger_hvg_pca.py with the matching "
+                "--n-pcs value and point --dataset_location at that file or "
+                "its directory."
+            )
         if rep.shape[1] > n_pcs:
             rep = rep[:, :n_pcs]
     elif embedding_key == "X":
@@ -730,16 +726,25 @@ def load_schiebinger_splits(
 ):
     """Load Schiebinger endpoints and optional endpoint-train subsamples."""
     embedding, times = load_schiebinger_embedding(cfg)
+    source_time = float(
+        getattr(cfg.problem, "source_time", np.min(times))
+    )
+    target_time = float(
+        getattr(cfg.problem, "target_time", np.max(times))
+    )
+    in_window = (times >= source_time) & (times <= target_time)
+    embedding = embedding[in_window]
+    times = times[in_window]
     unique_times = np.sort(np.unique(times))
     if unique_times.size < 2:
         raise RuntimeError("Schiebinger data needs at least 2 unique time points.")
 
-    t_start = float(unique_times[0])
-    t_end = float(unique_times[-1])
+    t_start = source_time
+    t_end = target_time
     x0_all = embedding[times == t_start]
     x1_all = embedding[times == t_end]
     if x0_all.shape[0] == 0 or x1_all.shape[0] == 0:
-        raise RuntimeError("Could not find Schiebinger samples at first/last time points.")
+        raise RuntimeError("Could not find Schiebinger samples at selected endpoints.")
 
     max_endpoint_train = int(getattr(cfg.problem, "max_endpoint_train", 0))
     if not subsample_endpoints:
@@ -806,8 +811,11 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
             return source_pool[idx]
 
     elif cfg.problem.base == "schiebinger_first_timepoint":
-        split_data = load_schiebinger_splits(cfg, subsample_endpoints=True)
-        source_pool = jnp.asarray(split_data["x0_train"], dtype=jnp.float32)
+        split_data = schiebinger.endpoint_pool_splits(
+            cfg,
+            dataset_location=getattr(cfg.problem, "dataset_location", None),
+        )
+        source_pool = jnp.asarray(split_data["source_train_x"], dtype=jnp.float32)
         if source_pool.shape[0] == 0:
             raise RuntimeError("Schiebinger source pool is empty.")
 
@@ -1165,6 +1173,48 @@ class MaizelsMinibatchOTDataset:
         return self._sample(int(self.cfg.optimization.bs), seed)
 
 
+class SchiebingerMinibatchOTDataset:
+    """Build Schiebinger training pairs with fresh exact OT minibatches."""
+
+    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, Any]):
+        self.cfg = cfg
+        self.timepoint_pools = data
+        self.pair_mode = str(
+            getattr(
+                cfg.problem,
+                "pair_mode",
+                getattr(cfg.problem, "maizels_pair_mode", "none"),
+            )
+        )
+        self.cpu_rng = np.random.default_rng(int(cfg.training.seed) + 4301)
+        self.last_pair_stats = None
+
+    def _sample(self, bs: int, seed: int) -> Dict[str, jnp.ndarray]:
+        paired, stats = schiebinger.couple_minibatch_ot_timepoint_pools(
+            self.cfg,
+            self.timepoint_pools,
+            int(bs),
+            seed=int(seed),
+            pair_mode=self.pair_mode,
+        )
+        self.last_pair_stats = stats
+        return {
+            "x0": jnp.asarray(paired["x0"], dtype=jnp.float32),
+            "x1": jnp.asarray(paired["x1"], dtype=jnp.float32),
+            "label": jnp.asarray(paired["label"], dtype=jnp.float32),
+        }
+
+    def sample_device_batch(self, bs: int, key: jnp.ndarray):
+        return self._sample(bs, CiteMultiMinibatchOTDataset._seed_from_key(key))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        seed = int(self.cpu_rng.integers(0, np.iinfo(np.int64).max))
+        return self._sample(int(self.cfg.optimization.bs), seed)
+
+
 def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, Any]):
     """Create a paired dataset with an optional device-side training sampler."""
     pair_mode = str(
@@ -1183,6 +1233,10 @@ def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, Any]):
         cfg, pair_mode
     ):
         return MaizelsMinibatchOTDataset(cfg, paired)
+    if cfg.problem.target == "schiebinger" and schiebinger.uses_minibatch_ot(
+        cfg, pair_mode
+    ):
+        return SchiebingerMinibatchOTDataset(cfg, paired)
 
     cpu_iterator = np_to_tfds(cfg, paired)
     if bool(getattr(cfg.problem, "device_batching", True)):
@@ -1352,19 +1406,49 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
         )
         ds = paired_np_to_dataset(cfg, paired)
     elif cfg.problem.target == "schiebinger":
-        split_data = load_schiebinger_splits(cfg, subsample_endpoints=True)
-        x0s = split_data["x0_train"]
-        x1s = split_data["x1_train"]
-        cfg.problem.n = int(x1s.shape[0])
-        cfg.problem.t_start = float(split_data["t_start"])
-        cfg.problem.t_end = float(split_data["t_end"])
-        rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
-        ds = np_to_tfds(cfg, x1s)
+        pair_mode = str(
+            getattr(
+                cfg.problem,
+                "pair_mode",
+                getattr(cfg.problem, "maizels_pair_mode", "none"),
+            )
+        )
+        if schiebinger.uses_minibatch_ot(cfg, pair_mode):
+            training_data, stats = schiebinger.make_minibatch_ot_training_pools(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            cfg.problem.n = int(training_data["nominal_n"])
+            cfg.problem.d = int(training_data["dimension"])
+            rescale_value = _compact_endpoint_pool_std(training_data)
+        else:
+            training_data, stats = schiebinger.make_pair_pool(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            x0s = training_data["x0"]
+            x1s = training_data["x1"]
+            cfg.problem.n = int(x1s.shape[0])
+            cfg.problem.d = int(x1s.shape[1])
+            rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
+        cfg.problem.schiebinger_pair_stats = stats
+        ds = paired_np_to_dataset(cfg, training_data)
+        interval_summary = ", ".join(
+            f"{item['source_time']}->{item['target_time']}: "
+            f"{item['sampled_pairs']} pairs"
+            for item in stats["intervals"].values()
+        )
+        coupling_summary = (
+            f", coupling=minibatch_ot({stats['ot_minibatch_size']})"
+            if stats.get("coupling") == "dynamic_minibatch_ot"
+            else ""
+        )
         print(
-            "Loaded Schiebinger endpoints: "
-            f"t_start={cfg.problem.t_start:g} (n={x0s.shape[0]}), "
-            f"t_end={cfg.problem.t_end:g} (n={x1s.shape[0]}), "
-            f"dim={x1s.shape[1]}"
+            "Loaded Schiebinger interval pairs: "
+            f"training_days={stats['retained_timepoints']}, "
+            f"evaluation_days={stats['evaluation_timepoints']}, "
+            f"mode={stats['pair_mode']}, total_pairs={cfg.problem.n}, "
+            f"dim={cfg.problem.d}{coupling_summary}; {interval_summary}"
         )
 
     elif cfg.problem.target == "maizels_pca50":

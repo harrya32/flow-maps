@@ -11,7 +11,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/outputs/cite_multi_pca100_seed_sweep}"
 
 # Space-separated lists. Override any of these when invoking the script.
 SEEDS="${SEEDS:-1 2 3}"
-SLURM_IDS="${SLURM_IDS:-0 1 2 3 4 5 6 7}"
+SLURM_IDS="${SLURM_IDS:-0 1 2 3 4 5 6 7 8}"
 DATASETS="${DATASETS:-cite multi}"
 HELDOUT_DAYS="${HELDOUT_DAYS:-3 4}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -25,6 +25,7 @@ MODE_NAMES=(
   "bio_prior_ot_flow_map"
   "bio_prior_ot_constrained_flow_map"
   "ot_flow_map"
+  "bio_prior_ot_constrained_flow_matching"
 )
 
 read -r -a seed_values <<< "${SEEDS}"
@@ -46,8 +47,8 @@ for seed in "${seed_values[@]}"; do
 done
 
 for slurm_id in "${slurm_id_values[@]}"; do
-  if [[ ! "${slurm_id}" =~ ^[0-7]$ ]]; then
-    echo "Invalid SLURM_ID: ${slurm_id}; expected one of 0 1 2 3 4 5 6 7." >&2
+  if [[ ! "${slurm_id}" =~ ^[0-8]$ ]]; then
+    echo "Invalid SLURM_ID: ${slurm_id}; expected one of 0 1 2 3 4 5 6 7 8." >&2
     exit 2
   fi
 done

@@ -511,10 +511,14 @@ def _make_batched_masked_minibatch_ot_pairs(
         else None
     )
     lineage_transition_mode = maizels.lineage_transition_mode_from_config(cfg)
+    unconstrained_class_names = (
+        maizels.lineage_unconstrained_class_names_from_config(cfg)
+    )
     reachable = maizels.build_transition_reachable(
         lineage_transition_mode,
         edges=transition_edges,
         class_names=class_names,
+        unconstrained_class_names=unconstrained_class_names,
     )
     class_mask = np.asarray(
         [
@@ -670,6 +674,7 @@ def _make_batched_masked_minibatch_ot_pairs(
             ),
             lineage_transition_mode=lineage_transition_mode,
             transition_edges=transition_edges,
+            unconstrained_class_names=unconstrained_class_names,
             path_builder=getattr(cfg.problem, "interpolant_path_builder", None),
         )
         valid_all = np.asarray(validity["valid"], dtype=bool)

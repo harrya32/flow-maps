@@ -1,0 +1,8 @@
+,Epithelial,IPS,MEF/other,MET,Neural,Stromal,Trophoblast
+Epithelial,89,1,5,16,0,0,5
+IPS,0,61,0,0,0,0,1
+MEF/other,12,2,884,32,1,5,1
+MET,6,0,25,227,2,0,0
+Neural,0,0,1,1,70,0,0
+Stromal,0,0,0,0,0,282,0
+Trophoblast,5,0,0,0,0,1,77

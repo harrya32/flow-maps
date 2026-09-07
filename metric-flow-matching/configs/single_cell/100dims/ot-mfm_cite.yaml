@@ -8,11 +8,19 @@ t_exclude: [1, 2]
 time_geopath: true
 whiten: false
 velocity_metric: "rbf"
-patience: 25
+patience: 10
 n_centers: 150
 kappa: 1.5
 rho: -2.75
 alpha_metric: 1
 metric_epochs: 200
 mfm: true
-seeds: [42]
+seeds: [1, 2, 3]
+cite_multi_eval_enabled: true
+cite_multi_eval_check_times: 50
+cite_multi_eval_source_max_points: 0
+
+max_steps: 10000
+val_check_interval: 100
+cite_multi_eval_every_n_steps: 500
+wandb_project: "self-distill-flow-maps"

@@ -150,6 +150,8 @@ def get_config(
     cfg.logging.maizels.distribution_eval_source_max_points = 0
     cfg.logging.maizels.distribution_eval_points_per_time = 0
 
+    cfg.logging.maizels.trajectory_eval_source_max_points = 0
+
     # Exact reproduction of the original CITE/Multi MFM test protocol. A slash
     # in ``mfm/test_EMD`` gives the metric its own W&B pane.
     cfg.logging.mfm = ml_collections.ConfigDict()

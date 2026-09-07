@@ -1,5 +1,6 @@
 import os
 import time
+import numpy as np
 import torch
 import wandb
 import matplotlib.pyplot as plt
@@ -18,6 +19,7 @@ from mfm.networks.utils import flow_model_torch_wrapper
 from mfm.utils import wasserstein_distance, plot_arch, plot_lidar, plot_sphere
 from mfm.flow_matchers.ema import EMA
 from mfm.flow_matchers.eval_utils import FIDImageDataset
+from mfm.flow_matchers.maizels_eval import rbf_mmd2
 
 
 class FlowNetTrainBase(pl.LightningModule):
@@ -41,6 +43,7 @@ class FlowNetTrainBase(pl.LightningModule):
         self.whiten = args.whiten
         self.working_dir = args.working_dir
         self.is_maizels = args.data_type == "maizels"
+        self.seed_current = int(getattr(args, "seed_current", 0))
         self._step_start_time = None
 
     def forward(self, t, xt):
@@ -276,6 +279,58 @@ class FlowNetTrainTrajectory(FlowNetTrainBase):
             self.final_EMD = EMD
 
             self.log("test_EMD", EMD, on_step=False, on_epoch=True, prog_bar=True)
+            if data_type == "scrna" and self.trainer.datamodule.data_name in (
+                "cite",
+                "multi",
+            ):
+                mmd2 = rbf_mmd2(
+                    X_mid_pred.detach().cpu().numpy(),
+                    batch[t_exclude].detach().cpu().numpy(),
+                    np.random.default_rng(self.seed_current + 2901),
+                )
+                self.final_MMD2 = mmd2
+                timepoints = list(self.trainer.datamodule.timepoint_splits)
+                heldout_tag = str(timepoints[t_exclude]).replace(".", "p")
+                # Keep the original MFM name while also exposing the shared
+                # cross-method names used by this repository's CITE/Multi runs.
+                self.log(
+                    "mfm/test_EMD", EMD, on_step=False, on_epoch=True, prog_bar=False
+                )
+                self.log(
+                    "final_eval/euler_mean_emd",
+                    EMD,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "mfm/test_rbf_MMD2",
+                    mmd2,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    f"distribution_eval/{heldout_tag}_euler_rbf_mmd2",
+                    mmd2,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "distribution_eval/euler_rbf_mmd2_mean",
+                    mmd2,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "final_eval/euler_mean_rbf_mmd2",
+                    mmd2,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
 
 
 class FlowNetTrainLidar(FlowNetTrainBase):

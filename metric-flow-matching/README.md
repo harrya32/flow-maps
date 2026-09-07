@@ -53,6 +53,38 @@ Model checkpoints are saved within the `checkpoints` folder under `--working_dir
 CITE and Multi default to `~/Desktop/flow-maps-data`. Set
 `CITE_MULTI_DATA_DIR` to use a different shared data directory.
 
+### CITE/Multi PCA100 experiments
+
+The PCA100 configurations run both leave-one-day-out experiments in sequence:
+index 1 holds out day 3 and index 2 holds out day 4. For example, OT-MFM on
+CITE is:
+
+```bash
+python -m mfm.train.main \
+  --config_path configs/single_cell/100dims/ot-mfm_cite.yaml \
+  --working_dir /path/to/output
+```
+
+Replace `cite` with `multi` for Multi, or use the corresponding `i-mfm_*`
+configuration for independent MFM. The PCA100 configurations automatically
+evaluate full-population, predecessor-to-omitted-day exact EMD (`test_EMD` and
+`mfm/test_EMD`) and multi-bandwidth RBF MMD²
+(`final_eval/euler_mean_rbf_mmd2`). The MMD uses the Maizels evaluator's median
+bandwidth with multipliers 0.25, 0.5, 1, 2, and 4, computed in memory-bounded
+blocks. They also follow the held-out 10% of day-2 cells from day 2 to day 7
+with 50 Euler steps and score lineage violations using the dataset's
+evaluation-only classifier:
+
+* `../cite-classifiers/celltype_classifier_cite_pca100_all_days.pt`, or
+* `../multi-classifiers/celltype_classifier_multi_pca100_all_days.pt`.
+
+The CITE/Multi lineage permits self-transitions and differentiation from HSC
+to any of BP, EryP, MasP, MkP, MoP, or NeuP. Final best-checkpoint metrics are
+written as `final_eval/euler_mean_emd`, `final_eval/euler_mean_rbf_mmd2`, and
+`final_eval/full_data_classifier/euler_invalid_trajectory_pct`. Set
+`--cite_multi_eval_classifier_path` to override the classifier. A source cap of
+zero uses every held-out day-2 cell exactly once.
+
 ### Maizels PCA50 experiments
 
 The original endpoint configuration trains on D3 -> D8 pairs and evaluates the

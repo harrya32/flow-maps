@@ -114,8 +114,16 @@ python py/launchers/learn.py --cfg_path configs.four_gaussians --slurm_id 0
 python py/launchers/learn.py \
     --cfg_path configs.schiebinger_lsd \
     --slurm_id 0 \
-    --dataset_location /path/to/datasets \
+    --dataset_location ~/Desktop/schiebinger \
+    --schiebinger_n_pcs 5 \
+    --schiebinger_train_times 0,3,6,9,12,15,18 \
     --output_folder /path/to/outputs
+
+# Create the compact HVG-PCA dataset (change --n-pcs as needed).
+python scripts/create_schiebinger_hvg_pca.py --n-pcs 5
+
+# Optional: prepare its all-days evaluation classifier independently.
+python scripts/train_schiebinger_celltype_classifiers.py --all-days --n-pcs 5
 
 # CITE or Multi, training on three timepoints and evaluating the omitted day.
 python scripts/train_cite_multi_celltype_classifiers.py
@@ -145,6 +153,25 @@ script's automatic device selection uses CUDA when available and CPU otherwise;
 MPS remains available explicitly but is not selected automatically because its
 BatchNorm running statistics can become unstable in this workload.
 
+Schiebinger classifier checkpoints are stored in `schiebinger_classifiers/`.
+The all-days classifier is reserved for evaluation. At Schiebinger flow startup,
+`learn.py` creates it if absent and, only for a slurm ID that enables
+endpoint-interpolant filtering or a lineage constraint loss, also creates a
+second classifier trained on exactly the selected `--schiebinger_train_times`.
+Complete `.pt`/`.npz` pairs are reused, and a file lock prevents concurrent
+jobs with the same schedule from training the same model twice. Set
+`SCHIEBINGER_CLASSIFIER_PYTHON` if the flow-training Python has no PyTorch; the
+launcher otherwise discovers the usual sibling `mfm_env`, `torchcfm`, or
+`maizels2023aa` Conda environment. The device and training budget can be
+overridden with `SCHIEBINGER_CLASSIFIER_DEVICE`,
+`SCHIEBINGER_CLASSIFIER_MAX_EPOCHS`, and
+`SCHIEBINGER_CLASSIFIER_PATIENCE`.
+The PCA dimension is selected with `--schiebinger_n_pcs` and defaults to 5.
+Directory-based dataset resolution then uses the matching
+`schiebinger_serum_serum_hvg1479_pca<N>.h5ad`; an explicit H5AD path can also
+be supplied. Classifier filenames include both `hvg1479` and `pca<N>`, so
+models trained in different coordinate systems cannot be confused.
+
 The config looks for the downloaded H5ADs under `~/Desktop/flow-maps-data`;
 use `CITE_MULTI_DATA_DIR` or `--dataset_location` to override the data directory.
 Use `--classifier_path` to override the observed-days training classifier and
@@ -158,6 +185,14 @@ uses the same 90/10 retained-day split as MFM. These metrics require POT;
 `logging.mfm.max_points = 0` means the full populations, while a positive value
 enables a cheaper deterministic cap. The Euclidean transport cost makes these
 metrics empirical W1, not W2.
+
+The PCA100 CITE/Multi configurations in `metric-flow-matching/` additionally
+score MFM's full day-2-to-day-7 Euler trajectories with the corresponding
+`cite-classifiers/*_all_days.pt` or `multi-classifiers/*_all_days.pt` model and
+the CITE/Multi-specific lineage graph. They report the shared
+`final_eval/full_data_classifier/euler_invalid_trajectory_pct` metric from the
+best validation-loss checkpoint, alongside `test_EMD`/`mfm/test_EMD` and
+`final_eval/euler_mean_rbf_mmd2`.
 
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
@@ -223,7 +258,9 @@ python py/launchers/sample_and_calc_fid.py \
 python py/launchers/eval_schiebinger_heldout.py \
     --cfg_path configs.schiebinger_lsd \
     --slurm_id 0 \
-    --dataset_location /path/to/datasets \
+    --dataset_location ~/Desktop/schiebinger \
+    --schiebinger_n_pcs 5 \
+    --schiebinger_train_times 0,3,6,9,12,15,18 \
     --checkpoint /path/to/outputs/schiebinger_pca5_lsd_25.pkl \
     --out_dir /path/to/outputs/schiebinger_eval
 
@@ -247,7 +284,23 @@ Experiments on the following datasets can be run with the included code:
 - **Four Gaussians**: Generated on-the-fly with paired interpolant endpoints
   constrained to A -> D and C -> B.
 - **AFHQ-64**: You'll need to manually download this via [HuggingFace](https://huggingface.co/datasets/huggan/AFHQv2) and crop to 64x64.
-- **Schiebinger (reprogramming)**: Expects a local `.h5ad` file (`reprogramming_schiebinger.h5ad` by default) and supports serum subsetting + PCA embedding in code.
+- **Schiebinger (reprogramming)**: Defaults to
+  `~/Desktop/schiebinger/schiebinger_serum_serum_hvg1479_pca5.h5ad`. Generate
+  it from the original H5AD with `scripts/create_schiebinger_hvg_pca.py`; it
+  retains the 1,479 supplied highly variable genes and stores the requested
+  PCA coordinates. Select the dimension with `--schiebinger_n_pcs` (default 5)
+  and training observations with
+  `--schiebinger_train_times`; the earliest and latest selected days define the
+  experiment window. Every omitted observation inside that window is reserved
+  for evaluation, and observations outside it are ignored. The lineage prior
+  constrains only `MEF/other -> MET`, `MET -> IPS`, and
+  `MEF/other -> Stromal`. Epithelial,
+  Trophoblast, and Neural transitions are deliberately unconstrained. Required
+  classifiers are trained and cached automatically before flow training. A
+  selected-day classifier must still contain at least two examples of every
+  cell type: for example, the endpoint-only `0,18` schedule contains no MET
+  cells and therefore cannot support classifier-dependent variants without
+  leaking an evaluation day. Prior-free IDs 0, 1, and 7 can use that schedule.
 
 Code to download and process AFHQ is included in ``notebooks/download_afhq.ipynb``. Each experiment reported in the paper can be exactly reproduced by using one of the included configuration files.
 

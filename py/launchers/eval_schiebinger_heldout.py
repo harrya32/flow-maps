@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import importlib
 import os
 import sys
@@ -126,6 +128,22 @@ def plot_heldout_comparison(results: List[Dict], out_path: str) -> None:
     type=int,
     help="Max held-out intermediate times to evaluate. <=0 means use all.",
 )
+@click.option(
+    "--schiebinger_train_times",
+    default=None,
+    type=str,
+    help=(
+        "Comma-separated training days used for the checkpoint. The selected "
+        "endpoints define the window; only omitted internal days are evaluated."
+    ),
+)
+@click.option(
+    "--schiebinger_n_pcs",
+    default=5,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Number of stored HVG principal components used by the checkpoint.",
+)
 @click.option("--points_per_time", default=2000, show_default=True, type=int)
 @click.option("--seed", default=0, show_default=True, type=int)
 @click.option("--out_dir", required=True, type=click.Path(file_okay=False))
@@ -136,12 +154,20 @@ def main(
     checkpoint: str,
     ema_fac: float,
     heldout_max_times: int,
+    schiebinger_train_times: str | None,
+    schiebinger_n_pcs: int,
     points_per_time: int,
     seed: int,
     out_dir: str,
 ):
     cfg_module = importlib.import_module(cfg_path)
-    cfg = cfg_module.get_config(slurm_id, dataset_location, out_dir)
+    cfg = cfg_module.get_config(
+        slurm_id,
+        dataset_location,
+        out_dir,
+        schiebinger_train_times=schiebinger_train_times,
+        schiebinger_n_pcs=schiebinger_n_pcs,
+    )
     cfg.training.ndevices = jax.device_count()
 
     split_data = datasets.load_schiebinger_splits(cfg, subsample_endpoints=False)
@@ -152,7 +178,19 @@ def main(
     t_end = float(split_data["t_end"])
     x0_all = split_data["x0_all"]
 
-    heldout_times = choose_heldout_times(unique_times, max_times=heldout_max_times)
+    configured_eval_times = np.asarray(
+        [float(value) for value in cfg.problem.evaluation_timepoints],
+        dtype=np.float32,
+    )
+    heldout_times = np.intersect1d(unique_times, configured_eval_times)
+    if heldout_max_times > 0 and heldout_times.size > heldout_max_times:
+        chosen = np.linspace(
+            0,
+            heldout_times.size - 1,
+            num=heldout_max_times,
+            dtype=int,
+        )
+        heldout_times = np.unique(heldout_times[chosen]).astype(np.float32)
     if heldout_times.size == 0:
         raise RuntimeError("No held-out Schiebinger time points found.")
 

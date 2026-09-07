@@ -41,19 +41,46 @@ def _median_bandwidth(x: np.ndarray, y: np.ndarray, rng) -> float:
     return 1.0 if upper.size == 0 else float(np.sqrt(np.median(upper)))
 
 
-def rbf_mmd2(x: np.ndarray, y: np.ndarray, rng) -> float:
+def _rbf_kernel_means(
+    x: np.ndarray,
+    y: np.ndarray,
+    bandwidths: np.ndarray,
+    *,
+    block_size: int,
+) -> np.ndarray:
+    """Compute exact mean RBF kernels without materialising full distance matrices."""
+    totals = np.zeros(len(bandwidths), dtype=np.float64)
+    count = int(x.shape[0]) * int(y.shape[0])
+    for row_start in range(0, x.shape[0], block_size):
+        x_block = x[row_start : row_start + block_size]
+        for col_start in range(0, y.shape[0], block_size):
+            y_block = y[col_start : col_start + block_size]
+            distances = _sqdist(x_block, y_block)
+            for index, bandwidth in enumerate(bandwidths):
+                scale = 2.0 * bandwidth * bandwidth
+                totals[index] += np.exp(-distances / scale).sum(dtype=np.float64)
+    return totals / float(count)
+
+
+def rbf_mmd2(
+    x: np.ndarray,
+    y: np.ndarray,
+    rng,
+    *,
+    block_size: int = 1024,
+) -> float:
+    """Biased multi-bandwidth RBF MMD used by the Maizels evaluations."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        return float("nan")
+    block_size = max(1, int(block_size))
     bandwidth = _median_bandwidth(x, y, rng)
-    bandwidths = bandwidth * np.asarray([0.25, 0.5, 1.0, 2.0, 4.0])
-    xx, yy, xy = _sqdist(x, x), _sqdist(y, y), _sqdist(x, y)
-    values = []
-    for bw in np.maximum(bandwidths, 1e-6):
-        scale = 2.0 * bw * bw
-        values.append(
-            np.exp(-xx / scale).mean()
-            + np.exp(-yy / scale).mean()
-            - 2.0 * np.exp(-xy / scale).mean()
-        )
-    return max(float(np.mean(values)), 0.0)
+    bandwidths = np.maximum(bandwidth * np.asarray([0.25, 0.5, 1.0, 2.0, 4.0]), 1e-6)
+    xx = _rbf_kernel_means(x, x, bandwidths, block_size=block_size)
+    yy = _rbf_kernel_means(y, y, bandwidths, block_size=block_size)
+    xy = _rbf_kernel_means(x, y, bandwidths, block_size=block_size)
+    return max(float(np.mean(xx + yy - 2.0 * xy)), 0.0)
 
 
 def euler_rollout(

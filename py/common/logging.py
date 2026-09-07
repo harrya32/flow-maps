@@ -34,6 +34,7 @@ from . import (
     loss_args,
     maizels,
     pair_times,
+    schiebinger,
     state_utils,
     wasserstein,
 )
@@ -46,12 +47,16 @@ def _is_lineage_trajectory_target(cfg: config_dict.ConfigDict) -> bool:
     return getattr(cfg.problem, "target", None) in {
         "maizels_pca50",
         "cite_multi_pca100",
+        "schiebinger",
     }
 
 
 def _lineage_backend(cfg: config_dict.ConfigDict):
-    if getattr(cfg.problem, "target", None) == "cite_multi_pca100":
+    target = getattr(cfg.problem, "target", None)
+    if target == "cite_multi_pca100":
         return cite_multi
+    if target == "schiebinger":
+        return schiebinger
     return maizels
 
 
@@ -2266,7 +2271,11 @@ def _log_maizels_distribution_eval(
 
     backend = _lineage_backend(cfg)
     dataset_location = getattr(cfg.problem, "dataset_location", None)
-    data = backend.all_timepoint_data(dataset_location)
+    data = (
+        backend.all_timepoint_data(dataset_location, cfg=cfg)
+        if backend is schiebinger
+        else backend.all_timepoint_data(dataset_location)
+    )
     source_time = getattr(cfg.problem, "source_time", "D3")
     target_time = getattr(cfg.problem, "target_time", "D8")
     source_value = maizels.parse_timepoint(source_time)
@@ -2315,11 +2324,6 @@ def _log_maizels_distribution_eval(
     )
     timepoint_splits = None
     if interval_local:
-        if backend is not maizels:
-            raise ValueError(
-                "Interval-local distribution evaluation is currently configured "
-                "only for the Maizels backend."
-            )
         timepoint_splits = backend.timepoint_pool_splits(
             cfg,
             dataset_location=dataset_location,
@@ -2341,9 +2345,9 @@ def _log_maizels_distribution_eval(
         )
         x0_eval_all = source_all[source_idx].astype(np.float32)
 
-    # The Maizels and CITE/Multi trajectory models are unconditional. Keeping
-    # labels out of this population evaluation avoids coupling the pushforward
-    # sample to a randomly drawn endpoint pair.
+    # These trajectory models are unconditional. Keeping labels out of this
+    # population evaluation avoids coupling the pushforward sample to a
+    # randomly drawn endpoint pair.
     if bool(getattr(cfg.training, "conditional", False)):
         raise ValueError(
             "Whole-population lineage distribution evaluation currently requires "

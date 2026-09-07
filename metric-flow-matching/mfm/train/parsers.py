@@ -161,6 +161,44 @@ def datasets_parser(parser):
     parser.add_argument("--maizels_eval_points_per_time", type=int, default=1024)
     parser.add_argument("--maizels_eval_euler_steps", type=int, default=50)
     parser.add_argument("--maizels_eval_every_n_steps", type=int, default=500)
+    parser.add_argument(
+        "--cite_multi_eval_enabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Evaluate compatible PCA100 CITE/Multi runs with the all-days "
+            "cell-type classifier."
+        ),
+    )
+    parser.add_argument(
+        "--cite_multi_eval_classifier_path",
+        type=str,
+        default="",
+        help=(
+            "Optional all-days classifier override. By default the evaluator "
+            "uses <repo>/<dataset>-classifiers/"
+            "celltype_classifier_<dataset>_pca100_all_days.pt."
+        ),
+    )
+    parser.add_argument("--cite_multi_eval_check_times", type=int, default=50)
+    parser.add_argument("--cite_multi_eval_every_n_steps", type=int, default=500)
+    parser.add_argument(
+        "--cite_multi_eval_source_max_points",
+        type=int,
+        default=0,
+        help="Maximum held-out day-2 sources to score; 0 uses the full holdout.",
+    )
+    parser.add_argument("--cite_multi_eval_prob_threshold", type=float, default=0.0)
+    parser.add_argument("--cite_multi_eval_margin_threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--cite_multi_eval_classifier_batch_size", type=int, default=8192
+    )
+    parser.add_argument(
+        "--cite_multi_eval_lineage_transition_mode",
+        type=str,
+        default="descendant",
+        choices=["descendant", "direct"],
+    )
     return parser
 
 

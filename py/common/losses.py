@@ -20,13 +20,17 @@ from . import interpolant as interpolant
 from . import loss_args
 from . import maizels
 from . import pair_times
+from . import schiebinger
 
 Parameters = Dict[str, Dict]
 
 
 def _lineage_backend(cfg: config_dict.ConfigDict):
-    if getattr(cfg.problem, "target", None) == "cite_multi_pca100":
+    target = getattr(cfg.problem, "target", None)
+    if target == "cite_multi_pca100":
         return cite_multi
+    if target == "schiebinger":
+        return schiebinger
     return maizels
 
 

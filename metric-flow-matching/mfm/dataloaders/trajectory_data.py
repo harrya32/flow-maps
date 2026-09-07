@@ -18,6 +18,7 @@ class TemporalDataModule(pl.LightningDataModule):
         self.save_hyperparameters()
 
         self.data_type = args.data_type
+        self.data_name = args.data_name
         self.data_path = args.data_path
         self.batch_size = args.batch_size
         self.split_ratios = args.split_ratios
@@ -32,11 +33,21 @@ class TemporalDataModule(pl.LightningDataModule):
         self.test_dataloaders = []
         self.metric_samples_dataloaders = []
 
+        cell_types = None
+        load_cell_types = self.data_type == "scrna" and self.data_name in {
+            "cite",
+            "multi",
+        }
         if self.data_type == "scrna":
-            ds, labels, unique_labels = custom_load_dataset(
+            loaded = custom_load_dataset(
                 self.data_path,
                 max_dim=self.max_dim,
+                return_cell_types=load_cell_types,
             )
+            if load_cell_types:
+                ds, labels, unique_labels, cell_types = loaded
+            else:
+                ds, labels, unique_labels = loaded
         elif self.data_type == "arch":
             ds, labels, unique_labels = generate_arch_data()
         elif self.data_type == "sphere":
@@ -49,23 +60,43 @@ class TemporalDataModule(pl.LightningDataModule):
 
         ds_tensor = torch.tensor(ds, dtype=torch.float32)
         label_to_numeric = {label: idx for idx, label in enumerate(unique_labels)}
+        numeric_to_label = {idx: label for label, idx in label_to_numeric.items()}
         frame_indices = {
             label_to_numeric[label]: (labels == label).nonzero()[0]
             for label in unique_labels
         }
         self.num_timesteps = len(unique_labels)
+        if cell_types is not None:
+            # The evaluation callback uses these model-space coordinates and
+            # matching ground-truth labels. Keeping the split here guarantees
+            # that no trajectory-evaluation source was used for flow training.
+            self.timepoint_splits = {}
 
         min_frame_size = min([len(indices) for indices in frame_indices.values()])
         for label, indices in frame_indices.items():
             frame_data = ds_tensor[indices]
+            frame_types = (
+                None if cell_types is None else np.asarray(cell_types)[indices]
+            )
             split_index = int(len(frame_data) * self.split_ratios[0])
 
             if len(frame_data) - split_index < self.batch_size:
                 split_index = len(frame_data) - self.batch_size
             shuffled_indices = torch.randperm(len(frame_data))
             frame_data = frame_data[shuffled_indices]
+            if frame_types is not None:
+                frame_types = frame_types[shuffled_indices.numpy()]
             train_data = frame_data[:split_index]
             val_data = frame_data[split_index:]
+            if frame_types is not None:
+                self.timepoint_splits[str(numeric_to_label[label])] = {
+                    "x": frame_data.numpy(),
+                    "types": frame_types,
+                    "train_x": train_data.numpy(),
+                    "train_types": frame_types[:split_index],
+                    "holdout_x": val_data.numpy(),
+                    "holdout_types": frame_types[split_index:],
+                }
             self.train_dataloaders.append(
                 DataLoader(
                     train_data,
@@ -126,6 +157,7 @@ def adata_dataset(
     path: str,
     embed_name: str = "X_pca",
     label_name: str = "day",
+    cell_type_name: str | None = None,
     max_dim: int = 100,
 ):
     """Load Single Cell dataset from h5ad file using scanpy."""
@@ -135,7 +167,13 @@ def adata_dataset(
     ulabels = labels.cat.categories
     data = adata.obsm[embed_name][:, :max_dim]
 
-    return (data, labels.to_numpy(), ulabels.to_numpy())
+    result = (data, labels.to_numpy(), ulabels.to_numpy())
+    if cell_type_name is None:
+        return result
+    if cell_type_name not in adata.obs:
+        raise KeyError(f"Missing adata.obs[{cell_type_name!r}] in {path}.")
+    cell_types = adata.obs[cell_type_name].astype("string").astype(str).to_numpy()
+    return (*result, cell_types)
 
 
 def tnet_dataset(
@@ -153,10 +191,21 @@ def tnet_dataset(
     return data, labels, unique_labels
 
 
-def custom_load_dataset(path: str, max_dim: int = 100):
+def custom_load_dataset(
+    path: str,
+    max_dim: int = 100,
+    *,
+    return_cell_types: bool = False,
+):
     if path.endswith("h5ad"):
-        return adata_dataset(path, max_dim=max_dim)
+        return adata_dataset(
+            path,
+            max_dim=max_dim,
+            cell_type_name="cell_type" if return_cell_types else None,
+        )
     if path.endswith("npz"):
+        if return_cell_types:
+            raise ValueError("Cell-type metadata is only supported for H5AD datasets.")
         return tnet_dataset(path, max_dim=max_dim)
     raise NotImplementedError(f"File extension not supported for path: {path}")
 

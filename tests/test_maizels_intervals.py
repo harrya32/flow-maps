@@ -114,6 +114,27 @@ def test_default_config_preserves_endpoint_training():
     )
 
 
+def test_constrained_ot_flow_matching_uses_velocity_constraint():
+    flow_map_cfg = maizels_pca50.get_config(6)
+    flow_matching_cfg = maizels_pca50.get_config(8)
+
+    assert flow_map_cfg.logging.comparison_mode == (
+        "bio_prior_ot_constrained_flow_map"
+    )
+    assert flow_map_cfg.optimization.diag_fraction == 0.75
+    assert flow_map_cfg.constraints.path_mode == "loss_points_nll"
+
+    assert flow_matching_cfg.logging.comparison_mode == (
+        "bio_prior_ot_constrained_flow_matching"
+    )
+    assert flow_matching_cfg.problem.maizels_pair_mode == "ot_endpoint_interpolant"
+    assert flow_matching_cfg.optimization.diag_fraction == 1.0
+    assert flow_matching_cfg.constraints.enabled
+    assert (
+        flow_matching_cfg.constraints.path_mode == "velocity_loss_points_nll"
+    )
+
+
 def test_training_pool_contains_only_adjacent_retained_intervals(monkeypatch):
     cfg = _cfg(n_pairs=12)
     pools = {"D3": _pool(3.0), "D3.8": _pool(3.8), "D8": _pool(8.0)}

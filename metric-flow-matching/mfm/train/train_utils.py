@@ -11,6 +11,7 @@ from torchdyn.core import NeuralODE
 from mfm.utils import plot_images_trajectory
 from mfm.networks.utils import flow_model_torch_wrapper
 from mfm.flow_matchers.maizels_eval import MaizelsEvaluationCallback
+from mfm.flow_matchers.cite_multi_eval import CiteMultiEvaluationCallback
 
 
 def load_config(path):
@@ -22,7 +23,9 @@ def load_config(path):
 def merge_config(args, config_updates):
     for key, value in config_updates.items():
         if not hasattr(args, key):
-            raise ValueError(f"Unknown configuration parameter '{key}' found in the config file.")
+            raise ValueError(
+                f"Unknown configuration parameter '{key}' found in the config file."
+            )
         setattr(args, key, value)
     return args
 
@@ -104,7 +107,17 @@ def create_callbacks(args, phase, data_type, run_id, datamodule=None):
             )
             callbacks = [checkpoint_callback, early_stop_callback]
             if args.data_type == "maizels":
-                callbacks.append(MaizelsEvaluationCallback(args=args, datamodule=datamodule))
+                callbacks.append(
+                    MaizelsEvaluationCallback(args=args, datamodule=datamodule)
+                )
+            elif (
+                args.data_type == "scrna"
+                and args.data_name in ("cite", "multi")
+                and bool(args.cite_multi_eval_enabled)
+            ):
+                callbacks.append(
+                    CiteMultiEvaluationCallback(args=args, datamodule=datamodule)
+                )
     else:
         raise ValueError("Unknown phase")
     return callbacks

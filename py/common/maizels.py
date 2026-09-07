@@ -259,8 +259,15 @@ def retained_interval_for_timepoint(cfg, timepoint: str) -> Tuple[str, str]:
 def build_reachable(
     edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
     class_names: Sequence[str] = CLASS_NAMES,
+    unconstrained_class_names: Sequence[str] = (),
 ) -> Dict[str, Set[str]]:
-    """Return the reflexive transitive closure of the cell-type transition graph."""
+    """Return transitive reachability, optionally leaving some types unconstrained.
+
+    An unconstrained type may transition to or from every type.  This wildcard
+    behavior is applied *after* taking the closure of the biological graph, so
+    an unconstrained type cannot accidentally create a transitive path between
+    two otherwise incompatible constrained types.
+    """
     nodes = set(class_names)
     children = defaultdict(set)
     for src, dst in edges:
@@ -279,12 +286,14 @@ def build_reachable(
             seen.add(curr)
             stack.extend(children[curr])
         reachable[node] = seen
+    _add_unconstrained_transitions(reachable, unconstrained_class_names)
     return reachable
 
 
 def build_direct_reachable(
     edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
     class_names: Sequence[str] = CLASS_NAMES,
+    unconstrained_class_names: Sequence[str] = (),
 ) -> Dict[str, Set[str]]:
     """Return reflexive one-edge reachability for strict stepwise checks."""
     nodes = set(class_names)
@@ -295,7 +304,30 @@ def build_direct_reachable(
     reachable: Dict[str, Set[str]] = {node: {node} for node in nodes}
     for src, dst in edges:
         reachable[src].add(dst)
+    _add_unconstrained_transitions(reachable, unconstrained_class_names)
     return reachable
+
+
+def _add_unconstrained_transitions(
+    reachable: Dict[str, Set[str]],
+    unconstrained_class_names: Sequence[str],
+) -> None:
+    """Apply wildcard semantics without changing constrained-to-constrained reachability."""
+    unconstrained = {str(name) for name in unconstrained_class_names}
+    if not unconstrained:
+        return
+    unknown = unconstrained - set(reachable)
+    if unknown:
+        raise ValueError(
+            "Unconstrained lineage classes are missing from class_names: "
+            f"{sorted(unknown)}"
+        )
+    all_classes = set(reachable)
+    for source in all_classes:
+        if source in unconstrained:
+            reachable[source] = set(all_classes)
+        else:
+            reachable[source].update(unconstrained)
 
 
 def resolve_lineage_transition_mode(mode: str | None) -> str:
@@ -340,16 +372,32 @@ def lineage_transition_mode_from_config(cfg, *, default: str = "descendant") -> 
     return resolve_lineage_transition_mode(mode)
 
 
+def lineage_unconstrained_class_names_from_config(cfg) -> Tuple[str, ...]:
+    """Return cell types for which the lineage graph imposes no restrictions."""
+    problem_cfg = getattr(cfg, "problem", None)
+    names = getattr(problem_cfg, "lineage_unconstrained_class_names", ())
+    return tuple(str(name) for name in names)
+
+
 def build_transition_reachable(
     mode: str | None = "descendant",
     edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
     class_names: Sequence[str] = CLASS_NAMES,
+    unconstrained_class_names: Sequence[str] = (),
 ) -> Dict[str, Set[str]]:
     """Return the reachability relation for the configured lineage mode."""
     mode = resolve_lineage_transition_mode(mode)
     if mode == "direct":
-        return build_direct_reachable(edges, class_names=class_names)
-    return build_reachable(edges, class_names=class_names)
+        return build_direct_reachable(
+            edges,
+            class_names=class_names,
+            unconstrained_class_names=unconstrained_class_names,
+        )
+    return build_reachable(
+        edges,
+        class_names=class_names,
+        unconstrained_class_names=unconstrained_class_names,
+    )
 
 
 def endpoint_valid(
@@ -458,7 +506,7 @@ def _make_celltype_mlp(n_features: int, n_classes: int, dropout: float = 0.2):
 def load_classifier(
     classifier_path: str | Path,
 ) -> Tuple[Any, List[str], np.ndarray, np.ndarray]:
-    """Load the PCA50 classifier lazily.
+    """Load a PCA-space cell-type classifier lazily.
 
     PyTorch is intentionally imported inside this function so non-Maizels
     experiments do not need it at import time.
@@ -503,7 +551,7 @@ def load_classifier(
     scaler_mean = np.asarray(metadata["scaler_mean"], dtype=np.float32)
     scaler_scale = np.asarray(metadata["scaler_scale"], dtype=np.float32)
 
-    model = _make_celltype_mlp(50, len(class_names), dropout=0.2)
+    model = _make_celltype_mlp(len(scaler_mean), len(class_names), dropout=0.2)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -598,12 +646,14 @@ def lineage_invalid_transition_matrix(
     class_names: Sequence[str],
     transition_mode: str | None = "descendant",
     transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    unconstrained_class_names: Sequence[str] = (),
 ) -> np.ndarray:
     """Return matrix M where M[i, j]=1 iff i -> j is biologically invalid."""
     reachable = build_transition_reachable(
         transition_mode,
         edges=transition_edges,
         class_names=class_names,
+        unconstrained_class_names=unconstrained_class_names,
     )
     invalid = np.zeros((len(class_names), len(class_names)), dtype=np.float32)
     for ii, src in enumerate(class_names):
@@ -882,6 +932,7 @@ def check_paths_with_classifier(
     classifier_batch_size: int = 8192,
     lineage_transition_mode: str | None = "descendant",
     transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    unconstrained_class_names: Sequence[str] = (),
 ) -> Dict[str, np.ndarray | int]:
     """Classify path points and apply the Maizels transition prior."""
     model, class_names, scaler_mean, scaler_scale = load_classifier(classifier_path)
@@ -889,6 +940,7 @@ def check_paths_with_classifier(
         lineage_transition_mode,
         edges=transition_edges,
         class_names=class_names,
+        unconstrained_class_names=unconstrained_class_names,
     )
     flat = np.asarray(paths, dtype=np.float32).reshape((-1, paths.shape[-1]))
     pred_flat, prob_flat, margin_flat = classifier_predictions(
@@ -927,6 +979,7 @@ def _check_candidate_interpolants(
     classifier_batch_size: int,
     lineage_transition_mode: str,
     transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    unconstrained_class_names: Sequence[str] = (),
     path_builder=None,
 ) -> Dict[str, np.ndarray | int]:
     taus = np.linspace(0.0, 1.0, n_check_times + 2, dtype=np.float32)[1:-1]
@@ -953,6 +1006,7 @@ def _check_candidate_interpolants(
         classifier_batch_size=classifier_batch_size,
         lineage_transition_mode=lineage_transition_mode,
         transition_edges=transition_edges,
+        unconstrained_class_names=unconstrained_class_names,
     )
 
 
@@ -1035,6 +1089,9 @@ def _ot_cache_metadata(
         "dim": int(source_x.shape[1]),
         "class_names": [str(name) for name in class_names],
         "transition_edges": [list(edge) for edge in transition_edges],
+        "unconstrained_class_names": list(
+            lineage_unconstrained_class_names_from_config(cfg)
+        ),
     }
     if pair_mode == "ot_endpoint_interpolant":
         classifier_path = resolve_classifier_path(
@@ -1233,6 +1290,7 @@ def _collect_exact_ot_edges(
     prob_threshold = float(getattr(cfg.problem, "classifier_prob_threshold", 0.85))
     margin_threshold = float(getattr(cfg.problem, "classifier_margin_threshold", 1.0))
     classifier_batch_size = int(getattr(cfg.problem, "classifier_batch_size", 8192))
+    unconstrained_class_names = lineage_unconstrained_class_names_from_config(cfg)
 
     if plain_ot:
         source_groups = {
@@ -1299,6 +1357,7 @@ def _collect_exact_ot_edges(
                             classifier_batch_size=classifier_batch_size,
                             lineage_transition_mode=lineage_transition_mode,
                             transition_edges=transition_edges,
+                            unconstrained_class_names=unconstrained_class_names,
                             path_builder=getattr(
                                 cfg.problem,
                                 "interpolant_path_builder",
@@ -1579,6 +1638,7 @@ def _make_exact_ot_pair_pool_from_endpoint_arrays(
         "descendant",
         edges=transition_edges,
         class_names=class_names,
+        unconstrained_class_names=lineage_unconstrained_class_names_from_config(cfg),
     )
     mass_tol = float(getattr(cfg.problem, "ot_mass_tolerance", 1e-12))
     verbose = bool(getattr(cfg.problem, "ot_verbose", True))
@@ -1988,6 +2048,7 @@ def _make_pair_pool_from_endpoint_arrays(
         "descendant",
         edges=transition_edges,
         class_names=class_names,
+        unconstrained_class_names=lineage_unconstrained_class_names_from_config(cfg),
     )
 
     accepted_source_idx: List[np.ndarray] = []
@@ -2069,6 +2130,9 @@ def _make_pair_pool_from_endpoint_arrays(
                     classifier_batch_size=classifier_batch_size,
                     lineage_transition_mode=lineage_transition_mode,
                     transition_edges=transition_edges,
+                    unconstrained_class_names=(
+                        lineage_unconstrained_class_names_from_config(cfg)
+                    ),
                     path_builder=getattr(
                         cfg.problem,
                         "interpolant_path_builder",

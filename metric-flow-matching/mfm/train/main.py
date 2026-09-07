@@ -24,6 +24,10 @@ from mfm.networks.geopath_networks.mlp import GeoPathMLP
 from mfm.utils import set_seed
 from mfm.train.parsers import parse_args
 from mfm.flow_matchers.ema import EMA
+from mfm.flow_matchers.cite_multi_eval import (
+    resolve_all_days_classifier_path,
+    validate_cite_multi_evaluation_args,
+)
 from mfm.train.train_utils import (
     load_config,
     merge_config,
@@ -56,7 +60,6 @@ def phase_accelerator(args, phase: str) -> str:
     requested = str(args.accelerator)
     if (
         phase == "geopath"
-        and args.data_type == "maizels"
         and torch.backends.mps.is_available()
         and requested in ("auto", "gpu", "mps")
     ):
@@ -94,6 +97,16 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     elif args.data_type == "maizels":
         assert args.dim == 50
         assert not args.whiten
+
+    if (
+        args.data_type == "scrna"
+        and args.data_name in ("cite", "multi")
+        and bool(args.cite_multi_eval_enabled)
+    ):
+        validate_cite_multi_evaluation_args(args)
+        args.cite_multi_eval_classifier_path = str(
+            resolve_all_days_classifier_path(args)
+        )
 
     skipped_time_points = [t_exclude] if t_exclude else []
     geopath_accelerator = phase_accelerator(args, "geopath")
@@ -363,10 +376,15 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     trainer.fit(
         flow_train, datamodule=datamodule, ckpt_path=args.resume_flow_model_ckpt
     )
+    use_best_test_checkpoint = args.data_type == "maizels" or (
+        args.data_type == "scrna"
+        and args.data_name in ("cite", "multi")
+        and bool(args.cite_multi_eval_enabled)
+    )
     trainer.test(
         flow_train,
         datamodule=datamodule,
-        ckpt_path="best" if args.data_type == "maizels" else None,
+        ckpt_path="best" if use_best_test_checkpoint else None,
     )
     wandb.finish()
     ##### ALGO 2: (Metric) Flow Matching END #####
