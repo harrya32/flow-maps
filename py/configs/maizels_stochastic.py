@@ -51,6 +51,7 @@ def get_config(
     entropy_weight: Optional[float] = None,
     diffusion_scale: Optional[float] = None,
     gamma_scale: Optional[float] = None,
+    early_stopping_patience: Optional[int] = None,
     seed: Optional[int] = None,
     total_steps: Optional[int] = None,
     batch_size: Optional[int] = None,
@@ -73,6 +74,7 @@ def get_config(
         maizels_time_mode=maizels_time_mode,
         hparam_val_times=hparam_val_times,
         learning_rate=learning_rate,
+        early_stopping_patience=early_stopping_patience,
         seed=seed,
     )
 
@@ -147,14 +149,31 @@ def get_config(
         raise ValueError("entropy_weight must be non-negative.")
 
     cfg.evaluation = ml_collections.ConfigDict()
-    cfg.evaluation.frequency = 5_000
     cfg.evaluation.n_noise_draws = 3
-    cfg.evaluation.max_source_points = 1_024
-    cfg.evaluation.max_target_points = 1_024
+    # Match the deterministic Maizels distribution evaluation: zero means use
+    # every cell in both the interval source and the actual held-out day.
+    cfg.evaluation.max_source_points = 0
+    cfg.evaluation.max_target_points = 0
+    cfg.evaluation.flowmap_n_steps = 50
+    # Match deterministic trajectory diagnostics: follow held-out D3 cells,
+    # using every held-out cell when this cap exceeds the holdout size.
+    cfg.evaluation.lineage_max_source_points = 512
+    cfg.evaluation.lineage_n_steps = 50
     cfg.evaluation.seed = 2_701
     cfg.evaluation.save_plot = True
-    cfg.evaluation.early_stopping_patience = 0
-    cfg.evaluation.early_stopping_min_delta = 0.0
+
+    # Match deterministic Maizels early stopping: the complete training
+    # objective is recomputed on a fixed held-out pair set every 100 steps.
+    cfg.optimization.early_stopping.patience = int(
+        cfg.optimization.early_stopping.patience
+    )
+    cfg.optimization.early_stopping.check_freq = 100
+    cfg.optimization.early_stopping.min_delta = 0.0
+    cfg.optimization.early_stopping.warmup_steps = 0
+    cfg.optimization.early_stopping.metric = "validation_loss"
+    cfg.optimization.early_stopping.mode = "min"
+    if cfg.optimization.early_stopping.patience < 0:
+        raise ValueError("early_stopping_patience must be non-negative.")
 
     cfg.logging.scalar_freq = 50
     cfg.logging.progress_freq = 50
