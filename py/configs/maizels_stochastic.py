@@ -17,22 +17,33 @@ from . import maizels_pca50
 
 
 VARIANTS = (
-    # name, endpoint pair mode, differentiable lineage loss
-    ("standard_ssfm", "none", False),
-    ("bio_prior_ssfm", "endpoint", False),
-    ("bio_prior_constrained_ssfm", "endpoint", True),
+    # name, endpoint pair mode, differentiable lineage loss, minibatch OT
+    ("standard_ssfm", "none", False, False),
+    ("bio_prior_ssfm", "endpoint", False, False),
+    ("bio_prior_constrained_ssfm", "endpoint", True, False),
+    # Match the deterministic flow-map OT variants. OT is recomputed on every
+    # optimizer batch rather than being frozen into a precomputed pair pool.
+    ("bio_prior_minibatch_ot_ssfm", "ot_endpoint_interpolant", False, True),
+    (
+        "bio_prior_minibatch_ot_constrained_ssfm",
+        "ot_endpoint_interpolant",
+        True,
+        True,
+    ),
+    ("minibatch_ot_ssfm", "ot_plain", False, True),
 )
 
 
 def get_hparam_sweep_spec(slurm_id: int) -> dict:
     """Declare the grid dimensions relevant to one stochastic variant."""
-    name, _, constrained = VARIANTS[int(slurm_id) % len(VARIANTS)]
+    name, _, constrained, minibatch_ot = VARIANTS[int(slurm_id) % len(VARIANTS)]
     return {
         "variant_name": name,
         "learning_rate": True,
         "diffusion_scale": True,
         "constraint_weight": bool(constrained),
         "entropy_weight": bool(constrained),
+        "minibatch_ot": bool(minibatch_ot),
         "launcher": "maizels_stochastic.py",
         "objective_sampler": "ssfm",
     }
@@ -57,8 +68,10 @@ def get_config(
     batch_size: Optional[int] = None,
     n_pairs: Optional[int] = None,
 ) -> ml_collections.ConfigDict:
-    """Return one of the three isolated Maizels SSFM experiments."""
-    variant_name, pair_mode, constrained = VARIANTS[int(slurm_id) % len(VARIANTS)]
+    """Return one of the six isolated Maizels SSFM experiments."""
+    variant_name, pair_mode, constrained, minibatch_ot = VARIANTS[
+        int(slurm_id) % len(VARIANTS)
+    ]
     schedule = maizels_schedule or os.getenv(
         "MAIZELS_STOCHASTIC_SCHEDULE", "d3_d3p8_d8"
     )
@@ -79,6 +92,8 @@ def get_config(
     )
 
     cfg.problem.maizels_pair_mode = pair_mode
+    if minibatch_ot:
+        cfg.problem.maizels_ot_coupling = "minibatch_ot"
     cfg.problem.n = int(500_000 if n_pairs is None else n_pairs)
     if cfg.problem.n <= 0:
         raise ValueError("n_pairs must be positive.")

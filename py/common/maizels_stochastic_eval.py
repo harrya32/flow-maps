@@ -508,6 +508,150 @@ def lineage_metrics(
     return metrics
 
 
+def full_data_trajectory_plot_data(
+    model,
+    params,
+    cfg,
+    *,
+    seed: Optional[int] = None,
+):
+    """Generate held-out D3 trajectories and full-classifier validity labels."""
+    configured = Path(cfg.logging.maizels.full_data_classifier_path)
+    classifier_path = (
+        configured if configured.suffix == ".npz" else configured.with_suffix(".npz")
+    )
+    if not classifier_path.is_file():
+        print(
+            "Skipping stochastic validity trajectory plot because the full-data "
+            f"NumPy classifier checkpoint is absent: {classifier_path}"
+        )
+        return None
+
+    seed = int(cfg.evaluation.seed + 503 if seed is None else seed)
+    pools = maizels.timepoint_pool_splits(
+        cfg, dataset_location=cfg.problem.dataset_location
+    )
+    source_pool = pools[str(cfg.problem.source_time)]
+    target_pool = pools[str(cfg.problem.target_time)]
+    source_all = np.asarray(source_pool["holdout_x"], dtype=np.float32)
+    source_types_all = np.asarray(source_pool["holdout_types"])
+    rng = np.random.default_rng(seed)
+    indices = _sample_indices(
+        rng,
+        source_all.shape[0],
+        int(cfg.evaluation.lineage_max_source_points),
+    )
+    source = source_all[indices]
+    if source.shape[0] == 0:
+        return None
+    target = np.asarray(target_pool["holdout_x"], dtype=np.float32)
+    type_to_id = maizels.class_to_id_map(maizels.CLASS_NAMES)
+    source_ids = np.asarray(
+        [type_to_id[str(value)] for value in source_types_all[indices]],
+        dtype=np.int32,
+    )
+    generated = sample_composed_path(
+        model,
+        params,
+        source,
+        maizels.normalized_time(cfg.problem.source_time, cfg),
+        maizels.normalized_time(cfg.problem.target_time, cfg),
+        jax.random.PRNGKey(seed),
+        n_coefficients=int(cfg.ssfm.n_coefficients),
+        n_steps=int(cfg.evaluation.lineage_n_steps),
+    )
+    validity = maizels.check_paths_with_classifier(
+        generated,
+        source_ids,
+        classifier_path,
+        prob_threshold=float(cfg.problem.classifier_prob_threshold),
+        margin_threshold=float(cfg.problem.classifier_margin_threshold),
+        classifier_batch_size=int(cfg.problem.classifier_batch_size),
+        lineage_transition_mode=maizels.lineage_transition_mode_from_config(cfg),
+    )
+    paths = np.concatenate([source[:, None, :], generated], axis=1)
+    return {
+        "paths": paths,
+        "valid": np.asarray(validity["valid"], dtype=bool),
+        "source": source,
+        "target": target,
+    }
+
+
+def save_full_data_trajectory_plot(plot_data, output_path: Path) -> None:
+    """Plot stochastic trajectories by full-data-classifier lineage validity."""
+    if plot_data is None:
+        return
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import LineCollection
+
+    paths = np.asarray(plot_data["paths"], dtype=np.float32)
+    valid = np.asarray(plot_data["valid"], dtype=bool)
+    source = np.asarray(plot_data["source"], dtype=np.float32)
+    target = np.asarray(plot_data["target"], dtype=np.float32)
+
+    def segments(selected):
+        selected_paths = paths[selected, :, :2]
+        if selected_paths.shape[0] == 0:
+            return np.empty((0, 2, 2), dtype=np.float32)
+        return np.stack(
+            [selected_paths[:, :-1], selected_paths[:, 1:]], axis=2
+        ).reshape((-1, 2, 2))
+
+    figure, axis = plt.subplots(figsize=(7.0, 6.0))
+    axis.scatter(
+        target[:, 0],
+        target[:, 1],
+        s=5,
+        alpha=0.18,
+        color="tab:blue",
+        label="held-out D8",
+    )
+    valid_segments = segments(valid)
+    invalid_segments = segments(~valid)
+    if valid_segments.shape[0]:
+        axis.add_collection(
+            LineCollection(
+                valid_segments,
+                colors="black",
+                linewidths=0.4,
+                alpha=0.25,
+                label="valid",
+            )
+        )
+    if invalid_segments.shape[0]:
+        axis.add_collection(
+            LineCollection(
+                invalid_segments,
+                colors="crimson",
+                linewidths=0.8,
+                alpha=0.7,
+                label="invalid",
+            )
+        )
+    axis.scatter(
+        source[:, 0],
+        source[:, 1],
+        s=8,
+        alpha=0.6,
+        color="tab:green",
+        label="held-out D3",
+    )
+    axis.autoscale_view()
+    axis.set_xlabel("PC1")
+    axis.set_ylabel("PC2")
+    axis.set_title(
+        "Composed SSFM trajectories: "
+        f"{100.0 * float(np.mean(valid)):.1f}% lineage-valid\n"
+        "(full-data classifier)"
+    )
+    axis.legend(loc="best", frameon=False)
+    figure.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
 def save_pushforward_plot(
     plot_data: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
     output_path: Path,
@@ -559,4 +703,10 @@ def final_evaluation(model, params, cfg, output_dir: Path) -> Dict[str, float]:
             Path(output_dir) / "heldout_pushforwards.png",
             flowmap_n_steps=int(cfg.evaluation.flowmap_n_steps),
         )
+        trajectory_data = full_data_trajectory_plot_data(model, params, cfg)
+        if trajectory_data is not None:
+            save_full_data_trajectory_plot(
+                trajectory_data,
+                Path(output_dir) / "heldout_d3_trajectory_validity.png",
+            )
     return metrics

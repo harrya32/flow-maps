@@ -13,7 +13,7 @@ from launchers import maizels_stochastic as maizels_stochastic_launcher
 from scripts import sweep_maizels_stochastic_hparams
 
 
-def test_stochastic_config_has_three_isolated_variants():
+def test_stochastic_config_has_six_isolated_variants():
     standard = maizels_stochastic.get_config(
         0, total_steps=10, batch_size=8, n_pairs=20
     )
@@ -24,6 +24,13 @@ def test_stochastic_config_has_three_isolated_variants():
         batch_size=8,
         n_pairs=20,
         diffusion_scale=0.35,
+    )
+    bio_ot = maizels_stochastic.get_config(3, total_steps=10, batch_size=8, n_pairs=20)
+    constrained_bio_ot = maizels_stochastic.get_config(
+        4, total_steps=10, batch_size=8, n_pairs=20
+    )
+    plain_ot = maizels_stochastic.get_config(
+        5, total_steps=10, batch_size=8, n_pairs=20
     )
 
     assert standard.problem.maizels_pair_mode == "none"
@@ -43,7 +50,15 @@ def test_stochastic_config_has_three_isolated_variants():
     assert constrained.evaluation.lineage_max_source_points == 512
     assert constrained.evaluation.lineage_n_steps == 50
     assert constrained.logging.visual_freq == 5_000
+    assert bio_ot.problem.maizels_pair_mode == "ot_endpoint_interpolant"
+    assert bio_ot.problem.maizels_ot_coupling == "minibatch_ot"
+    assert not bio_ot.constraints.enabled
+    assert constrained_bio_ot.problem.maizels_pair_mode == "ot_endpoint_interpolant"
+    assert constrained_bio_ot.constraints.enabled
+    assert plain_ot.problem.maizels_pair_mode == "ot_plain"
+    assert plain_ot.problem.maizels_ot_coupling == "minibatch_ot"
     assert maizels_stochastic.get_hparam_sweep_spec(2)["diffusion_scale"]
+    assert maizels_stochastic.get_hparam_sweep_spec(3)["minibatch_ot"]
 
 
 def test_constraint_overrides_are_rejected_for_unconstrained_variants():
@@ -59,6 +74,36 @@ def test_stochastic_launcher_overrides_visual_frequency():
     )
     cfg = maizels_stochastic_launcher._build_config(args)
     assert cfg.logging.visual_freq == 250
+
+
+def test_stochastic_minibatch_ot_is_recoupled_for_each_batch(monkeypatch):
+    cfg = maizels_stochastic.get_config(3, total_steps=10, batch_size=8, n_pairs=20)
+    expected = {
+        "x0": np.zeros((8, 3), dtype=np.float32),
+        "x1": np.ones((8, 3), dtype=np.float32),
+        "label": np.zeros((8, 4), dtype=np.float32),
+    }
+    calls = []
+
+    def fake_couple(cfg, pools, n_pairs, *, seed, pair_mode):
+        calls.append((pools, n_pairs, seed, pair_mode))
+        return expected, {"coupling": "dynamic_minibatch_ot"}
+
+    monkeypatch.setattr(
+        maizels_stochastic_launcher.maizels,
+        "couple_minibatch_ot_timepoint_pools",
+        fake_couple,
+    )
+    pools = {"timepoints": {}, "intervals": ()}
+    batch = maizels_stochastic_launcher._sample_batch(
+        pools, np.random.default_rng(7), 8, cfg
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] is pools
+    assert calls[0][1] == 8
+    assert calls[0][3] == "ot_endpoint_interpolant"
+    np.testing.assert_allclose(np.asarray(batch["x1"]), 1.0)
 
 
 def test_stochastic_sweep_includes_diffusion_and_only_relevant_constraints():
@@ -275,7 +320,8 @@ def test_lineage_eval_uses_heldout_d3_cells_and_both_classifiers(monkeypatch, tm
                 [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=np.float32
             ),
             "holdout_types": np.full(3, "NMP", dtype=object),
-        }
+        },
+        "D8": {"holdout_x": np.asarray([[8.0, 8.0], [9.0, 9.0]], dtype=np.float32)},
     }
     seen_classifiers = []
 
@@ -321,6 +367,14 @@ def test_lineage_eval_uses_heldout_d3_cells_and_both_classifiers(monkeypatch, tm
     )
     assert metrics["final_eval/flowmap_valid_trajectory_pct"] == 50.0
     assert not hasattr(maizels_stochastic_eval, "semigroup_metrics")
+
+    seen_classifiers.clear()
+    plot_data = maizels_stochastic_eval.full_data_trajectory_plot_data(
+        object(), {}, cfg
+    )
+    assert seen_classifiers == ["all_days.npz"]
+    assert plot_data["paths"].shape == (2, 51, 2)
+    np.testing.assert_array_equal(plot_data["valid"], [True, True])
 
 
 def test_plain_ssfm_loss_has_finite_gradients():

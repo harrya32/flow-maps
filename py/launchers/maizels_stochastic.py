@@ -324,14 +324,30 @@ def _make_objective_steps(model, cfg, pc_scale, classifier):
 
 
 def _sample_batch(
-    pairs: Dict[str, np.ndarray],
+    training_data: Dict[str, object],
     rng: np.random.Generator,
     batch_size: int,
+    cfg,
 ) -> Dict[str, jnp.ndarray]:
-    indices = rng.integers(0, pairs["x0"].shape[0], size=batch_size)
+    if maizels.uses_minibatch_ot(cfg):
+        paired, _ = maizels.couple_minibatch_ot_timepoint_pools(
+            cfg,
+            training_data,
+            int(batch_size),
+            seed=int(rng.integers(0, np.iinfo(np.int64).max)),
+            pair_mode=str(cfg.problem.maizels_pair_mode),
+        )
+        paired = _ensure_pair_time_bounds(paired, cfg)
+        return {
+            key: jnp.asarray(np.asarray(value))
+            for key, value in paired.items()
+            if key in ("x0", "x1", "label")
+        }
+
+    indices = rng.integers(0, training_data["x0"].shape[0], size=batch_size)
     return {
         key: jnp.asarray(np.asarray(value)[indices])
-        for key, value in pairs.items()
+        for key, value in training_data.items()
         if key in ("x0", "x1", "label")
     }
 
@@ -391,7 +407,7 @@ def _wandb_setup(cfg, mode: Optional[str]):
 
 
 def _save_periodic_pushforward_plot(model, params, cfg, run_dir, step, wandb_run):
-    """Save the fixed-seed held-out pushforward plot for a training checkpoint."""
+    """Save fixed-seed population and lineage plots for a training checkpoint."""
     plot_data = maizels_stochastic_eval.pushforward_plot_data(model, params, cfg)
     plot_path = (
         Path(run_dir) / "plots" / f"heldout_pushforwards_step_{int(step):07d}.png"
@@ -401,14 +417,30 @@ def _save_periodic_pushforward_plot(model, params, cfg, run_dir, step, wandb_run
         plot_path,
         flowmap_n_steps=int(cfg.evaluation.flowmap_n_steps),
     )
+    saved_paths = [plot_path]
+    trajectory_data = maizels_stochastic_eval.full_data_trajectory_plot_data(
+        model, params, cfg
+    )
+    trajectory_path = (
+        Path(run_dir)
+        / "plots"
+        / f"heldout_d3_trajectory_validity_step_{int(step):07d}.png"
+    )
+    if trajectory_data is not None:
+        maizels_stochastic_eval.save_full_data_trajectory_plot(
+            trajectory_data, trajectory_path
+        )
+        saved_paths.append(trajectory_path)
     if wandb_run is not None:
         import wandb
 
-        wandb_run.log(
-            {"visualization/heldout_pushforwards": wandb.Image(str(plot_path))},
-            step=int(step),
-        )
-    return plot_path
+        payload = {"visualization/heldout_pushforwards": wandb.Image(str(plot_path))}
+        if trajectory_data is not None:
+            payload["visualization/heldout_d3_trajectory_validity"] = wandb.Image(
+                str(trajectory_path)
+            )
+        wandb_run.log(payload, step=int(step))
+    return tuple(saved_paths)
 
 
 def _make_validation_batch(cfg):
@@ -455,15 +487,27 @@ def train(
 ) -> Dict[str, float]:
     """Train, select by held-out objective loss, then run final evaluation."""
     print("Loading Maizels stochastic training pairs.")
-    pairs, pair_stats = maizels.make_pair_pool(
-        cfg, dataset_location=cfg.problem.dataset_location
-    )
-    pairs = _ensure_pair_time_bounds(pairs, cfg)
+    dynamic_minibatch_ot = maizels.uses_minibatch_ot(cfg)
+    if dynamic_minibatch_ot:
+        training_data, pair_stats = maizels.make_minibatch_ot_training_pools(
+            cfg, dataset_location=cfg.problem.dataset_location
+        )
+        loaded_description = (
+            f"{int(training_data['stored_endpoint_cells']):,} unique endpoint cells"
+            if "stored_endpoint_cells" in training_data
+            else f"{int(pair_stats['stored_endpoint_cells']):,} unique endpoint cells"
+        )
+    else:
+        training_data, pair_stats = maizels.make_pair_pool(
+            cfg, dataset_location=cfg.problem.dataset_location
+        )
+        training_data = _ensure_pair_time_bounds(training_data, cfg)
+        loaded_description = f"{training_data['x0'].shape[0]:,} pairs"
     pc_scale = _training_population_feature_scale(cfg)
     print(
-        "Loaded "
-        f"{pairs['x0'].shape[0]:,} pairs in {pairs['x0'].shape[1]} dimensions; "
+        f"Loaded {loaded_description} in {int(cfg.problem.d)} dimensions; "
         f"mode={cfg.problem.maizels_pair_mode}, "
+        f"coupling={'minibatch_ot' if dynamic_minibatch_ot else 'precomputed'}, "
         f"retained={list(cfg.problem.retained_timepoints)}."
     )
     print("Pair construction: " + json.dumps(pair_stats, default=str))
@@ -524,7 +568,12 @@ def train(
     progress = tqdm(range(total_steps), desc="Maizels SSFM")
     try:
         for step_index in progress:
-            batch = _sample_batch(pairs, numpy_rng, int(cfg.optimization.bs))
+            batch = _sample_batch(
+                training_data,
+                numpy_rng,
+                int(cfg.optimization.bs),
+                cfg,
+            )
             key, step_key = jax.random.split(key)
             state, ema_params, step_metrics = train_step(
                 state, ema_params, batch, step_key
@@ -556,7 +605,7 @@ def train(
                 and visual_freq > 0
                 and step % visual_freq == 0
             ):
-                plot_path = _save_periodic_pushforward_plot(
+                plot_paths = _save_periodic_pushforward_plot(
                     model,
                     ema_params,
                     cfg,
@@ -564,6 +613,7 @@ def train(
                     step,
                     wandb_run,
                 )
+
             should_validate = step >= warmup_steps and (
                 step % validation_frequency == 0 or step == total_steps
             )
