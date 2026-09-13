@@ -17,22 +17,35 @@ from . import maizels_pca50
 
 
 VARIANTS = (
-    # name, endpoint pair mode, differentiable lineage loss
-    ("standard_ssfm", "none", False),
-    ("bio_prior_ssfm", "endpoint", False),
-    ("bio_prior_constrained_ssfm", "endpoint", True),
+    # name, endpoint pair mode, differentiable lineage loss, minibatch OT
+    ("standard_ssfm", "none", False, False),
+    ("bio_prior_ssfm", "endpoint", False, False),
+    ("bio_prior_constrained_ssfm", "endpoint", True, False),
+    # OT is recomputed on every optimizer batch rather than being frozen into
+    # a precomputed pair pool.  For SSFM, the biological prior masks endpoint
+    # cell-type transitions only: a deterministic straight-line interpolant is
+    # not representative of the Gaussian-noised stochastic interpolant.
+    ("bio_prior_minibatch_ot_ssfm", "ot_endpoint", False, True),
+    (
+        "bio_prior_minibatch_ot_constrained_ssfm",
+        "ot_endpoint",
+        True,
+        True,
+    ),
+    ("minibatch_ot_ssfm", "ot_plain", False, True),
 )
 
 
 def get_hparam_sweep_spec(slurm_id: int) -> dict:
     """Declare the grid dimensions relevant to one stochastic variant."""
-    name, _, constrained = VARIANTS[int(slurm_id) % len(VARIANTS)]
+    name, _, constrained, minibatch_ot = VARIANTS[int(slurm_id) % len(VARIANTS)]
     return {
         "variant_name": name,
         "learning_rate": True,
         "diffusion_scale": True,
         "constraint_weight": bool(constrained),
         "entropy_weight": bool(constrained),
+        "minibatch_ot": bool(minibatch_ot),
         "launcher": "maizels_stochastic.py",
         "objective_sampler": "ssfm",
     }
@@ -51,13 +64,16 @@ def get_config(
     entropy_weight: Optional[float] = None,
     diffusion_scale: Optional[float] = None,
     gamma_scale: Optional[float] = None,
+    early_stopping_patience: Optional[int] = None,
     seed: Optional[int] = None,
     total_steps: Optional[int] = None,
     batch_size: Optional[int] = None,
     n_pairs: Optional[int] = None,
 ) -> ml_collections.ConfigDict:
-    """Return one of the three isolated Maizels SSFM experiments."""
-    variant_name, pair_mode, constrained = VARIANTS[int(slurm_id) % len(VARIANTS)]
+    """Return one of the six isolated Maizels SSFM experiments."""
+    variant_name, pair_mode, constrained, minibatch_ot = VARIANTS[
+        int(slurm_id) % len(VARIANTS)
+    ]
     schedule = maizels_schedule or os.getenv(
         "MAIZELS_STOCHASTIC_SCHEDULE", "d3_d3p8_d8"
     )
@@ -73,10 +89,17 @@ def get_config(
         maizels_time_mode=maizels_time_mode,
         hparam_val_times=hparam_val_times,
         learning_rate=learning_rate,
+        early_stopping_patience=early_stopping_patience,
         seed=seed,
     )
 
     cfg.problem.maizels_pair_mode = pair_mode
+    # Stochastic experiments never validate a deterministic straight-line
+    # interpolant when filtering training pairs.  Bio-prior variants use only
+    # the annotated endpoint transition mask.
+    cfg.problem.n_interpolant_check_times = 0
+    if minibatch_ot:
+        cfg.problem.maizels_ot_coupling = "minibatch_ot"
     cfg.problem.n = int(500_000 if n_pairs is None else n_pairs)
     if cfg.problem.n <= 0:
         raise ValueError("n_pairs must be positive.")
@@ -147,14 +170,31 @@ def get_config(
         raise ValueError("entropy_weight must be non-negative.")
 
     cfg.evaluation = ml_collections.ConfigDict()
-    cfg.evaluation.frequency = 5_000
     cfg.evaluation.n_noise_draws = 3
-    cfg.evaluation.max_source_points = 1_024
-    cfg.evaluation.max_target_points = 1_024
+    # Match the deterministic Maizels distribution evaluation: zero means use
+    # every cell in both the interval source and the actual held-out day.
+    cfg.evaluation.max_source_points = 0
+    cfg.evaluation.max_target_points = 0
+    cfg.evaluation.flowmap_n_steps = 50
+    # Match deterministic trajectory diagnostics: follow held-out D3 cells,
+    # using every held-out cell when this cap exceeds the holdout size.
+    cfg.evaluation.lineage_max_source_points = 512
+    cfg.evaluation.lineage_n_steps = 50
     cfg.evaluation.seed = 2_701
     cfg.evaluation.save_plot = True
-    cfg.evaluation.early_stopping_patience = 0
-    cfg.evaluation.early_stopping_min_delta = 0.0
+
+    # Match deterministic Maizels early stopping: the complete training
+    # objective is recomputed on a fixed held-out pair set every 100 steps.
+    cfg.optimization.early_stopping.patience = int(
+        cfg.optimization.early_stopping.patience
+    )
+    cfg.optimization.early_stopping.check_freq = 100
+    cfg.optimization.early_stopping.min_delta = 0.0
+    cfg.optimization.early_stopping.warmup_steps = 0
+    cfg.optimization.early_stopping.metric = "validation_loss"
+    cfg.optimization.early_stopping.mode = "min"
+    if cfg.optimization.early_stopping.patience < 0:
+        raise ValueError("early_stopping_patience must be non-negative.")
 
     cfg.logging.scalar_freq = 50
     cfg.logging.progress_freq = 50

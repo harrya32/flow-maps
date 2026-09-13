@@ -88,12 +88,35 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--total-steps", "--total_steps", type=int, default=None)
     parser.add_argument("--batch-size", "--batch_size", type=int, default=None)
     parser.add_argument("--n-pairs", "--n_pairs", type=int, default=None)
-    parser.add_argument("--eval-frequency", "--eval_frequency", type=int, default=None)
+    parser.add_argument(
+        "--validation-frequency",
+        "--validation_frequency",
+        "--eval-frequency",
+        "--eval_frequency",
+        dest="validation_frequency",
+        type=int,
+        default=None,
+        help="Steps between held-out objective checks (default: 100).",
+    )
     parser.add_argument(
         "--eval-noise-draws", "--eval_noise_draws", type=int, default=None
     )
     parser.add_argument(
         "--eval-max-points", "--eval_max_points", type=int, default=None
+    )
+    parser.add_argument(
+        "--eval-flowmap-steps",
+        "--eval_flowmap_steps",
+        type=int,
+        default=None,
+        help="Number of maps composed for final flow-map evaluation (default: 50).",
+    )
+    parser.add_argument(
+        "--visual-frequency",
+        "--visual_frequency",
+        type=int,
+        default=None,
+        help="Training steps between pushforward plots; zero disables them.",
     )
     parser.add_argument(
         "--early-stopping-patience",
@@ -125,6 +148,7 @@ def _build_config(args: argparse.Namespace):
         "entropy_weight": args.entropy_weight,
         "diffusion_scale": args.diffusion_scale,
         "gamma_scale": args.gamma_scale,
+        "early_stopping_patience": args.early_stopping_patience,
         "seed": args.seed,
         "total_steps": args.total_steps,
         "batch_size": args.batch_size,
@@ -137,23 +161,27 @@ def _build_config(args: argparse.Namespace):
         if value is not None and key in supported
     }
     cfg = module.get_config(args.slurm_id, **kwargs)
-    if args.eval_frequency is not None:
-        if args.eval_frequency <= 0:
-            raise ValueError("eval_frequency must be positive.")
-        cfg.evaluation.frequency = int(args.eval_frequency)
+    if args.validation_frequency is not None:
+        if args.validation_frequency <= 0:
+            raise ValueError("validation_frequency must be positive.")
+        cfg.optimization.early_stopping.check_freq = int(args.validation_frequency)
     if args.eval_noise_draws is not None:
         if args.eval_noise_draws <= 0:
             raise ValueError("eval_noise_draws must be positive.")
         cfg.evaluation.n_noise_draws = int(args.eval_noise_draws)
     if args.eval_max_points is not None:
-        if args.eval_max_points <= 0:
-            raise ValueError("eval_max_points must be positive.")
+        if args.eval_max_points < 0:
+            raise ValueError("eval_max_points must be non-negative (zero means all).")
         cfg.evaluation.max_source_points = int(args.eval_max_points)
         cfg.evaluation.max_target_points = int(args.eval_max_points)
-    if args.early_stopping_patience is not None:
-        if args.early_stopping_patience < 0:
-            raise ValueError("early_stopping_patience must be non-negative.")
-        cfg.evaluation.early_stopping_patience = int(args.early_stopping_patience)
+    if args.eval_flowmap_steps is not None:
+        if args.eval_flowmap_steps <= 0:
+            raise ValueError("eval_flowmap_steps must be positive.")
+        cfg.evaluation.flowmap_n_steps = int(args.eval_flowmap_steps)
+    if args.visual_frequency is not None:
+        if args.visual_frequency < 0:
+            raise ValueError("visual_frequency must be non-negative.")
+        cfg.logging.visual_freq = int(args.visual_frequency)
     return cfg
 
 
@@ -266,7 +294,7 @@ def _create_model_and_state(cfg, pc_scale: np.ndarray):
     return model, state, variables["params"], schedule
 
 
-def _make_train_step(model, cfg, pc_scale, classifier):
+def _make_objective_steps(model, cfg, pc_scale, classifier):
     loss_fn = maizels_stochastic_training.make_loss_fn(
         model,
         cfg,
@@ -287,18 +315,39 @@ def _make_train_step(model, cfg, pc_scale, classifier):
         metrics["training/grad_norm"] = grad_norm
         return state, ema_params, metrics
 
-    return train_step
+    @jax.jit
+    def validation_step(params, ema_params, batch, key, step):
+        _, metrics = loss_fn(params, ema_params, batch, key, step)
+        return metrics
+
+    return train_step, validation_step
 
 
 def _sample_batch(
-    pairs: Dict[str, np.ndarray],
+    training_data: Dict[str, object],
     rng: np.random.Generator,
     batch_size: int,
+    cfg,
 ) -> Dict[str, jnp.ndarray]:
-    indices = rng.integers(0, pairs["x0"].shape[0], size=batch_size)
+    if maizels.uses_minibatch_ot(cfg):
+        paired, _ = maizels.couple_minibatch_ot_timepoint_pools(
+            cfg,
+            training_data,
+            int(batch_size),
+            seed=int(rng.integers(0, np.iinfo(np.int64).max)),
+            pair_mode=str(cfg.problem.maizels_pair_mode),
+        )
+        paired = _ensure_pair_time_bounds(paired, cfg)
+        return {
+            key: jnp.asarray(np.asarray(value))
+            for key, value in paired.items()
+            if key in ("x0", "x1", "label")
+        }
+
+    indices = rng.integers(0, training_data["x0"].shape[0], size=batch_size)
     return {
         key: jnp.asarray(np.asarray(value)[indices])
-        for key, value in pairs.items()
+        for key, value in training_data.items()
         if key in ("x0", "x1", "label")
     }
 
@@ -308,7 +357,7 @@ def _checkpoint_payload(state, ema_params, cfg, pc_scale, best_metric, best_step
         "state": state,
         "ema_params": ema_params,
         "pc_scale": jnp.asarray(pc_scale),
-        "best_validation_emd": jnp.asarray(best_metric),
+        "best_validation_loss": jnp.asarray(best_metric),
         "best_step": jnp.asarray(best_step, dtype=jnp.int32),
         "config": cfg.to_dict(),
     }
@@ -357,49 +406,118 @@ def _wandb_setup(cfg, mode: Optional[str]):
     return wandb.init(**kwargs)
 
 
-def _validation_metrics(model, params, cfg, step: int):
-    validation_times = tuple(str(value) for value in cfg.problem.hparam_val_times)
-    if not validation_times:
-        validation_times = tuple(
-            str(value) for value in cfg.problem.evaluation_timepoints
+def _save_periodic_pushforward_plot(model, params, cfg, run_dir, step, wandb_run):
+    """Save fixed-seed population and lineage plots for a training checkpoint."""
+    plot_data = maizels_stochastic_eval.pushforward_plot_data(model, params, cfg)
+    plot_path = (
+        Path(run_dir) / "plots" / f"heldout_pushforwards_step_{int(step):07d}.png"
+    )
+    maizels_stochastic_eval.save_pushforward_plot(
+        plot_data,
+        plot_path,
+        flowmap_n_steps=int(cfg.evaluation.flowmap_n_steps),
+    )
+    saved_paths = [plot_path]
+    trajectory_data = maizels_stochastic_eval.full_data_trajectory_plot_data(
+        model, params, cfg
+    )
+    trajectory_path = (
+        Path(run_dir)
+        / "plots"
+        / f"heldout_d3_trajectory_validity_step_{int(step):07d}.png"
+    )
+    if trajectory_data is not None:
+        maizels_stochastic_eval.save_full_data_trajectory_plot(
+            trajectory_data, trajectory_path
         )
-    metrics, _ = maizels_stochastic_eval.distribution_metrics(
-        model,
-        params,
+        saved_paths.append(trajectory_path)
+    if wandb_run is not None:
+        import wandb
+
+        payload = {"visualization/heldout_pushforwards": wandb.Image(str(plot_path))}
+        if trajectory_data is not None:
+            payload["visualization/heldout_d3_trajectory_validity"] = wandb.Image(
+                str(trajectory_path)
+            )
+        wandb_run.log(payload, step=int(step))
+    return tuple(saved_paths)
+
+
+def _make_validation_batch(cfg):
+    """Construct the fixed held-out pair batch used by early stopping."""
+    validation_cfg = cfg.logging.maizels
+    pair_mode = str(validation_cfg.validation_pair_mode)
+    if pair_mode == "same_as_training":
+        pair_mode = str(cfg.problem.maizels_pair_mode)
+    pairs, stats = maizels.make_validation_pair_pool(
         cfg,
-        # Keep cells and Brownian draws fixed across checkpoints so that the
-        # validation EMD is suitable for early stopping/hyperparameter search.
-        seed=int(cfg.evaluation.seed),
-        max_source_points=min(512, int(cfg.evaluation.max_source_points)),
-        max_target_points=min(512, int(cfg.evaluation.max_target_points)),
-        timepoints=validation_times,
-        n_noise_draws=1,
+        max(2, int(validation_cfg.validation_bs)),
+        dataset_location=cfg.problem.dataset_location,
+        pair_mode=pair_mode,
+        seed=int(validation_cfg.validation_seed),
     )
-    objective_key = (
-        "final_eval/ssfm_mean_emd_hparam_val_times"
-        if cfg.problem.hparam_val_times
-        else "final_eval/ssfm_mean_emd"
+    pairs = _ensure_pair_time_bounds(pairs, cfg)
+    batch = {
+        key: jnp.asarray(np.asarray(value))
+        for key, value in pairs.items()
+        if key in ("x0", "x1", "label")
+    }
+    return batch, stats
+
+
+def _validation_loss_metrics(
+    validation_step, params, ema_params, batch, key, step: int
+):
+    """Evaluate exactly the training objective on fixed held-out pairs/noise."""
+    raw_metrics = validation_step(
+        params,
+        ema_params,
+        batch,
+        key,
+        jnp.asarray(step, dtype=jnp.int32),
     )
-    return metrics, float(metrics[objective_key])
+    scalars = _json_scalars(raw_metrics)
+    metrics = {f"validation/{name}": value for name, value in scalars.items()}
+    metrics["validation_loss"] = scalars["loss"]
+    return metrics, metrics["validation_loss"]
 
 
 def train(
     cfg, final_metrics_path: Optional[str] = None, wandb_mode=None
 ) -> Dict[str, float]:
-    """Train, select by held-out validation EMD, then run final evaluation."""
+    """Train, select by held-out objective loss, then run final evaluation."""
     print("Loading Maizels stochastic training pairs.")
-    pairs, pair_stats = maizels.make_pair_pool(
-        cfg, dataset_location=cfg.problem.dataset_location
-    )
-    pairs = _ensure_pair_time_bounds(pairs, cfg)
+    dynamic_minibatch_ot = maizels.uses_minibatch_ot(cfg)
+    if dynamic_minibatch_ot:
+        training_data, pair_stats = maizels.make_minibatch_ot_training_pools(
+            cfg, dataset_location=cfg.problem.dataset_location
+        )
+        loaded_description = (
+            f"{int(training_data['stored_endpoint_cells']):,} unique endpoint cells"
+            if "stored_endpoint_cells" in training_data
+            else f"{int(pair_stats['stored_endpoint_cells']):,} unique endpoint cells"
+        )
+    else:
+        training_data, pair_stats = maizels.make_pair_pool(
+            cfg, dataset_location=cfg.problem.dataset_location
+        )
+        training_data = _ensure_pair_time_bounds(training_data, cfg)
+        loaded_description = f"{training_data['x0'].shape[0]:,} pairs"
     pc_scale = _training_population_feature_scale(cfg)
     print(
-        "Loaded "
-        f"{pairs['x0'].shape[0]:,} pairs in {pairs['x0'].shape[1]} dimensions; "
+        f"Loaded {loaded_description} in {int(cfg.problem.d)} dimensions; "
         f"mode={cfg.problem.maizels_pair_mode}, "
+        f"coupling={'minibatch_ot' if dynamic_minibatch_ot else 'precomputed'}, "
         f"retained={list(cfg.problem.retained_timepoints)}."
     )
     print("Pair construction: " + json.dumps(pair_stats, default=str))
+    validation_batch, validation_stats = _make_validation_batch(cfg)
+    print(
+        "Loaded fixed held-out validation pairs: "
+        f"n={validation_batch['x0'].shape[0]}, "
+        f"mode={cfg.problem.maizels_pair_mode}."
+    )
+    print("Validation pair construction: " + json.dumps(validation_stats, default=str))
 
     classifier = None
     if bool(cfg.constraints.enabled):
@@ -409,7 +527,9 @@ def train(
         )
 
     model, state, ema_params, schedule = _create_model_and_state(cfg, pc_scale)
-    train_step = _make_train_step(model, cfg, pc_scale, classifier)
+    train_step, validation_step = _make_objective_steps(
+        model, cfg, pc_scale, classifier
+    )
     n_parameters = sum(
         int(value.size) for value in jax.tree_util.tree_leaves(state.params)
     )
@@ -432,9 +552,13 @@ def train(
     total_steps = int(cfg.optimization.total_steps)
     scalar_freq = max(1, int(cfg.logging.scalar_freq))
     save_freq = max(1, int(cfg.logging.save_freq))
-    eval_frequency = max(1, int(cfg.evaluation.frequency))
-    patience = int(cfg.evaluation.early_stopping_patience)
-    min_delta = float(cfg.evaluation.early_stopping_min_delta)
+    visual_freq = int(cfg.logging.visual_freq)
+    early_cfg = cfg.optimization.early_stopping
+    validation_frequency = max(1, int(early_cfg.check_freq))
+    patience = int(early_cfg.patience)
+    min_delta = float(early_cfg.min_delta)
+    warmup_steps = int(early_cfg.warmup_steps)
+    validation_key = jax.random.PRNGKey(int(cfg.logging.maizels.validation_seed) + 31)
     best_metric = math.inf
     best_step = 0
     best_params = None
@@ -444,7 +568,12 @@ def train(
     progress = tqdm(range(total_steps), desc="Maizels SSFM")
     try:
         for step_index in progress:
-            batch = _sample_batch(pairs, numpy_rng, int(cfg.optimization.bs))
+            batch = _sample_batch(
+                training_data,
+                numpy_rng,
+                int(cfg.optimization.bs),
+                cfg,
+            )
             key, step_key = jax.random.split(key)
             state, ema_params, step_metrics = train_step(
                 state, ema_params, batch, step_key
@@ -471,13 +600,31 @@ def train(
                     best_step,
                 )
 
-            if step % eval_frequency == 0 or step == total_steps:
-                validation, objective = _validation_metrics(
-                    model, ema_params, cfg, step
+            if (
+                bool(cfg.evaluation.save_plot)
+                and visual_freq > 0
+                and step % visual_freq == 0
+            ):
+                plot_paths = _save_periodic_pushforward_plot(
+                    model,
+                    ema_params,
+                    cfg,
+                    run_dir,
+                    step,
+                    wandb_run,
                 )
-                print(
-                    f"Validation at step {step}: mean EMD={objective:.6g} "
-                    f"on {list(cfg.problem.hparam_val_times)}."
+
+            should_validate = step >= warmup_steps and (
+                step % validation_frequency == 0 or step == total_steps
+            )
+            if should_validate:
+                validation, objective = _validation_loss_metrics(
+                    validation_step,
+                    state.params,
+                    ema_params,
+                    validation_batch,
+                    validation_key,
+                    step,
                 )
                 if wandb_run is not None:
                     wandb_run.log(validation, step=step)
@@ -499,7 +646,7 @@ def train(
                     checks_without_improvement += 1
                 if patience > 0 and checks_without_improvement >= patience:
                     print(
-                        f"Early stopping at step {step}; best validation EMD "
+                        f"Early stopping at step {step}; best validation loss "
                         f"{best_metric:.6g} at step {best_step}."
                     )
                     break
@@ -528,8 +675,13 @@ def train(
         best_step,
     )
     if best_params is None:
-        validation, best_metric = _validation_metrics(
-            model, ema_params, cfg, int(state.step)
+        validation, best_metric = _validation_loss_metrics(
+            validation_step,
+            state.params,
+            ema_params,
+            validation_batch,
+            validation_key,
+            int(state.step),
         )
         best_step = int(state.step)
         best_params = jax.device_get(ema_params)
@@ -550,7 +702,7 @@ def train(
     final_metrics.update(
         {
             "training/best_step": float(best_step),
-            "training/best_validation_emd": float(best_metric),
+            "training/best_validation_loss": float(best_metric),
             "training/wall_seconds": float(time.monotonic() - started),
             "training/diffusion_scale": float(cfg.ssfm.diffusion_scale),
             "training/gamma_scale": float(cfg.ssfm.gamma_scale),
@@ -565,7 +717,7 @@ def train(
     metrics_path.write_text(json.dumps(final_metrics, indent=2, sort_keys=True) + "\n")
     if wandb_run is not None:
         wandb_run.log(final_metrics, step=int(state.step))
-        wandb_run.summary["best_validation_emd"] = best_metric
+        wandb_run.summary["best_validation_loss"] = best_metric
         wandb_run.summary["best_step"] = best_step
         wandb_run.finish()
     print(f"Final stochastic metrics: {metrics_path}")
