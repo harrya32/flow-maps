@@ -32,8 +32,8 @@ if str(PY_ROOT) not in sys.path:
     sys.path.insert(0, str(PY_ROOT))
 
 DEFAULT_LEARNING_RATES = (3e-4, 1e-3, 3e-3)
-DEFAULT_CONSTRAINT_WEIGHTS = (100.0, 350.0, 1000.0)
-DEFAULT_ENTROPY_WEIGHTS = (0.0, 0.01, 0.1)
+DEFAULT_CONSTRAINT_WEIGHTS = (100.0, 350.0, 1000.0, 1500.0)
+DEFAULT_ENTROPY_WEIGHTS = (0.0, 0.03, 0.1)
 
 BASE_COLUMNS = [
     "run_id",
@@ -300,7 +300,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--summary-csv", default=None)
     parser.add_argument(
         "--seeds",
-        default="0,1,2",
+        default="0,1",
         help="Comma-separated training seeds repeated for every grid setting.",
     )
     parser.add_argument(

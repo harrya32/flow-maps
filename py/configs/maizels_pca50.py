@@ -362,14 +362,14 @@ def get_config(
     if learning_rate is not None and float(learning_rate) <= 0:
         raise ValueError("learning_rate must be positive.")
     config.optimization.learning_rate = float(
-        1e-3 if learning_rate is None else learning_rate
+        3e-4 if learning_rate is None else learning_rate
     )
     config.optimization.clip = 10.0
-    config.optimization.total_steps = 10_000
+    config.optimization.total_steps = 50_000
     config.optimization.total_samples = (
         config.optimization.bs * config.optimization.total_steps
     )
-    config.optimization.decay_steps = 10_000
+    config.optimization.decay_steps = 50_000
     config.optimization.schedule_type = "sqrt"
 
     config.optimization.early_stopping = ml_collections.ConfigDict()
@@ -494,7 +494,7 @@ def get_config(
     config.constraints.lambda_transition = 1.0
     config.constraints.lambda_final = 0.0
     config.constraints.classifier_temperature = 1.0
-    config.constraints.loss_point_entropy_weight = 0.01
+    config.constraints.loss_point_entropy_weight = 0.0
     config.constraints.velocity_rollout_batch_size = 0
     config.constraints.velocity_rollout_reference_diag_fraction = 0.75
     config.constraints.velocity_rollout_max_step = 0.01
