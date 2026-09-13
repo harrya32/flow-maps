@@ -10,6 +10,7 @@ from common import ssfm_brownian
 from common import stochastic_flow_map
 from configs import maizels_stochastic
 from launchers import maizels_stochastic as maizels_stochastic_launcher
+from scripts import run_maizels_stochastic_multiseed
 from scripts import sweep_maizels_stochastic_hparams
 
 
@@ -34,8 +35,10 @@ def test_stochastic_config_has_six_isolated_variants():
     )
 
     assert standard.problem.maizels_pair_mode == "none"
+    assert standard.problem.n_interpolant_check_times == 0
     assert not standard.constraints.enabled
     assert prior.problem.maizels_pair_mode == "endpoint"
+    assert prior.problem.n_interpolant_check_times == 0
     assert not prior.constraints.enabled
     assert constrained.problem.maizels_pair_mode == "endpoint"
     assert constrained.constraints.enabled
@@ -50,10 +53,11 @@ def test_stochastic_config_has_six_isolated_variants():
     assert constrained.evaluation.lineage_max_source_points == 512
     assert constrained.evaluation.lineage_n_steps == 50
     assert constrained.logging.visual_freq == 5_000
-    assert bio_ot.problem.maizels_pair_mode == "ot_endpoint_interpolant"
+    assert bio_ot.problem.maizels_pair_mode == "ot_endpoint"
+    assert bio_ot.problem.n_interpolant_check_times == 0
     assert bio_ot.problem.maizels_ot_coupling == "minibatch_ot"
     assert not bio_ot.constraints.enabled
-    assert constrained_bio_ot.problem.maizels_pair_mode == "ot_endpoint_interpolant"
+    assert constrained_bio_ot.problem.maizels_pair_mode == "ot_endpoint"
     assert constrained_bio_ot.constraints.enabled
     assert plain_ot.problem.maizels_pair_mode == "ot_plain"
     assert plain_ot.problem.maizels_ot_coupling == "minibatch_ot"
@@ -102,7 +106,7 @@ def test_stochastic_minibatch_ot_is_recoupled_for_each_batch(monkeypatch):
     assert len(calls) == 1
     assert calls[0][0] is pools
     assert calls[0][1] == 8
-    assert calls[0][3] == "ot_endpoint_interpolant"
+    assert calls[0][3] == "ot_endpoint"
     np.testing.assert_allclose(np.asarray(batch["x1"]), 1.0)
 
 
@@ -126,6 +130,50 @@ def test_stochastic_sweep_includes_diffusion_and_only_relevant_constraints():
     assert all(row["constraint_weight"] is None for row in plain)
     assert len(constrained) == 8
     assert {row["diffusion_scale"] for row in constrained} == {0.1, 0.2}
+
+
+def test_stochastic_multiseed_parses_selected_or_all_slurm_ids():
+    assert run_maizels_stochastic_multiseed.parse_slurm_ids("all", 6) == tuple(range(6))
+    assert run_maizels_stochastic_multiseed.parse_slurm_ids("0,3,5", 6) == (
+        0,
+        3,
+        5,
+    )
+    with pytest.raises(
+        run_maizels_stochastic_multiseed.argparse.ArgumentTypeError,
+        match="duplicate",
+    ):
+        run_maizels_stochastic_multiseed.parse_slurm_ids("1,1", 6)
+
+
+def test_stochastic_multiseed_forwards_constraints_only_when_relevant(tmp_path):
+    args = run_maizels_stochastic_multiseed.parse_args(
+        [
+            "--dataset-location",
+            "/tmp/data.csv.gz",
+            "--constraint-weight",
+            "12",
+            "--entropy-weight",
+            "0.03",
+        ]
+    )
+    common = {
+        "args": args,
+        "slurm_id": 3,
+        "seed": 7,
+        "output_folder": tmp_path / "checkpoints",
+        "metrics_path": tmp_path / "metrics.json",
+    }
+    unconstrained = run_maizels_stochastic_multiseed.build_command(
+        constrained=False, **common
+    )
+    constrained = run_maizels_stochastic_multiseed.build_command(
+        constrained=True, **common
+    )
+    assert "--constraint_weight" not in unconstrained
+    assert "--entropy_weight" not in unconstrained
+    assert constrained[constrained.index("--constraint_weight") + 1] == "12.0"
+    assert constrained[constrained.index("--entropy_weight") + 1] == "0.03"
 
 
 def test_feature_scale_uses_population_standard_deviation():

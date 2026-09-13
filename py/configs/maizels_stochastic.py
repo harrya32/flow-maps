@@ -21,12 +21,14 @@ VARIANTS = (
     ("standard_ssfm", "none", False, False),
     ("bio_prior_ssfm", "endpoint", False, False),
     ("bio_prior_constrained_ssfm", "endpoint", True, False),
-    # Match the deterministic flow-map OT variants. OT is recomputed on every
-    # optimizer batch rather than being frozen into a precomputed pair pool.
-    ("bio_prior_minibatch_ot_ssfm", "ot_endpoint_interpolant", False, True),
+    # OT is recomputed on every optimizer batch rather than being frozen into
+    # a precomputed pair pool.  For SSFM, the biological prior masks endpoint
+    # cell-type transitions only: a deterministic straight-line interpolant is
+    # not representative of the Gaussian-noised stochastic interpolant.
+    ("bio_prior_minibatch_ot_ssfm", "ot_endpoint", False, True),
     (
         "bio_prior_minibatch_ot_constrained_ssfm",
-        "ot_endpoint_interpolant",
+        "ot_endpoint",
         True,
         True,
     ),
@@ -92,6 +94,10 @@ def get_config(
     )
 
     cfg.problem.maizels_pair_mode = pair_mode
+    # Stochastic experiments never validate a deterministic straight-line
+    # interpolant when filtering training pairs.  Bio-prior variants use only
+    # the annotated endpoint transition mask.
+    cfg.problem.n_interpolant_check_times = 0
     if minibatch_ot:
         cfg.problem.maizels_ot_coupling = "minibatch_ot"
     cfg.problem.n = int(500_000 if n_pairs is None else n_pairs)

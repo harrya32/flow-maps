@@ -213,6 +213,21 @@ standard deviations go to the corresponding `slurm_<id>_summary.csv`.
 Completed runs are skipped when the command is resumed. Override the grids with
 `--learning-rates`, `--constraint-weights`, and `--entropy-weights`.
 
+Run all six Maizels stochastic variants over several seeds without sweeping
+their hyperparameters with:
+
+```bash
+python scripts/run_maizels_stochastic_multiseed.py \
+    --slurm-ids all \
+    --seeds 0,1,2 \
+    --dataset-location /path/to/celltype_classification_pca50_dataset.csv.gz
+```
+
+Use a comma-separated subset such as `--slurm-ids 0,2,4` when only selected
+variants are required. Runs are sequential and resumable. Per-run metrics are
+collected in `outputs/maizels_stochastic_multiseed/results.csv`, with
+across-seed means and standard deviations in `summary.csv`.
+
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
 `optimization.bs`; because each optimizer batch is balanced across two retained
