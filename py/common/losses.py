@@ -17,6 +17,7 @@ from ml_collections import config_dict
 from . import cite_multi
 from . import flow_map as flow_map
 from . import interpolant as interpolant
+from . import larry
 from . import loss_args
 from . import maizels
 from . import pair_times
@@ -31,6 +32,8 @@ def _lineage_backend(cfg: config_dict.ConfigDict):
         return cite_multi
     if target == "schiebinger":
         return schiebinger
+    if larry.is_larry_target(target):
+        return larry
     return maizels
 
 

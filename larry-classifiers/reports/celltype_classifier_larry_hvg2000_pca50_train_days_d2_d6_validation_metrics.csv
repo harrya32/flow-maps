@@ -1,0 +1,2 @@
+dataset,variant,excluded_day,n_pcs,class_weight_power,label_smoothing,selection_metric,best_epoch,validation_loss,validation_accuracy,validation_balanced_accuracy,validation_macro_f1,validation_weighted_f1
+larry,train_days_d2_d6,,50,0.25,0.05,validation_loss,65,0.6986509645024265,0.9411336327224178,0.8812839470757236,0.8347466774653433,0.9416985250878975

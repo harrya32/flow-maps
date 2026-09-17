@@ -235,6 +235,11 @@ def _timepoint_splits(cfg, dataset_location: str | None = None):
     return result
 
 
+def timepoint_pool_splits(cfg, dataset_location: str | None = None):
+    """Return train/holdout splits for every CITE/Multi observation day."""
+    return _timepoint_splits(cfg, dataset_location)
+
+
 def endpoint_pool_splits(
     cfg, dataset_location: str | None = None
 ) -> Dict[str, np.ndarray]:
@@ -290,6 +295,11 @@ def uses_minibatch_ot(pair_mode: str) -> bool:
         "ot_endpoint",
         "ot_endpoint_interpolant",
     }
+
+
+def uses_minibatch_ot_config(cfg) -> bool:
+    """Config-oriented counterpart used by the shared SSFM launcher."""
+    return uses_minibatch_ot(_training_pair_mode(cfg))
 
 
 def _cell_type_ids(

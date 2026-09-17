@@ -42,6 +42,8 @@ def test_stochastic_config_has_six_isolated_variants():
     assert not prior.constraints.enabled
     assert constrained.problem.maizels_pair_mode == "endpoint"
     assert constrained.constraints.enabled
+    assert constrained.constraints.path_mode == "direct_offdiagonal_endpoint_nll"
+    assert constrained.constraints.path_n_times == 2
     assert constrained.ssfm.diffusion_scale == 0.35
     assert list(constrained.problem.hparam_val_times) == ["D3.4", "D6"]
     assert constrained.optimization.early_stopping.metric == "validation_loss"
@@ -463,4 +465,67 @@ def test_plain_ssfm_loss_has_finite_gradients():
     assert bool(jnp.isfinite(loss))
     assert all(
         bool(jnp.all(jnp.isfinite(value))) for value in jax.tree_util.tree_leaves(grads)
+    )
+
+
+def test_constrained_ssfm_reuses_direct_student_prediction(monkeypatch):
+    cfg = maizels_stochastic.get_config(2, total_steps=10, batch_size=8, n_pairs=20)
+    cfg.problem.d = 2
+
+    class CountingMap:
+        def __init__(self):
+            self.calls = []
+
+        def apply(self, variables, s, t, x, coefficients):
+            del t, coefficients
+            parameter_set = variables["params"]
+            self.calls.append(parameter_set)
+            offset = 1.0 if parameter_set == "student" else 2.0
+            return x + offset, jnp.zeros_like(s)
+
+    seen = {}
+
+    def fake_lineage_loss(path, labels, classifier, **kwargs):
+        del labels, classifier, kwargs
+        seen["path"] = np.asarray(path)
+        zero = jnp.asarray(0.0, dtype=path.dtype)
+        return zero, {
+            "transition_invalid_mass": zero,
+            "transition_valid_mass": zero,
+            "final_entropy_loss": zero,
+        }
+
+    monkeypatch.setattr(
+        maizels_stochastic_training,
+        "lineage_loss_for_path",
+        fake_lineage_loss,
+    )
+    model = CountingMap()
+    labels = jnp.tile(jnp.asarray([[0.0, 1.0, 0.0, 0.16]]), (8, 1))
+    batch = {
+        "x0": jax.random.normal(jax.random.PRNGKey(11), (8, 2)),
+        "x1": jax.random.normal(jax.random.PRNGKey(12), (8, 2)),
+        "label": labels,
+    }
+    loss_fn = maizels_stochastic_training.make_loss_fn(
+        model,
+        cfg,
+        jnp.ones((2,)),
+        classifier=object(),
+    )
+
+    loss, _ = loss_fn(
+        "student",
+        "ema",
+        batch,
+        jax.random.PRNGKey(13),
+        jnp.asarray(1),
+    )
+
+    assert bool(jnp.isfinite(loss))
+    assert model.calls == ["student", "student", "ema", "ema"]
+    assert seen["path"].shape == (2, 2, 2)
+    np.testing.assert_allclose(
+        seen["path"][:, 1] - seen["path"][:, 0],
+        1.0,
     )

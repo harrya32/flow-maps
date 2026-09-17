@@ -289,6 +289,15 @@ def parse_command_line_arguments():
         help="Use cached global OT or fresh per-step minibatch OT for Maizels.",
     )
     parser.add_argument(
+        "--ot_minibatch_size",
+        type=int,
+        default=None,
+        help=(
+            "Optional number of cells per dynamic OT subproblem. This may be "
+            "smaller than the optimizer batch size."
+        ),
+    )
+    parser.add_argument(
         "--maizels_schedule",
         choices=("d3_d8", "d3_d3p8_d8"),
         default=None,
@@ -373,6 +382,7 @@ def setup_config_dict(args=None):
         "full_data_classifier_path": args.full_data_classifier_path,
         "early_stopping_patience": args.early_stopping_patience,
         "maizels_ot_coupling": args.maizels_ot_coupling,
+        "ot_minibatch_size": args.ot_minibatch_size,
         "maizels_schedule": args.maizels_schedule,
         "maizels_time_mode": args.maizels_time_mode,
         "hparam_val_times": args.hparam_val_times,

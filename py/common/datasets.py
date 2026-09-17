@@ -16,7 +16,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from ml_collections import config_dict
 
-from . import cite_multi, maizels, schiebinger
+from . import cite_multi, larry, maizels, schiebinger
 
 _SCHIEBINGER_SERUM_URLS = [
     "https://figshare.com/ndownloader/files/35858033",
@@ -867,6 +867,25 @@ def setup_base(cfg: config_dict.ConfigDict, ex_input: jnp.ndarray) -> Callable:
             )
             return source_pool[idx]
 
+    elif cfg.problem.base == "larry_day2":
+        splits = larry.endpoint_pool_splits(
+            cfg,
+            dataset_location=getattr(cfg.problem, "dataset_location", None),
+        )
+        source_pool = jnp.asarray(splits["source_train_x"], dtype=jnp.float32)
+        if source_pool.shape[0] == 0:
+            raise RuntimeError("LARRY day-2 source pool is empty.")
+
+        @functools.partial(jax.jit, static_argnums=(0,))
+        def sample_rho0(bs: int, key: jnp.ndarray):
+            idx = jax.random.randint(
+                key,
+                shape=(bs,),
+                minval=0,
+                maxval=source_pool.shape[0],
+            )
+            return source_pool[idx]
+
     elif cfg.problem.base == "four_gaussians_source":
         std = float(getattr(cfg.problem, "four_gaussians_std", 0.35))
         source_means = jnp.asarray(
@@ -1215,6 +1234,48 @@ class SchiebingerMinibatchOTDataset:
         return self._sample(int(self.cfg.optimization.bs), seed)
 
 
+class LarryMinibatchOTDataset:
+    """Build fresh LARRY minibatch-OT pairs from the D2 and D6 pools."""
+
+    def __init__(self, cfg: config_dict.ConfigDict, data: Dict[str, Any]):
+        self.cfg = cfg
+        self.timepoint_pools = data
+        self.pair_mode = str(
+            getattr(
+                cfg.problem,
+                "pair_mode",
+                getattr(cfg.problem, "maizels_pair_mode", "none"),
+            )
+        )
+        self.cpu_rng = np.random.default_rng(int(cfg.training.seed) + 4301)
+        self.last_pair_stats = None
+
+    def _sample(self, bs: int, seed: int) -> Dict[str, jnp.ndarray]:
+        paired, stats = larry.couple_minibatch_ot_timepoint_pools(
+            self.cfg,
+            self.timepoint_pools,
+            int(bs),
+            seed=int(seed),
+            pair_mode=self.pair_mode,
+        )
+        self.last_pair_stats = stats
+        return {
+            "x0": jnp.asarray(paired["x0"], dtype=jnp.float32),
+            "x1": jnp.asarray(paired["x1"], dtype=jnp.float32),
+            "label": jnp.asarray(paired["label"], dtype=jnp.float32),
+        }
+
+    def sample_device_batch(self, bs: int, key: jnp.ndarray):
+        return self._sample(bs, CiteMultiMinibatchOTDataset._seed_from_key(key))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        seed = int(self.cpu_rng.integers(0, np.iinfo(np.int64).max))
+        return self._sample(int(self.cfg.optimization.bs), seed)
+
+
 def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, Any]):
     """Create a paired dataset with an optional device-side training sampler."""
     pair_mode = str(
@@ -1237,6 +1298,10 @@ def paired_np_to_dataset(cfg: config_dict.ConfigDict, paired: Dict[str, Any]):
         cfg, pair_mode
     ):
         return SchiebingerMinibatchOTDataset(cfg, paired)
+    if larry.is_larry_target(cfg.problem.target) and larry.uses_minibatch_ot(
+        cfg, pair_mode
+    ):
+        return LarryMinibatchOTDataset(cfg, paired)
 
     cpu_iterator = np_to_tfds(cfg, paired)
     if bool(getattr(cfg.problem, "device_batching", True)):
@@ -1405,6 +1470,46 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             np.std(np.concatenate([paired["x0"], paired["x1"]], axis=0))
         )
         ds = paired_np_to_dataset(cfg, paired)
+    elif larry.is_larry_target(cfg.problem.target):
+        pair_mode = str(
+            getattr(
+                cfg.problem,
+                "pair_mode",
+                getattr(cfg.problem, "maizels_pair_mode", "none"),
+            )
+        )
+        if larry.uses_minibatch_ot(cfg, pair_mode):
+            training_data, stats = larry.make_minibatch_ot_training_pools(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            cfg.problem.n = int(training_data["nominal_n"])
+            cfg.problem.d = int(training_data["dimension"])
+            rescale_value = _compact_endpoint_pool_std(training_data)
+        else:
+            training_data, stats = larry.make_pair_pool(
+                cfg,
+                dataset_location=getattr(cfg.problem, "dataset_location", None),
+            )
+            x0s = training_data["x0"]
+            x1s = training_data["x1"]
+            cfg.problem.n = int(x1s.shape[0])
+            cfg.problem.d = int(x1s.shape[1])
+            rescale_value = float(np.std(np.concatenate([x0s, x1s], axis=0)))
+        cfg.problem.larry_pair_stats = stats
+        ds = paired_np_to_dataset(cfg, training_data)
+        coupling_summary = (
+            f", coupling=minibatch_ot({stats['ot_minibatch_size']}, raw_cost)"
+            if stats.get("coupling") == "dynamic_minibatch_ot"
+            else ""
+        )
+        print(
+            f"Loaded LARRY {getattr(cfg.problem, 'larry_representation', 'pca50')} "
+            "pairs: "
+            f"training_days=D2,D6, heldout_day=D4, mode={pair_mode}, "
+            f"pairs={cfg.problem.n}, dim={cfg.problem.d}{coupling_summary}"
+        )
+
     elif cfg.problem.target == "schiebinger":
         pair_mode = str(
             getattr(

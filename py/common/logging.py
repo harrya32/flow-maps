@@ -31,6 +31,7 @@ from . import (
     dist_utils,
     fid_utils,
     flow_map,
+    larry,
     loss_args,
     maizels,
     pair_times,
@@ -47,6 +48,8 @@ def _is_lineage_trajectory_target(cfg: config_dict.ConfigDict) -> bool:
     return getattr(cfg.problem, "target", None) in {
         "maizels_pca50",
         "cite_multi_pca100",
+        "larry_pca50",
+        "larry_spring2d",
         "schiebinger",
     }
 
@@ -57,7 +60,32 @@ def _lineage_backend(cfg: config_dict.ConfigDict):
         return cite_multi
     if target == "schiebinger":
         return schiebinger
+    if larry.is_larry_target(target):
+        return larry
     return maizels
+
+
+def _violation_metrics_unavailable(
+    cfg: config_dict.ConfigDict,
+) -> Optional[Dict[str, float]]:
+    """Return an explicit skipped result when no evaluation classifier exists."""
+    lineage_cfg = getattr(cfg.logging, "maizels", None)
+    if lineage_cfg is None or bool(
+        getattr(lineage_cfg, "violation_metrics_available", True)
+    ):
+        return None
+    reason = str(
+        getattr(
+            lineage_cfg,
+            "violation_metrics_unavailable_reason",
+            "No compatible cell-type classifier is configured.",
+        )
+    )
+    print(f"Violation-rate metrics unavailable; skipping calculation. Reason: {reason}")
+    return {
+        "lineage_eval/violation_metrics_available": 0.0,
+        "lineage_eval/violation_metrics_skipped_no_classifier": 1.0,
+    }
 
 
 def _training_pair_mode(cfg: config_dict.ConfigDict) -> str:
@@ -2395,7 +2423,37 @@ def _log_maizels_distribution_eval(
             [0.25, 0.5, 1.0, 2.0, 4.0],
         )
     )
-
+    sampler_names = tuple(
+        str(value).lower()
+        for value in getattr(
+            maizels_cfg,
+            "distribution_eval_samplers",
+            ("direct", "flowmap", "euler", "linear"),
+        )
+    )
+    unknown_samplers = sorted(
+        set(sampler_names) - {"direct", "flowmap", "euler", "linear"}
+    )
+    if unknown_samplers:
+        raise ValueError(
+            "Unknown lineage distribution-evaluation samplers: "
+            f"{unknown_samplers}."
+        )
+    metric_names = tuple(
+        str(value).lower()
+        for value in getattr(
+            maizels_cfg,
+            "distribution_eval_metrics",
+            ("emd", "rbf_mmd2"),
+        )
+    )
+    metric_names = tuple("rbf_mmd2" if value == "mmd" else value for value in metric_names)
+    unknown_metrics = sorted(set(metric_names) - {"emd", "rbf_mmd2"})
+    if unknown_metrics:
+        raise ValueError(
+            "Unknown lineage distribution-evaluation metrics: "
+            f"{unknown_metrics}."
+        )
     metrics = {}
     aggregate = {
         "direct_rbf_mmd2": [],
@@ -2496,65 +2554,66 @@ def _log_maizels_distribution_eval(
         if x0_eval.shape[0] == 0:
             continue
 
-        direct = np.asarray(
-            _flow_map_batch(
+        predictions = {}
+        if "direct" in sampler_names:
+            predictions["direct"] = _flow_map_population_in_batches(
                 train_state.apply_fn,
                 params_for_visual,
-                start_tau,
-                tau,
+                x0_eval,
+                start_time=start_tau,
+                end_time=tau,
+                batch_size=int(
+                    getattr(maizels_cfg, "distribution_eval_flow_batch_size", 0)
+                ),
+            )
+        if "flowmap" in sampler_names:
+            predictions["flowmap"] = _flowmap_terminal_between(
+                train_state.apply_fn,
+                params_for_visual,
                 jnp.asarray(x0_eval, dtype=jnp.float32),
                 labels_eval,
-            ),
-            dtype=np.float32,
-        )
-        flowmap_sample = _flowmap_terminal_between(
-            train_state.apply_fn,
-            params_for_visual,
-            jnp.asarray(x0_eval, dtype=jnp.float32),
-            labels_eval,
-            start_time=start_tau,
-            end_time=tau,
-            n_steps=flowmap_n_steps,
-        )
-        euler = _euler_terminal_between(
-            train_state.apply_fn,
-            params_for_visual,
-            jnp.asarray(x0_eval, dtype=jnp.float32),
-            labels_eval,
-            start_time=start_tau,
-            end_time=tau,
-            n_steps=euler_n_steps,
-        )
-        interpolation_tau = tau if local_tau is None else local_tau
-        linear = (
-            (1.0 - interpolation_tau) * linear_x0
-            + interpolation_tau * linear_x1
-        ).astype(np.float32)
+                start_time=start_tau,
+                end_time=tau,
+                n_steps=flowmap_n_steps,
+            )
+        if "euler" in sampler_names:
+            predictions["euler"] = _euler_terminal_between(
+                train_state.apply_fn,
+                params_for_visual,
+                jnp.asarray(x0_eval, dtype=jnp.float32),
+                labels_eval,
+                start_time=start_tau,
+                end_time=tau,
+                n_steps=euler_n_steps,
+            )
+        if "linear" in sampler_names:
+            interpolation_tau = tau if local_tau is None else local_tau
+            predictions["linear"] = (
+                (1.0 - interpolation_tau) * linear_x0
+                + interpolation_tau * linear_x1
+            ).astype(np.float32)
 
         tag = _maizels_time_tag(timepoint)
-        for name, pred in [
-            ("direct", direct),
-            ("flowmap", flowmap_sample),
-            ("euler", euler),
-            ("linear", linear),
-        ]:
-            mmd2 = _rbf_mmd2_np(
-                pred,
-                actual,
-                bandwidths=raw_bandwidths,
-                rng=rng,
-                bandwidth_multipliers=bandwidth_multipliers,
-            )
-            emd = _mfm_exact_emd(pred, actual)
-            metrics[f"distribution_eval/{tag}_{name}_rbf_mmd2"] = mmd2
-            metrics[f"distribution_eval/{tag}_{name}_emd"] = emd
-            aggregate[f"{name}_rbf_mmd2"].append(mmd2)
-            aggregate[f"{name}_emd"].append(emd)
-            if hparam_val_values is not None:
-                if maizels.parse_timepoint(timepoint) in hparam_val_values:
-                    hparam_val_time_emd[name].append(emd)
-                else:
-                    test_time_emd[name].append(emd)
+        for name, pred in predictions.items():
+            if "rbf_mmd2" in metric_names:
+                mmd2 = _rbf_mmd2_np(
+                    pred,
+                    actual,
+                    bandwidths=raw_bandwidths,
+                    rng=rng,
+                    bandwidth_multipliers=bandwidth_multipliers,
+                )
+                metrics[f"distribution_eval/{tag}_{name}_rbf_mmd2"] = mmd2
+                aggregate[f"{name}_rbf_mmd2"].append(mmd2)
+            if "emd" in metric_names:
+                emd = _mfm_exact_emd(pred, actual)
+                metrics[f"distribution_eval/{tag}_{name}_emd"] = emd
+                aggregate[f"{name}_emd"].append(emd)
+                if hparam_val_values is not None:
+                    if maizels.parse_timepoint(timepoint) in hparam_val_values:
+                        hparam_val_time_emd[name].append(emd)
+                    else:
+                        test_time_emd[name].append(emd)
 
     for key, values in aggregate.items():
         if values:
@@ -2587,6 +2646,9 @@ def _compute_maizels_population_trajectory_metrics(
         return {}
     if not bool(getattr(maizels_cfg, "trajectory_diagnostics_enabled", True)):
         return {}
+    unavailable = _violation_metrics_unavailable(cfg)
+    if unavailable is not None:
+        return unavailable
     if bool(getattr(cfg.training, "conditional", False)):
         raise ValueError(
             "Whole-population lineage trajectory evaluation currently requires "
@@ -2611,28 +2673,48 @@ def _compute_maizels_population_trajectory_metrics(
         dtype=np.int32,
     )
 
-    check_n_times = max(1, int(getattr(maizels_cfg, "check_n_times", 5)))
-    direct_paths = _one_step_paths(
-        train_state.apply_fn,
-        params_for_evaluation,
-        x0_eval,
-        None,
-        _maizels_check_times(check_n_times, include_final=True),
+    sampler_names = tuple(
+        str(value).lower()
+        for value in getattr(
+            maizels_cfg,
+            "trajectory_eval_samplers",
+            ("direct", "flowmap", "euler"),
+        )
     )
-    flowmap_paths = _multi_step_paths(
-        train_state.apply_fn,
-        params_for_evaluation,
-        x0_eval,
-        None,
-        check_n_times,
-    )[:, 1:, :]
-    euler_paths = _euler_paths(
-        train_state.apply_fn,
-        params_for_evaluation,
-        x0_eval,
-        None,
-        check_n_times,
-    )[:, 1:, :]
+    unknown_samplers = sorted(
+        set(sampler_names) - {"direct", "flowmap", "euler"}
+    )
+    if unknown_samplers:
+        raise ValueError(
+            "Unknown lineage trajectory-evaluation samplers: "
+            f"{unknown_samplers}."
+        )
+    check_n_times = max(1, int(getattr(maizels_cfg, "check_n_times", 5)))
+    paths_by_sampler = {}
+    if "direct" in sampler_names:
+        paths_by_sampler["direct"] = _one_step_paths(
+            train_state.apply_fn,
+            params_for_evaluation,
+            x0_eval,
+            None,
+            _maizels_check_times(check_n_times, include_final=True),
+        )
+    if "flowmap" in sampler_names:
+        paths_by_sampler["flowmap"] = _multi_step_paths(
+            train_state.apply_fn,
+            params_for_evaluation,
+            x0_eval,
+            None,
+            check_n_times,
+        )[:, 1:, :]
+    if "euler" in sampler_names:
+        paths_by_sampler["euler"] = _euler_paths(
+            train_state.apply_fn,
+            params_for_evaluation,
+            x0_eval,
+            None,
+            check_n_times,
+        )[:, 1:, :]
 
     classifier_path = getattr(
         cfg.problem,
@@ -2668,12 +2750,6 @@ def _compute_maizels_population_trajectory_metrics(
         ),
         "lineage_transition_mode": lineage_transition_mode,
     }
-    paths_by_sampler = {
-        "direct": direct_paths,
-        "flowmap": flowmap_paths,
-        "euler": euler_paths,
-    }
-
     def score_with_classifier(path):
         return {
             sampler: np.asarray(
@@ -2730,6 +2806,31 @@ def _log_maizels_trajectory_diagnostics(
         return {}
     if not bool(getattr(maizels_cfg, "trajectory_diagnostics_enabled", True)):
         return {}
+    unavailable = _violation_metrics_unavailable(cfg)
+    if unavailable is not None:
+        wandb.log(unavailable)
+        return unavailable
+
+    # Configurations that request a subset of model samplers use the shared
+    # population evaluator directly. This keeps their classifier metrics and
+    # compute aligned without constructing or scoring unwanted rollout types.
+    trajectory_samplers = tuple(
+        str(value).lower()
+        for value in getattr(
+            maizels_cfg,
+            "trajectory_eval_samplers",
+            ("direct", "flowmap", "euler"),
+        )
+    )
+    if trajectory_samplers != ("direct", "flowmap", "euler"):
+        metrics = _compute_maizels_population_trajectory_metrics(
+            cfg,
+            train_state,
+            params_for_visual,
+        )
+        if metrics:
+            wandb.log(metrics)
+        return metrics
 
     backend = _lineage_backend(cfg)
     n_plot = int(getattr(maizels_cfg, "plot_bs", 128))
@@ -3067,6 +3168,208 @@ def _log_maizels_trajectory_diagnostics(
     return metrics
 
 
+def _flow_map_population_in_batches(
+    apply_fn,
+    params: Dict,
+    source: np.ndarray,
+    *,
+    start_time: float,
+    end_time: float,
+    batch_size: int,
+) -> np.ndarray:
+    """Push a complete population through a direct map without a large JAX batch."""
+    source = np.asarray(source, dtype=np.float32)
+    if source.shape[0] == 0:
+        return source.copy()
+    batch_size = source.shape[0] if int(batch_size) <= 0 else int(batch_size)
+    parts = []
+    for start in range(0, source.shape[0], batch_size):
+        chunk = jnp.asarray(source[start : start + batch_size], dtype=jnp.float32)
+        parts.append(
+            np.asarray(
+                _flow_map_batch(
+                    apply_fn,
+                    params,
+                    float(start_time),
+                    float(end_time),
+                    chunk,
+                    None,
+                ),
+                dtype=np.float32,
+            )
+        )
+    return np.concatenate(parts, axis=0)
+
+
+def _composed_flowmap_population_in_batches(
+    apply_fn,
+    params: Dict,
+    source: np.ndarray,
+    *,
+    start_time: float,
+    end_time: float,
+    n_steps: int,
+    batch_size: int,
+) -> np.ndarray:
+    """Push a population through sequential learned maps in bounded batches."""
+    source = np.asarray(source, dtype=np.float32)
+    if source.shape[0] == 0:
+        return source.copy()
+    batch_size = source.shape[0] if int(batch_size) <= 0 else int(batch_size)
+    parts = []
+    for start in range(0, source.shape[0], batch_size):
+        parts.append(
+            _flowmap_terminal_between(
+                apply_fn,
+                params,
+                jnp.asarray(source[start : start + batch_size], dtype=jnp.float32),
+                None,
+                start_time=float(start_time),
+                end_time=float(end_time),
+                n_steps=max(1, int(n_steps)),
+            )
+        )
+    return np.concatenate(parts, axis=0).astype(np.float32, copy=False)
+
+
+def _log_larry_clone_wasserstein_eval(
+    cfg: config_dict.ConfigDict,
+    train_state: state_utils.EMATrainState,
+    params_for_evaluation: Dict,
+    *,
+    force: bool = False,
+) -> Dict[str, float]:
+    """Evaluate composed D2-to-D4 pushforwards within shared LARRY clones.
+
+    Each eligible clone receives equal mass internally, so different source and
+    target clone sizes are valid.  The primary score is the macro mean across
+    clones; source- and target-cell-weighted summaries are logged alongside it.
+    """
+    if not larry.is_larry_target(getattr(cfg.problem, "target", None)):
+        return {}
+    eval_cfg = getattr(cfg.logging, "larry", None)
+    if eval_cfg is None or not bool(
+        getattr(eval_cfg, "clone_wasserstein_enabled", False)
+    ):
+        return {}
+
+    data = larry.all_timepoint_data(getattr(cfg.problem, "dataset_location", None))
+    source_time = larry.format_timepoint(
+        getattr(eval_cfg, "clone_source_time", "D2")
+    )
+    target_time = larry.format_timepoint(
+        getattr(eval_cfg, "clone_target_time", "D4")
+    )
+    clone_ids = np.asarray(data["clone_ids"], dtype=np.int64)
+    source_mask = (data["timepoints"] == source_time) & (clone_ids >= 0)
+    target_mask = (data["timepoints"] == target_time) & (clone_ids >= 0)
+    source_x = np.asarray(data["x"][source_mask], dtype=np.float32)
+    source_clone_ids = clone_ids[source_mask]
+    target_x = np.asarray(data["x"][target_mask], dtype=np.float32)
+    target_clone_ids = clone_ids[target_mask]
+
+    min_source = max(1, int(getattr(eval_cfg, "clone_min_source_cells", 1)))
+    min_target = max(1, int(getattr(eval_cfg, "clone_min_target_cells", 1)))
+    source_unique, source_counts = np.unique(source_clone_ids, return_counts=True)
+    target_unique, target_counts = np.unique(target_clone_ids, return_counts=True)
+    source_count = dict(zip(source_unique.tolist(), source_counts.tolist()))
+    target_count = dict(zip(target_unique.tolist(), target_counts.tolist()))
+    eligible = np.asarray(
+        sorted(
+            clone_id
+            for clone_id in set(source_count).intersection(target_count)
+            if source_count[clone_id] >= min_source
+            and target_count[clone_id] >= min_target
+        ),
+        dtype=np.int64,
+    )
+    if eligible.size == 0:
+        print(
+            "Clone-conditioned Wasserstein unavailable: no clones satisfy "
+            f"D2>={min_source} and D4>={min_target} cells."
+        )
+        metrics = {
+            "clone_eval/d2_to_d4_available": 0.0,
+            "clone_eval/d2_to_d4_eligible_clone_count": 0.0,
+        }
+        wandb.log(metrics)
+        return metrics
+
+    eligible_source = np.isin(source_clone_ids, eligible)
+    source_x = source_x[eligible_source]
+    source_clone_ids = source_clone_ids[eligible_source]
+    predicted = _composed_flowmap_population_in_batches(
+        train_state.apply_fn,
+        params_for_evaluation,
+        source_x,
+        start_time=larry.normalized_time(source_time, cfg),
+        end_time=larry.normalized_time(target_time, cfg),
+        n_steps=int(getattr(eval_cfg, "clone_flowmap_n_steps", 50)),
+        batch_size=int(getattr(eval_cfg, "clone_flow_batch_size", 4096)),
+    )
+
+    max_cells = int(getattr(eval_cfg, "clone_max_cells_per_population", 0))
+    rng = np.random.default_rng(
+        int(
+            getattr(
+                eval_cfg,
+                "clone_eval_seed",
+                int(getattr(cfg.training, "seed", 0)) + 3901,
+            )
+        )
+    )
+    distances = []
+    evaluated_source_counts = []
+    evaluated_target_counts = []
+    for clone_id in eligible:
+        predicted_clone = predicted[source_clone_ids == clone_id]
+        target_clone = target_x[target_clone_ids == clone_id]
+        if max_cells > 0:
+            predicted_clone = predicted_clone[
+                _population_indices_without_replacement(
+                    predicted_clone.shape[0], max_cells, rng
+                )
+            ]
+            target_clone = target_clone[
+                _population_indices_without_replacement(
+                    target_clone.shape[0], max_cells, rng
+                )
+            ]
+        distances.append(_mfm_exact_emd(predicted_clone, target_clone))
+        evaluated_source_counts.append(predicted_clone.shape[0])
+        evaluated_target_counts.append(target_clone.shape[0])
+
+    distances = np.asarray(distances, dtype=np.float64)
+    source_weights = np.asarray(evaluated_source_counts, dtype=np.float64)
+    target_weights = np.asarray(evaluated_target_counts, dtype=np.float64)
+    tag = f"{source_time.lower()}_to_{target_time.lower()}"
+    metrics = {
+        f"clone_eval/{tag}_available": 1.0,
+        f"clone_eval/{tag}_wasserstein_macro": float(np.mean(distances)),
+        f"clone_eval/{tag}_wasserstein_median": float(np.median(distances)),
+        f"clone_eval/{tag}_wasserstein_source_weighted": float(
+            np.average(distances, weights=source_weights)
+        ),
+        f"clone_eval/{tag}_wasserstein_target_weighted": float(
+            np.average(distances, weights=target_weights)
+        ),
+        f"clone_eval/{tag}_eligible_clone_count": int(eligible.size),
+        f"clone_eval/{tag}_source_cell_count": int(source_weights.sum()),
+        f"clone_eval/{tag}_target_cell_count": int(target_weights.sum()),
+    }
+    print(
+        "Clone-conditioned Wasserstein evaluation: "
+        f"{source_time}->{target_time}, clones={eligible.size}, "
+        f"source_cells={int(source_weights.sum())}, "
+        f"target_cells={int(target_weights.sum())}, "
+        f"macro_W1={metrics[f'clone_eval/{tag}_wasserstein_macro']:.8g}, "
+        f"target_weighted_W1="
+        f"{metrics[f'clone_eval/{tag}_wasserstein_target_weighted']:.8g}"
+    )
+    wandb.log(metrics)
+    return metrics
+
+
 def log_maizels_final_evaluation(
     cfg: config_dict.ConfigDict,
     train_state: state_utils.EMATrainState,
@@ -3092,6 +3395,12 @@ def log_maizels_final_evaluation(
     )
     if trajectory_metrics:
         wandb.log(trajectory_metrics)
+    clone_metrics = _log_larry_clone_wasserstein_eval(
+        cfg,
+        train_state,
+        params_for_evaluation,
+        force=True,
+    )
 
     final_metrics = {"final_eval/best_step": int(best_step)}
     if best_metric is not None and np.isfinite(best_metric):
@@ -3171,6 +3480,19 @@ def log_maizels_final_evaluation(
         final_metrics["final_eval/source_count"] = trajectory_metrics[
             "maizels/eval_source_count"
         ]
+    for key in (
+        "lineage_eval/violation_metrics_available",
+        "lineage_eval/violation_metrics_skipped_no_classifier",
+    ):
+        if key in trajectory_metrics:
+            final_metrics[f"final_eval/{key.removeprefix('lineage_eval/')}"] = (
+                trajectory_metrics[key]
+            )
+    for key, value in clone_metrics.items():
+        if key.startswith("clone_eval/"):
+            final_metrics[
+                f"final_eval/clone_{key.removeprefix('clone_eval/')}"
+            ] = value
 
     wandb.log(final_metrics)
     if wandb.run is not None:

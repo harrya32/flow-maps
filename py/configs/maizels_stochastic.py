@@ -147,8 +147,8 @@ def get_config(
 
     cfg.constraints.enabled = constrained
     cfg.constraints.type = "maizels_ssfm_lineage_path"
-    cfg.constraints.path_mode = "two_half_step_nll"
-    cfg.constraints.path_n_times = 3
+    cfg.constraints.path_mode = "direct_offdiagonal_endpoint_nll"
+    cfg.constraints.path_n_times = 2
     cfg.constraints.constraint_batch_size = max(1, min(64, cfg.optimization.bs // 4))
     cfg.constraints.weight = float(
         10.0 if constraint_weight is None else constraint_weight

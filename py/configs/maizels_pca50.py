@@ -233,6 +233,7 @@ def get_config(
     constraint_weight: float | None = None,
     entropy_weight: float | None = None,
     seed: int | None = None,
+    ot_minibatch_size: int | None = None,
 ) -> ml_collections.ConfigDict:
     import jax
 
@@ -355,7 +356,13 @@ def get_config(
     config.optimization.bs = 128  # 4096
     # Dynamic OT couples each interval's share of the optimizer batch in one
     # problem. Its cost is raw squared Euclidean distance.
-    config.problem.ot_minibatch_size = config.optimization.get_ref("bs")
+    if ot_minibatch_size is not None and int(ot_minibatch_size) <= 0:
+        raise ValueError("ot_minibatch_size must be positive.")
+    config.problem.ot_minibatch_size = (
+        config.optimization.get_ref("bs")
+        if ot_minibatch_size is None
+        else int(ot_minibatch_size)
+    )
     config.problem.ot_minibatch_max_resamples = 20
     config.problem.ot_minibatch_infeasible_fallback = "partial"
     config.optimization.diag_fraction = diag_fraction

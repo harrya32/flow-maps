@@ -134,7 +134,102 @@ python py/launchers/learn.py \
     --dataset_name cite \
     --heldout_day 4 \
     --output_folder /path/to/outputs
+
+# Direct strong stochastic flow-map counterpart (also accepts "multi").
+python py/launchers/cite_multi_stochastic.py \
+    --slurm_id 4 \
+    --dataset_name cite \
+    --heldout_day 4 \
+    --dataset_location ~/Desktop/flow-maps-data \
+    --output_folder outputs/cite_multi_stochastic
+
+# LARRY in-vitro data: create the reusable 2,000-HVG/50-PC H5AD once.
+python scripts/create_larry_hvg_pca.py
+
+# Train the all-days evaluation classifier and D2/D6 flow-training classifier.
+conda run -n mfm_env python scripts/train_larry_celltype_classifiers.py
+
+# ID 0: independent deterministic flow map.
+python py/launchers/learn.py \
+    --cfg_path configs.larry_pca50 \
+    --slurm_id 0 \
+    --output_folder /path/to/outputs
+
+# ID 1: independent coupling filtered by endpoint and interpolant lineage validity.
+python py/launchers/learn.py \
+    --cfg_path configs.larry_pca50 \
+    --slurm_id 1 \
+    --output_folder /path/to/outputs
+
+# IDs 2--5 add constrained-independent, plain minibatch-OT,
+# filtered minibatch-OT, and filtered constrained minibatch-OT flow maps.
+python py/launchers/learn.py \
+    --cfg_path configs.larry_pca50 \
+    --slurm_id 5 \
+    --output_folder /path/to/outputs
+
+# The optimizer batch remains 128, while dynamic OT is solved in blocks of 32.
+python py/launchers/learn.py \
+    --cfg_path configs.larry_pca50 \
+    --slurm_id 4 \
+    --ot_minibatch_size 32 \
+    --output_folder /path/to/outputs
+
+# Build and classify the authors' published two-dimensional SPRING layout.
+python scripts/create_larry_spring2d.py
+conda run -n mfm_env python scripts/train_larry_celltype_classifiers.py \
+    --representation spring2d
+
+# Run the same variant catalogue in SPRING space (ID 4 is filtered minibatch OT).
+python py/launchers/learn.py \
+    --cfg_path configs.larry_spring2d \
+    --slurm_id 4 \
+    --ot_minibatch_size 32 \
+    --output_folder /path/to/spring2d-outputs
 ```
+
+The LARRY preprocessing command reads the four `stateFate_inVitro_*` source
+files from `~/Desktop/flow-maps-data` and writes
+`stateFate_inVitro_hvg2000_pca50.h5ad` in the same directory. HVG selection
+and PCA use all three observed days; D4 is held out from flow-model training,
+not from this fixed unsupervised representation. The output retains the
+library-qualified cell identifier, technical cell barcode, cell type, day,
+and zero-based LARRY clone id (`-1` for cells without a clone). Existing output
+is reused unless `--overwrite` is passed.
+
+The classifier command writes `all_days` and `train_days_d2_d6` `.pt`/`.npz`
+checkpoint pairs, validation reports, and loss curves under
+`larry-classifiers/`. The D2/D6 model is used only during flow training, for
+pair filtering and differentiable lineage constraints; the all-days model is
+used only for evaluation.
+
+The LARRY config exposes six Slurm IDs: 0 is the independent flow-map baseline;
+1 adds lineage filtering; 2 additionally adds the differentiable lineage
+constraint; 3 uses plain minibatch OT; 4 adds lineage filtering to minibatch
+OT; and 5 adds both filtering and the differentiable constraint to minibatch
+OT. The OT jobs solve a fresh raw-squared-Euclidean transport problem in each
+training batch. A filtered job accepts a candidate pair only when its annotated
+endpoint transition and classifier-predicted straight-line interpolant respect
+the lineage graph: `Undifferentiated` may remain itself or differentiate to any
+annotated mature type, while every mature type may only remain itself. All six
+experiments evaluate a 50-step composed flow-map D2-to-D4
+pushforward against the held-out D4 marginal, sampling at most 1,024 cells
+without replacement from each population for exact EMD in both periodic and
+final evaluation. They additionally report exact
+per-clone empirical Wasserstein distances from 50-step composed flow-map
+samples for every clone represented at both D2 and D4, including macro-,
+source-cell-, and target-cell-weighted summaries. Lineage violation
+metrics likewise use only 50-step composed flow-map trajectories and are
+explicitly reported as unavailable until an all-days LARRY cell-type
+classifier is provided. The remaining flow-matching variants are retained in
+the config's `VARIANT_CATALOG` for later activation.
+
+The SPRING preparation command reads the published `SPRING-x` and `SPRING-y`
+metadata columns, preserves their aspect ratio by centering and dividing both
+axes by one shared scale, and writes `stateFate_inVitro_spring2d.h5ad` beside
+the PCA cache. `configs.larry_spring2d` exposes the same six Slurm IDs and D4
+evaluation protocol as `configs.larry_pca50`, with representation-specific
+classifiers and output names.
 
 For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
 `--heldout_day` is `3` or `4`. Its IDs mirror the Maizels experiment: 0 is
@@ -152,6 +247,31 @@ training and validation losses is saved beside every checkpoint pair. The
 script's automatic device selection uses CUDA when available and CPU otherwise;
 MPS remains available explicitly but is not selected automatically because its
 BatchNorm running statistics can become unstable in this workload.
+
+The separate `configs.cite_multi_stochastic` configuration and
+`py/launchers/cite_multi_stochastic.py` launcher provide six direct SSFM
+variants without changing the deterministic runs: IDs 0--2 are independent,
+endpoint-prior, and endpoint-prior constrained SSFM; IDs 3--4 add minibatch OT
+to the latter two; ID 5 is plain minibatch-OT SSFM. Stochastic biological-prior
+variants filter endpoint cell-type transitions only. Final evaluation compares
+both a direct stochastic map and a 100-step composed stochastic map with the
+full omitted-day population, and scores held-out day-2-to-day-7 composed paths
+with both the observed-days and all-days classifiers.
+
+Run any selection of those variants over datasets, held-out days, and seeds:
+
+```bash
+python scripts/run_cite_multi_stochastic_multiseed.py \
+    --slurm-ids 0,2,4 \
+    --seeds 0,1,2,3,4 \
+    --datasets cite,multi \
+    --heldout-days 3,4 \
+    --dataset-location ~/Desktop/flow-maps-data
+```
+
+Runs are sequential and resumable. Use `--rerun-completed` to overwrite
+completed runs; per-run metrics and across-seed summaries are written to
+`outputs/cite_multi_stochastic_multiseed/results.csv` and `summary.csv`.
 
 Schiebinger classifier checkpoints are stored in `schiebinger_classifiers/`.
 The all-days classifier is reserved for evaluation. At Schiebinger flow startup,

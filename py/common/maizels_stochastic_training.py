@@ -1,4 +1,4 @@
-"""Losses and classifier setup for direct Maizels strong flow-map training."""
+"""Direct strong-flow-map losses shared by lineage trajectory datasets."""
 
 from __future__ import annotations
 
@@ -12,25 +12,25 @@ from . import maizels_stochastic_interpolant as stochastic_interpolant
 from . import ssfm_brownian
 
 
-def setup_lineage_classifier(cfg) -> Dict[str, Any]:
-    """Load the frozen schedule classifier used by the constrained variant."""
-    params, class_names, scaler_mean, scaler_scale = maizels.load_jax_classifier_params(
+def setup_lineage_classifier(cfg, *, backend=maizels) -> Dict[str, Any]:
+    """Load the frozen training-time classifier for a constrained variant."""
+    params, class_names, scaler_mean, scaler_scale = backend.load_jax_classifier_params(
         cfg.problem.classifier_path
     )
-    transition_mode = maizels.lineage_transition_mode_from_config(cfg)
+    transition_mode = backend.lineage_transition_mode_from_config(cfg)
     return {
         "params": params,
         "scaler_mean": scaler_mean,
         "scaler_scale": scaler_scale,
         "invalid_transition": jnp.asarray(
-            maizels.lineage_invalid_transition_matrix(
+            backend.lineage_invalid_transition_matrix(
                 class_names,
                 transition_mode=transition_mode,
             ),
             dtype=jnp.float32,
         ),
         "canonical_to_classifier": jnp.asarray(
-            maizels.classifier_index_lookup(class_names),
+            backend.classifier_index_lookup(class_names),
             dtype=jnp.int32,
         ),
     }
@@ -46,10 +46,11 @@ def lineage_loss_for_path(
     lambda_transition: float,
     lambda_final: float,
     entropy_weight: float,
+    backend=maizels,
 ) -> tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
     """Return differentiable classifier-NLL lineage loss for ``[B,T,D]`` paths."""
     flat = path.reshape((-1, path.shape[-1]))
-    logits = maizels.jax_classifier_logits(
+    logits = backend.jax_classifier_logits(
         classifier["params"],
         classifier["scaler_mean"],
         classifier["scaler_scale"],
@@ -60,7 +61,7 @@ def lineage_loss_for_path(
         axis=-1,
     ).reshape((path.shape[0], path.shape[1], -1))
     target_type_ids = labels[:, 1] if float(lambda_final) > 0.0 else None
-    terms = maizels.lineage_soft_terms_from_probs(
+    terms = backend.lineage_soft_terms_from_probs(
         probs,
         labels[:, 0],
         classifier["invalid_transition"],
@@ -111,12 +112,14 @@ def make_loss_fn(
     cfg,
     pc_scale: jnp.ndarray,
     classifier: Optional[Dict[str, Any]] = None,
+    *,
+    backend=maizels,
 ) -> Callable:
     """Create the direct local-target plus SSFM semigroup objective.
 
     The EMA model is an internal consistency target, not a separately trained
-    SDE teacher.  The constrained variant adds its classifier loss to a
-    differentiable two-half-step path from the current model.
+    SDE teacher.  The constrained variant adds its classifier loss to the
+    direct off-diagonal prediction already made by the current model.
     """
     eta = float(cfg.ssfm.local_fraction)
     dt = float(cfg.ssfm.local_step_fraction)
@@ -278,22 +281,8 @@ def make_loss_fn(
                 constraint_bs = min(
                     int(cfg.constraints.constraint_batch_size), dx0.shape[0]
                 )
-                current_mid, _ = apply(
-                    params,
-                    s[:constraint_bs],
-                    midpoint[:constraint_bs],
-                    targets.state[:constraint_bs],
-                    left_coefficients[:constraint_bs],
-                )
-                current_end, _ = apply(
-                    params,
-                    midpoint[:constraint_bs],
-                    t[:constraint_bs],
-                    current_mid,
-                    right_coefficients[:constraint_bs],
-                )
                 path = jnp.stack(
-                    [targets.state[:constraint_bs], current_mid, current_end],
+                    [targets.state[:constraint_bs], prediction[:constraint_bs]],
                     axis=1,
                 )
                 lineage_loss, lineage_terms = lineage_loss_for_path(
@@ -305,6 +294,7 @@ def make_loss_fn(
                     lambda_transition=float(cfg.constraints.lambda_transition),
                     lambda_final=float(cfg.constraints.lambda_final),
                     entropy_weight=float(cfg.constraints.loss_point_entropy_weight),
+                    backend=backend,
                 )
             return consistency, lineage_loss, lineage_terms, horizon_max, progress
 
