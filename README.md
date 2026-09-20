@@ -249,11 +249,14 @@ MPS remains available explicitly but is not selected automatically because its
 BatchNorm running statistics can become unstable in this workload.
 
 The separate `configs.cite_multi_stochastic` configuration and
-`py/launchers/cite_multi_stochastic.py` launcher provide six direct SSFM
+`py/launchers/cite_multi_stochastic.py` launcher provide seven direct SSFM
 variants without changing the deterministic runs: IDs 0--2 are independent,
 endpoint-prior, and endpoint-prior constrained SSFM; IDs 3--4 add minibatch OT
-to the latter two; ID 5 is plain minibatch-OT SSFM. Stochastic biological-prior
-variants filter endpoint cell-type transitions only. Final evaluation compares
+to the latter two; ID 5 is plain minibatch-OT SSFM. ID 6 is the minibatch-OT
+rollout-constrained variant: its lineage loss backpropagates through a
+differentiable Euler--Maruyama composition of the current model's learned local
+drift/diffusion steps. Stochastic biological-prior variants filter endpoint
+cell-type transitions only. Final evaluation compares
 both a direct stochastic map and a 100-step composed stochastic map with the
 full omitted-day population, and scores held-out day-2-to-day-7 composed paths
 with both the observed-days and all-days classifiers.
@@ -333,8 +336,10 @@ standard deviations go to the corresponding `slurm_<id>_summary.csv`.
 Completed runs are skipped when the command is resumed. Override the grids with
 `--learning-rates`, `--constraint-weights`, and `--entropy-weights`.
 
-Run all six Maizels stochastic variants over several seeds without sweeping
-their hyperparameters with:
+Run all seven Maizels stochastic variants over several seeds without sweeping
+their hyperparameters with the command below. ID 6 is the endpoint-prior,
+minibatch-OT SSFM whose lineage loss is evaluated through a differentiable
+Euler--Maruyama rollout; IDs 2 and 4 retain the cheaper direct-map constraint.
 
 ```bash
 python scripts/run_maizels_stochastic_multiseed.py \

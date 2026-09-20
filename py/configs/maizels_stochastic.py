@@ -33,6 +33,15 @@ VARIANTS = (
         True,
     ),
     ("minibatch_ot_ssfm", "ot_plain", False, True),
+    # Stochastic analogue of deterministic constrained flow matching: train
+    # the same direct SSFM objective, but evaluate the lineage penalty after a
+    # differentiable Euler--Maruyama rollout of its local drift/diffusion map.
+    (
+        "bio_prior_minibatch_ot_rollout_constrained_ssfm",
+        "ot_endpoint",
+        True,
+        True,
+    ),
 )
 
 
@@ -70,10 +79,11 @@ def get_config(
     batch_size: Optional[int] = None,
     n_pairs: Optional[int] = None,
 ) -> ml_collections.ConfigDict:
-    """Return one of the six isolated Maizels SSFM experiments."""
+    """Return one of the seven isolated Maizels SSFM experiments."""
     variant_name, pair_mode, constrained, minibatch_ot = VARIANTS[
         int(slurm_id) % len(VARIANTS)
     ]
+    rollout_constrained = "rollout_constrained" in variant_name
     schedule = maizels_schedule or os.getenv(
         "MAIZELS_STOCHASTIC_SCHEDULE", "d3_d3p8_d8"
     )
@@ -147,9 +157,22 @@ def get_config(
 
     cfg.constraints.enabled = constrained
     cfg.constraints.type = "maizels_ssfm_lineage_path"
-    cfg.constraints.path_mode = "direct_offdiagonal_endpoint_nll"
+    cfg.constraints.path_mode = (
+        "stochastic_rollout_endpoint_nll"
+        if rollout_constrained
+        else "direct_offdiagonal_endpoint_nll"
+    )
     cfg.constraints.path_n_times = 2
     cfg.constraints.constraint_batch_size = max(1, min(64, cfg.optimization.bs // 4))
+    # The rollout uses the current model (never the EMA target) at every local
+    # Euler--Maruyama step.  A smaller default constraint sub-batch keeps the
+    # reverse-mode scan tractable; set 0 to reuse constraint_batch_size.
+    cfg.constraints.stochastic_rollout_batch_size = max(
+        1, min(16, cfg.optimization.bs // 4)
+    )
+    cfg.constraints.stochastic_rollout_max_step = 0.01
+    cfg.constraints.stochastic_rollout_max_steps = 0
+    cfg.constraints.stochastic_rollout_loss_scope = "endpoints"
     cfg.constraints.weight = float(
         10.0 if constraint_weight is None else constraint_weight
     )
@@ -161,9 +184,13 @@ def get_config(
         0.01 if entropy_weight is None else entropy_weight
     )
     if constraint_weight is not None and not constrained:
-        raise ValueError("constraint_weight is relevant only to stochastic Slurm ID 2.")
+        raise ValueError(
+            "constraint_weight is relevant only to a constrained stochastic variant."
+        )
     if entropy_weight is not None and not constrained:
-        raise ValueError("entropy_weight is relevant only to stochastic Slurm ID 2.")
+        raise ValueError(
+            "entropy_weight is relevant only to a constrained stochastic variant."
+        )
     if cfg.constraints.weight < 0.0:
         raise ValueError("constraint_weight must be non-negative.")
     if cfg.constraints.loss_point_entropy_weight < 0.0:

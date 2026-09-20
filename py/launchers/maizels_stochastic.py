@@ -3,7 +3,7 @@
 
 This launcher is intentionally independent of ``launchers/learn.py``.  Slurm
 IDs select plain SSFM, endpoint-filtered SSFM, or endpoint-filtered SSFM with
-the differentiable lineage constraint.
+either a direct-map or differentiable stochastic-rollout lineage constraint.
 """
 
 from __future__ import annotations

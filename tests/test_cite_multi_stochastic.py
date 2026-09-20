@@ -11,7 +11,7 @@ from launchers import maizels_stochastic as shared_launcher
 from scripts import run_cite_multi_stochastic_multiseed
 
 
-def test_config_exposes_all_six_ssfm_variants_for_both_datasets():
+def test_config_exposes_all_seven_ssfm_variants_for_both_datasets():
     expected = (
         ("none", False, False),
         ("endpoint", False, False),
@@ -19,6 +19,7 @@ def test_config_exposes_all_six_ssfm_variants_for_both_datasets():
         ("ot_endpoint", False, True),
         ("ot_endpoint", True, True),
         ("ot_plain", False, True),
+        ("ot_endpoint", True, True),
     )
     for dataset_name in ("cite", "multi"):
         for slurm_id, (pair_mode, constrained, minibatch_ot) in enumerate(expected):
@@ -41,12 +42,17 @@ def test_config_exposes_all_six_ssfm_variants_for_both_datasets():
             assert cfg.evaluation.flowmap_n_steps == 100
             assert cfg.optimization.early_stopping.check_freq == 100
             assert cfg.optimization.early_stopping.patience == 10
+            expected_path_mode = (
+                "stochastic_rollout_endpoint_nll"
+                if slurm_id == 6
+                else "direct_offdiagonal_endpoint_nll"
+            )
+            if constrained:
+                assert cfg.constraints.path_mode == expected_path_mode
 
 
 def test_config_uses_dataset_specific_training_and_full_data_classifiers():
-    cfg = cite_multi_stochastic.get_config(
-        2, dataset_name="multi", heldout_day="3"
-    )
+    cfg = cite_multi_stochastic.get_config(2, dataset_name="multi", heldout_day="3")
     assert cfg.problem.classifier_path.endswith(
         "multi-classifiers/celltype_classifier_multi_pca100_except_day3.pt"
     )
@@ -137,9 +143,7 @@ def test_multiseed_runner_parses_axes_and_forwards_relevant_options(tmp_path):
 
 
 def test_shared_launcher_uses_cite_multi_minibatch_ot_backend(monkeypatch):
-    cfg = cite_multi_stochastic.get_config(
-        3, total_steps=10, batch_size=8, n_pairs=20
-    )
+    cfg = cite_multi_stochastic.get_config(3, total_steps=10, batch_size=8, n_pairs=20)
     expected = {
         "x0": np.zeros((8, 3), dtype=np.float32),
         "x1": np.ones((8, 3), dtype=np.float32),
@@ -151,9 +155,7 @@ def test_shared_launcher_uses_cite_multi_minibatch_ot_backend(monkeypatch):
         calls.append((pools, n_pairs, seed, pair_mode))
         return expected, {"coupling": "dynamic_minibatch_ot"}
 
-    monkeypatch.setattr(
-        cite_multi, "couple_minibatch_ot_timepoint_pools", fake_couple
-    )
+    monkeypatch.setattr(cite_multi, "couple_minibatch_ot_timepoint_pools", fake_couple)
     pools = {"timepoints": {}, "intervals": ()}
     batch = shared_launcher._sample_batch(
         pools,
@@ -201,9 +203,7 @@ def test_distribution_eval_uses_preceding_day_full_populations_and_two_samplers(
         emd_shapes.append((prediction.shape[0], actual.shape[0]))
         return float(np.mean(prediction))
 
-    monkeypatch.setattr(
-        cite_multi_stochastic_eval.wasserstein, "exact_emd", fake_emd
-    )
+    monkeypatch.setattr(cite_multi_stochastic_eval.wasserstein, "exact_emd", fake_emd)
     monkeypatch.setattr(
         cite_multi_stochastic_eval.shared_eval,
         "rbf_mmd2",
@@ -226,9 +226,7 @@ def test_distribution_eval_uses_preceding_day_full_populations_and_two_samplers(
 def test_lineage_eval_uses_heldout_day2_cells_and_both_classifiers(
     monkeypatch, tmp_path
 ):
-    cfg = cite_multi_stochastic.get_config(
-        0, total_steps=10, batch_size=8, n_pairs=20
-    )
+    cfg = cite_multi_stochastic.get_config(0, total_steps=10, batch_size=8, n_pairs=20)
     schedule_pt = tmp_path / "three_day.pt"
     full_pt = tmp_path / "all_days.pt"
     schedule_pt.with_suffix(".npz").touch()
@@ -283,8 +281,7 @@ def test_lineage_eval_uses_heldout_day2_cells_and_both_classifiers(
     assert metrics["final_eval/lineage_eval_source_count"] == 2.0
     assert metrics["final_eval/flowmap_valid_trajectory_pct"] == 50.0
     assert (
-        metrics["final_eval/full_data_classifier/stochastic_path_valid_fraction"]
-        == 1.0
+        metrics["final_eval/full_data_classifier/stochastic_path_valid_fraction"] == 1.0
     )
 
     seen_classifiers.clear()

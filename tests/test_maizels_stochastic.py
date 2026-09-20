@@ -14,7 +14,7 @@ from scripts import run_maizels_stochastic_multiseed
 from scripts import sweep_maizels_stochastic_hparams
 
 
-def test_stochastic_config_has_six_isolated_variants():
+def test_stochastic_config_has_seven_isolated_variants():
     standard = maizels_stochastic.get_config(
         0, total_steps=10, batch_size=8, n_pairs=20
     )
@@ -32,6 +32,9 @@ def test_stochastic_config_has_six_isolated_variants():
     )
     plain_ot = maizels_stochastic.get_config(
         5, total_steps=10, batch_size=8, n_pairs=20
+    )
+    rollout_constrained_bio_ot = maizels_stochastic.get_config(
+        6, total_steps=10, batch_size=8, n_pairs=20
     )
 
     assert standard.problem.maizels_pair_mode == "none"
@@ -63,14 +66,22 @@ def test_stochastic_config_has_six_isolated_variants():
     assert constrained_bio_ot.constraints.enabled
     assert plain_ot.problem.maizels_pair_mode == "ot_plain"
     assert plain_ot.problem.maizels_ot_coupling == "minibatch_ot"
+    assert rollout_constrained_bio_ot.problem.maizels_pair_mode == "ot_endpoint"
+    assert rollout_constrained_bio_ot.constraints.enabled
+    assert (
+        rollout_constrained_bio_ot.constraints.path_mode
+        == "stochastic_rollout_endpoint_nll"
+    )
+    assert rollout_constrained_bio_ot.constraints.stochastic_rollout_max_step == 0.05
+    assert rollout_constrained_bio_ot.constraints.stochastic_rollout_batch_size == 2
     assert maizels_stochastic.get_hparam_sweep_spec(2)["diffusion_scale"]
     assert maizels_stochastic.get_hparam_sweep_spec(3)["minibatch_ot"]
 
 
 def test_constraint_overrides_are_rejected_for_unconstrained_variants():
-    with pytest.raises(ValueError, match="stochastic Slurm ID 2"):
+    with pytest.raises(ValueError, match="constrained stochastic variant"):
         maizels_stochastic.get_config(0, constraint_weight=1.0)
-    with pytest.raises(ValueError, match="stochastic Slurm ID 2"):
+    with pytest.raises(ValueError, match="constrained stochastic variant"):
         maizels_stochastic.get_config(1, entropy_weight=0.1)
 
 
@@ -135,17 +146,17 @@ def test_stochastic_sweep_includes_diffusion_and_only_relevant_constraints():
 
 
 def test_stochastic_multiseed_parses_selected_or_all_slurm_ids():
-    assert run_maizels_stochastic_multiseed.parse_slurm_ids("all", 6) == tuple(range(6))
-    assert run_maizels_stochastic_multiseed.parse_slurm_ids("0,3,5", 6) == (
+    assert run_maizels_stochastic_multiseed.parse_slurm_ids("all", 7) == tuple(range(7))
+    assert run_maizels_stochastic_multiseed.parse_slurm_ids("0,3,6", 7) == (
         0,
         3,
-        5,
+        6,
     )
     with pytest.raises(
         run_maizels_stochastic_multiseed.argparse.ArgumentTypeError,
         match="duplicate",
     ):
-        run_maizels_stochastic_multiseed.parse_slurm_ids("1,1", 6)
+        run_maizels_stochastic_multiseed.parse_slurm_ids("1,1", 7)
 
 
 def test_stochastic_multiseed_forwards_constraints_only_when_relevant(tmp_path):
@@ -264,6 +275,47 @@ def test_ssfm_is_identity_on_zero_length_intervals():
     variables = model.init(jax.random.PRNGKey(1), times, times, x, coefficients)
     prediction, _ = model.apply(variables, times, times, x, coefficients)
     np.testing.assert_allclose(np.asarray(prediction), np.asarray(x), atol=1e-6)
+
+
+def test_stochastic_rollout_uses_variable_em_steps_and_backpropagates():
+    class AdditiveLocalMap:
+        @staticmethod
+        def apply(variables, s, t, x, coefficients):
+            del coefficients
+            rate = variables["params"]["rate"]
+            prediction = x + (t - s)[:, None] * rate
+            return prediction, jnp.zeros_like(s)
+
+    x_start = jnp.zeros((2, 2), dtype=jnp.float32)
+    start = jnp.asarray([0.0, 0.1], dtype=jnp.float32)
+    end = jnp.asarray([0.12, 0.31], dtype=jnp.float32)
+
+    def objective(rate):
+        paths, transition_mask = maizels_stochastic_training.stochastic_rollout_paths(
+            AdditiveLocalMap(),
+            {"rate": rate},
+            x_start,
+            start,
+            end,
+            jax.random.PRNGKey(17),
+            n_coefficients=3,
+            data_dim=2,
+            max_step=0.1,
+            max_steps=4,
+        )
+        return jnp.sum(paths[:, -1, :]), (paths, transition_mask)
+
+    (value, (paths, transition_mask)), gradient = jax.value_and_grad(
+        objective, has_aux=True
+    )(jnp.asarray(0.5, dtype=jnp.float32))
+
+    assert paths.shape == (2, 5, 2)
+    np.testing.assert_array_equal(
+        np.asarray(transition_mask),
+        np.asarray([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=np.float32),
+    )
+    np.testing.assert_allclose(np.asarray(value), 0.33, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(gradient), 0.66, rtol=1e-6)
 
 
 def test_composed_pushforward_reapplies_the_flow_map():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train direct strong stochastic flow maps on CITE-seq or Multiome PCA100."""
+"""Train direct and rollout-constrained SSFMs on CITE-seq or Multiome PCA100."""
 
 from __future__ import annotations
 

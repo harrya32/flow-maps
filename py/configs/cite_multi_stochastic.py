@@ -28,6 +28,12 @@ VARIANTS = (
         True,
     ),
     ("minibatch_ot_ssfm", "ot_plain", False, True),
+    (
+        "bio_prior_minibatch_ot_rollout_constrained_ssfm",
+        "ot_endpoint",
+        True,
+        True,
+    ),
 )
 
 
@@ -65,10 +71,11 @@ def get_config(
     batch_size: Optional[int] = None,
     n_pairs: Optional[int] = None,
 ) -> ml_collections.ConfigDict:
-    """Return one of six CITE/Multi direct-SSFM configurations."""
+    """Return one of seven CITE/Multi direct-SSFM configurations."""
     variant_name, pair_mode, constrained, minibatch_ot = VARIANTS[
         int(slurm_id) % len(VARIANTS)
     ]
+    rollout_constrained = "rollout_constrained" in variant_name
     cfg = cite_multi_pca100.get_config(
         1,
         dataset_location=dataset_location,
@@ -101,9 +108,7 @@ def get_config(
     cfg.optimization.learning_rate = float(
         3e-4 if learning_rate is None else learning_rate
     )
-    cfg.optimization.total_samples = (
-        cfg.optimization.bs * cfg.optimization.total_steps
-    )
+    cfg.optimization.total_samples = cfg.optimization.bs * cfg.optimization.total_steps
     cfg.optimization.decay_steps = cfg.optimization.total_steps
     cfg.optimization.schedule_type = "cosine"
     cfg.optimization.warmup_steps = min(
@@ -139,11 +144,19 @@ def get_config(
 
     cfg.constraints.enabled = constrained
     cfg.constraints.type = "cite_multi_ssfm_lineage_path"
-    cfg.constraints.path_mode = "direct_offdiagonal_endpoint_nll"
-    cfg.constraints.path_n_times = 2
-    cfg.constraints.constraint_batch_size = max(
-        1, min(64, cfg.optimization.bs // 4)
+    cfg.constraints.path_mode = (
+        "stochastic_rollout_endpoint_nll"
+        if rollout_constrained
+        else "direct_offdiagonal_endpoint_nll"
     )
+    cfg.constraints.path_n_times = 2
+    cfg.constraints.constraint_batch_size = max(1, min(64, cfg.optimization.bs // 4))
+    cfg.constraints.stochastic_rollout_batch_size = max(
+        1, min(16, cfg.optimization.bs // 4)
+    )
+    cfg.constraints.stochastic_rollout_max_step = 0.01
+    cfg.constraints.stochastic_rollout_max_steps = 0
+    cfg.constraints.stochastic_rollout_loss_scope = "endpoints"
     cfg.constraints.weight = float(
         10.0 if constraint_weight is None else constraint_weight
     )
