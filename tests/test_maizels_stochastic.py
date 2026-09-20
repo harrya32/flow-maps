@@ -11,6 +11,7 @@ from common import stochastic_flow_map
 from configs import maizels_stochastic
 from launchers import maizels_stochastic as maizels_stochastic_launcher
 from scripts import run_maizels_stochastic_multiseed
+from scripts import sweep_maizels_hparams
 from scripts import sweep_maizels_stochastic_hparams
 
 
@@ -76,7 +77,9 @@ def test_stochastic_config_has_seven_isolated_variants():
     assert constrained_bio_ot.ssfm.local_fraction == 0.75
     assert rollout_constrained_bio_ot.constraints.stochastic_rollout_max_step == 0.01
     assert rollout_constrained_bio_ot.constraints.stochastic_rollout_batch_size == 0
-    assert maizels_stochastic.get_hparam_sweep_spec(2)["diffusion_scale"]
+    assert "diffusion_scale" not in maizels_stochastic.get_hparam_sweep_spec(2)
+    assert not maizels_stochastic.get_hparam_sweep_spec(2)["entropy_weight"]
+    assert constrained.constraints.loss_point_entropy_weight == 0.0
     assert maizels_stochastic.get_hparam_sweep_spec(3)["minibatch_ot"]
 
 
@@ -125,26 +128,36 @@ def test_stochastic_minibatch_ot_is_recoupled_for_each_batch(monkeypatch):
     np.testing.assert_allclose(np.asarray(batch["x1"]), 1.0)
 
 
-def test_stochastic_sweep_includes_diffusion_and_only_relevant_constraints():
+def test_stochastic_sweep_matches_deterministic_hyperparameter_grid():
     plain = sweep_maizels_stochastic_hparams.build_grid(
         maizels_stochastic.get_hparam_sweep_spec(0),
         learning_rates=(1e-3,),
-        diffusion_scales=(0.1, 0.2),
         constraint_weights=(1.0, 10.0),
-        entropy_weights=(0.0, 0.01),
     )
     constrained = sweep_maizels_stochastic_hparams.build_grid(
         maizels_stochastic.get_hparam_sweep_spec(2),
         learning_rates=(1e-3,),
-        diffusion_scales=(0.1, 0.2),
         constraint_weights=(1.0, 10.0),
-        entropy_weights=(0.0, 0.01),
     )
 
-    assert len(plain) == 2
+    assert len(plain) == 1
     assert all(row["constraint_weight"] is None for row in plain)
-    assert len(constrained) == 8
-    assert {row["diffusion_scale"] for row in constrained} == {0.1, 0.2}
+    assert len(constrained) == 2
+    assert set(plain[0]) == {
+        "learning_rate",
+        "constraint_weight",
+        "entropy_weight",
+    }
+    assert (
+        sweep_maizels_stochastic_hparams.DEFAULT_LEARNING_RATES
+        == sweep_maizels_hparams.DEFAULT_LEARNING_RATES
+    )
+    assert sweep_maizels_stochastic_hparams.DEFAULT_CONSTRAINT_WEIGHTS == (
+        1.0,
+        10.0,
+        100.0,
+    )
+    assert sweep_maizels_stochastic_hparams.FIXED_ENTROPY_WEIGHT == 0.0
 
 
 def test_stochastic_multiseed_parses_selected_or_all_slurm_ids():

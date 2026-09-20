@@ -9,6 +9,7 @@ from configs import larry_pca50
 from configs import larry_spring2d_stochastic
 from launchers import larry_stochastic as larry_stochastic_launcher
 from launchers import maizels_stochastic as shared_launcher
+from scripts import run_larry_stochastic_multiseed
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +115,69 @@ def test_launcher_applies_clone_and_runtime_overrides():
     assert cfg.evaluation.flowmap_n_steps == 9
     assert cfg.evaluation.lineage_n_steps == 9
     assert cfg.evaluation.clone_flowmap_n_steps == 9
+
+
+def test_multiseed_runner_builds_selected_larry_setting_commands(tmp_path):
+    args = run_larry_stochastic_multiseed.parse_args(
+        [
+            "--slurm_ids",
+            "0,4",
+            "--seeds",
+            "2,7",
+            "--dataset_location",
+            str(tmp_path / "data"),
+            "--constraint_weight",
+            "6",
+            "--entropy_weight",
+            "0.02",
+            "--ot_minibatch_size",
+            "12",
+            "--clone_samples_per_source",
+            "9",
+            "--clone_noise_draws",
+            "2",
+            "--clone_target_times",
+            "D4,D6",
+            "--python",
+            "/env/python",
+        ]
+    )
+    assert run_larry_stochastic_multiseed.parse_slurm_ids("0,4", 7) == (0, 4)
+
+    baseline = run_larry_stochastic_multiseed.build_command(
+        args,
+        slurm_id=0,
+        seed=2,
+        constrained=False,
+        minibatch_ot=False,
+        output_folder=tmp_path / "baseline",
+        metrics_path=tmp_path / "baseline.json",
+    )
+    constrained_ot = run_larry_stochastic_multiseed.build_command(
+        args,
+        slurm_id=4,
+        seed=7,
+        constrained=True,
+        minibatch_ot=True,
+        output_folder=tmp_path / "constrained",
+        metrics_path=tmp_path / "constrained.json",
+    )
+
+    assert baseline[0] == "/env/python"
+    assert baseline[1].endswith("py/launchers/larry_stochastic.py")
+    assert baseline[baseline.index("--slurm_id") + 1] == "0"
+    assert baseline[baseline.index("--seed") + 1] == "2"
+    assert "--constraint_weight" not in baseline
+    assert "--entropy_weight" not in baseline
+    assert "--ot_minibatch_size" not in baseline
+    assert baseline[baseline.index("--clone_samples_per_source") + 1] == "9"
+    assert baseline[baseline.index("--clone_target_times") + 1] == "D4,D6"
+
+    assert constrained_ot[constrained_ot.index("--slurm_id") + 1] == "4"
+    assert constrained_ot[constrained_ot.index("--seed") + 1] == "7"
+    assert constrained_ot[constrained_ot.index("--constraint_weight") + 1] == "6.0"
+    assert constrained_ot[constrained_ot.index("--entropy_weight") + 1] == "0.02"
+    assert constrained_ot[constrained_ot.index("--ot_minibatch_size") + 1] == "12"
 
 
 def test_shared_launcher_uses_larry_minibatch_ot_backend(monkeypatch):

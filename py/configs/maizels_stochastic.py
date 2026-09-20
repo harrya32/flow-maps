@@ -51,9 +51,10 @@ def get_hparam_sweep_spec(slurm_id: int) -> dict:
     return {
         "variant_name": name,
         "learning_rate": True,
-        "diffusion_scale": True,
         "constraint_weight": bool(constrained),
-        "entropy_weight": bool(constrained),
+        # The stochastic constraint uses transition NLL only; entropy is fixed
+        # to zero rather than treated as a sweep dimension.
+        "entropy_weight": False,
         "minibatch_ot": bool(minibatch_ot),
         "launcher": "maizels_stochastic.py",
         "objective_sampler": "ssfm",
@@ -127,7 +128,7 @@ def get_config(
     cfg.optimization.warmup_steps = min(
         1_000, max(1, cfg.optimization.total_steps // 100)
     )
-    cfg.optimization.clip = 1.0
+    cfg.optimization.clip = 10.0
     cfg.optimization.weight_decay = 1e-4
     cfg.optimization.b1 = 0.9
     cfg.optimization.b2 = 0.99
@@ -183,7 +184,7 @@ def get_config(
     cfg.constraints.lambda_final = 0.0
     cfg.constraints.classifier_temperature = 1.0
     cfg.constraints.loss_point_entropy_weight = float(
-        0.01 if entropy_weight is None else entropy_weight
+        0.0 if entropy_weight is None else entropy_weight
     )
     if constraint_weight is not None and not constrained:
         raise ValueError(

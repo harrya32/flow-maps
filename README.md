@@ -256,6 +256,23 @@ interpolation test, whereas D6 is an endpoint diagnostic. The defaults are 32
 samples per source cell and three repeats, configurable with
 `--clone_samples_per_source` and `--clone_noise_draws`.
 
+Run any selection of the seven LARRY stochastic settings over several seeds:
+
+```bash
+python scripts/run_larry_stochastic_multiseed.py \
+    --slurm-ids 0,1,2,4 \
+    --seeds 0,1,2 \
+    --dataset-location ~/Desktop/flow-maps-data
+```
+
+Runs are sequential and resumable, so only one accelerator job is active at a
+time. Per-run metrics are written to
+`outputs/larry_spring2d_stochastic_multiseed/results.csv`; `summary.csv`
+contains across-seed means and standard deviations for population EMD,
+classifier lineage diagnostics, and all D4/D6 clone-conditioned Wasserstein
+metrics. Use `--slurm-ids all` for all seven settings and `--dry-run` to inspect
+the complete command matrix without starting training.
+
 For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
 `--heldout_day` is `3` or `4`. Its IDs mirror the Maizels experiment: 0 is
 vanilla flow matching, 1 vanilla flow map, 2 prior-filtered flow matching, 3
@@ -364,6 +381,23 @@ Per-seed results go to
 standard deviations go to the corresponding `slurm_<id>_summary.csv`.
 Completed runs are skipped when the command is resumed. Override the grids with
 `--learning-rates`, `--constraint-weights`, and `--entropy-weights`.
+
+The stochastic Maizels configurations use the same optimization protocol, with
+a constraint-weight grid matched to the scale of the stochastic loss:
+
+```bash
+python scripts/sweep_maizels_stochastic_hparams.py \
+    --slurm-id 2 \
+    --dataset-location /path/to/celltype_classification_pca50_dataset.csv.gz
+```
+
+This selects settings by mean stochastic EMD at `D3.4,D6`. Learning rate uses
+the deterministic grid `3e-4,1e-3,3e-3`; constrained SSFM IDs additionally use
+the stochastic-scale constraint grid `1,10,100`. The entropy weight is fixed to
+zero, and diffusion and gamma remain fixed at the values in
+`configs.maizels_stochastic`. Results are resumable under
+`outputs/maizels_stochastic_hparam_sweep/`, with one results and one
+across-seed summary CSV per stochastic ID.
 
 Run all seven Maizels stochastic variants over several seeds without sweeping
 their hyperparameters with the command below. ID 6 is the endpoint-prior,

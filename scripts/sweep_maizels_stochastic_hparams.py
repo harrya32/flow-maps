@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Run a resumable multi-seed hyperparameter grid for Maizels SSFMs."""
+"""Run the deterministic Maizels hyperparameter protocol for SSFM variants.
+
+The grid follows the deterministic sweep logic: learning rate is always swept
+and constraint weight is swept only for constrained variants.  Entropy is fixed
+to zero, while stochastic-only parameters such as the diffusion and gamma
+scales remain at the values specified by ``maizels_stochastic``.
+"""
 
 from __future__ import annotations
 
 import argparse
-import importlib
-import itertools
 import json
 import math
 import os
@@ -27,48 +31,30 @@ if str(PY_ROOT) not in sys.path:
 from scripts import sweep_maizels_hparams as sweep_utils  # noqa: E402
 
 
-DEFAULT_LEARNING_RATES = (3e-4, 1e-3, 3e-3)
-DEFAULT_DIFFUSION_SCALES = (0.1, 0.2, 0.4)
+DEFAULT_LEARNING_RATES = sweep_utils.DEFAULT_LEARNING_RATES
 DEFAULT_CONSTRAINT_WEIGHTS = (1.0, 10.0, 100.0)
-DEFAULT_ENTROPY_WEIGHTS = (0.0, 0.01, 0.1)
+FIXED_ENTROPY_WEIGHT = 0.0
 OBJECTIVE_METRIC = "final_eval/ssfm_mean_emd_hparam_val_times"
 
 
 def build_grid(
     spec: Dict[str, object],
     learning_rates: Iterable[float],
-    diffusion_scales: Iterable[float],
     constraint_weights: Iterable[float],
-    entropy_weights: Iterable[float],
 ) -> List[Dict[str, float | None]]:
-    """Build only dimensions that affect the selected stochastic variant."""
-    dimensions = [
-        ("learning_rate", tuple(learning_rates)),
-        ("diffusion_scale", tuple(diffusion_scales)),
-    ]
-    if bool(spec["constraint_weight"]):
-        dimensions.append(("constraint_weight", tuple(constraint_weights)))
-    if bool(spec["entropy_weight"]):
-        dimensions.append(("entropy_weight", tuple(entropy_weights)))
-    names = [name for name, _ in dimensions]
-    result = []
-    for values in itertools.product(*(values for _, values in dimensions)):
-        selected = dict(zip(names, values))
-        result.append(
-            {
-                "learning_rate": selected["learning_rate"],
-                "diffusion_scale": selected["diffusion_scale"],
-                "constraint_weight": selected.get("constraint_weight"),
-                "entropy_weight": selected.get("entropy_weight"),
-            }
-        )
-    return result
+    """Sweep learning rate and, where relevant, stochastic constraint weight."""
+    return sweep_utils.build_grid(
+        spec,
+        learning_rates=learning_rates,
+        constraint_weights=constraint_weights,
+        entropy_weights=(FIXED_ENTROPY_WEIGHT,),
+    )
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Sweep direct Maizels SSFM hyperparameters and select them by "
+            "Sweep Maizels SSFM hyperparameters and select them by "
             "held-out validation-time EMD."
         )
     )
@@ -82,22 +68,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("--output-csv", default=None)
     parser.add_argument("--summary-csv", default=None)
-    parser.add_argument("--seeds", default="0,1,2")
+    parser.add_argument(
+        "--seeds",
+        default="0,1",
+        help="Comma-separated training seeds repeated for every grid setting.",
+    )
     parser.add_argument(
         "--learning-rates",
         default=",".join(f"{value:g}" for value in DEFAULT_LEARNING_RATES),
     )
     parser.add_argument(
-        "--diffusion-scales",
-        default=",".join(f"{value:g}" for value in DEFAULT_DIFFUSION_SCALES),
-    )
-    parser.add_argument(
         "--constraint-weights",
         default=",".join(f"{value:g}" for value in DEFAULT_CONSTRAINT_WEIGHTS),
-    )
-    parser.add_argument(
-        "--entropy-weights",
-        default=",".join(f"{value:g}" for value in DEFAULT_ENTROPY_WEIGHTS),
     )
     parser.add_argument(
         "--maizels-schedule",
@@ -127,7 +109,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def _setting_id(args, values: Dict[str, float | None]) -> str:
-    base = sweep_utils.setting_id_for(
+    return sweep_utils.setting_id_for(
         cfg_path=args.cfg_path,
         slurm_id=args.slurm_id,
         schedule=args.maizels_schedule,
@@ -135,8 +117,6 @@ def _setting_id(args, values: Dict[str, float | None]) -> str:
         hparam_val_times=args.hparam_val_times,
         values=values,
     )
-    diffusion = sweep_utils._float_slug(values["diffusion_scale"])
-    return base.replace("_", f"_diff{diffusion}_", 1)
 
 
 def _optional_command_arg(command: List[str], name: str, value) -> None:
@@ -145,40 +125,25 @@ def _optional_command_arg(command: List[str], name: str, value) -> None:
 
 
 def main(argv=None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     args = parse_args(argv)
-    module = importlib.import_module(args.cfg_path)
-    if not hasattr(module, "get_hparam_sweep_spec"):
-        raise AttributeError(
-            f"{args.cfg_path} must expose get_hparam_sweep_spec(slurm_id)."
-        )
-    spec = dict(module.get_hparam_sweep_spec(args.slurm_id))
-    if not bool(spec.get("diffusion_scale", False)):
-        raise ValueError(f"{args.cfg_path} does not declare diffusion_scale sweepable.")
+    spec = sweep_utils._sweep_spec(args.cfg_path, args.slurm_id)
 
     learning_rates = sweep_utils.parse_float_grid(args.learning_rates, "learning rates")
-    diffusion_scales = sweep_utils.parse_float_grid(
-        args.diffusion_scales, "diffusion scales"
-    )
     constraint_weights = sweep_utils.parse_float_grid(
         args.constraint_weights, "constraint weights"
-    )
-    entropy_weights = sweep_utils.parse_float_grid(
-        args.entropy_weights, "entropy weights"
     )
     seeds = sweep_utils.parse_seed_grid(args.seeds)
     if any(value <= 0.0 for value in learning_rates):
         raise ValueError("All learning rates must be positive.")
-    if any(value < 0.0 for value in diffusion_scales):
-        raise ValueError("Diffusion scales must be non-negative.")
-    if any(value < 0.0 for value in constraint_weights + entropy_weights):
-        raise ValueError("Constraint and entropy weights must be non-negative.")
+    if any(value < 0.0 for value in constraint_weights):
+        raise ValueError("Constraint weights must be non-negative.")
 
     grid = build_grid(
         spec,
         learning_rates,
-        diffusion_scales,
         constraint_weights,
-        entropy_weights,
     )
     variant_name = str(spec["variant_name"])
     output_root = Path(args.output_dir).expanduser().resolve()
@@ -209,15 +174,12 @@ def main(argv=None) -> int:
             "maizels_time_mode": args.maizels_time_mode,
             "hparam_val_times": args.hparam_val_times,
             "learning_rate": values["learning_rate"],
-            "diffusion_scale": values["diffusion_scale"],
             "constraint_weight": (
                 ""
                 if values["constraint_weight"] is None
                 else values["constraint_weight"]
             ),
-            "entropy_weight": (
-                "" if values["entropy_weight"] is None else values["entropy_weight"]
-            ),
+            "entropy_weight": FIXED_ENTROPY_WEIGHT if spec["constraint_weight"] else "",
         }
         settings.append(setting)
         for seed in seeds:
@@ -228,6 +190,12 @@ def main(argv=None) -> int:
         f"Variant {variant_name!r}: {len(grid)} settings x {len(seeds)} seeds "
         f"= {total_runs} runs; objective={OBJECTIVE_METRIC}."
     )
+    ignored = []
+    if not bool(spec["constraint_weight"]):
+        ignored.append("constraint weight")
+    ignored.append("entropy weight (fixed at 0)")
+    if ignored:
+        print("Not sweeping irrelevant dimensions: " + ", ".join(ignored) + ".")
     for index, (setting_id, values, seed) in enumerate(planned_runs, start=1):
         run_id = sweep_utils.run_id_for(setting_id, seed)
         if run_id in completed and not args.rerun_completed:
@@ -255,8 +223,6 @@ def main(argv=None) -> int:
             args.hparam_val_times,
             "--learning_rate",
             f"{values['learning_rate']:g}",
-            "--diffusion_scale",
-            f"{values['diffusion_scale']:g}",
             "--seed",
             str(seed),
             "--final_metrics_path",
@@ -264,8 +230,6 @@ def main(argv=None) -> int:
         ]
         if values["constraint_weight"] is not None:
             command.extend(["--constraint_weight", f"{values['constraint_weight']:g}"])
-        if values["entropy_weight"] is not None:
-            command.extend(["--entropy_weight", f"{values['entropy_weight']:g}"])
         _optional_command_arg(command, "--total_steps", args.total_steps)
         _optional_command_arg(command, "--batch_size", args.batch_size)
         _optional_command_arg(command, "--n_pairs", args.n_pairs)
@@ -315,15 +279,12 @@ def main(argv=None) -> int:
             "maizels_time_mode": args.maizels_time_mode,
             "hparam_val_times": args.hparam_val_times,
             "learning_rate": values["learning_rate"],
-            "diffusion_scale": values["diffusion_scale"],
             "constraint_weight": (
                 ""
                 if values["constraint_weight"] is None
                 else values["constraint_weight"]
             ),
-            "entropy_weight": (
-                "" if values["entropy_weight"] is None else values["entropy_weight"]
-            ),
+            "entropy_weight": FIXED_ENTROPY_WEIGHT if spec["constraint_weight"] else "",
             "objective_metric": OBJECTIVE_METRIC,
             "objective_value": metrics.get(OBJECTIVE_METRIC, ""),
             "duration_seconds": round(duration, 3),
