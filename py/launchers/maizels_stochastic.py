@@ -446,6 +446,8 @@ def _save_periodic_pushforward_plot(
         plot_data,
         plot_path,
         flowmap_n_steps=int(cfg.evaluation.flowmap_n_steps),
+        euler_maruyama=maizels_stochastic_eval.uses_euler_maruyama_evaluation(cfg),
+        euler_maruyama_n_steps=maizels_stochastic_eval.euler_maruyama_n_steps(cfg),
     )
     saved_paths = [plot_path]
     trajectory_data = evaluation_backend.full_data_trajectory_plot_data(

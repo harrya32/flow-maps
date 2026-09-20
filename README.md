@@ -186,6 +186,14 @@ python py/launchers/learn.py \
     --slurm_id 4 \
     --ot_minibatch_size 32 \
     --output_folder /path/to/spring2d-outputs
+
+# Direct SSFM in SPRING space. Clone evaluation draws 32 composed futures
+# from every D2 cell and repeats the Monte Carlo evaluation three times.
+python py/launchers/larry_stochastic.py \
+    --slurm_id 0 \
+    --clone_samples_per_source 32 \
+    --clone_noise_draws 3 \
+    --output_folder /path/to/larry-spring2d-stochastic-outputs
 ```
 
 The LARRY preprocessing command reads the four `stateFate_inVitro_*` source
@@ -231,6 +239,23 @@ the PCA cache. `configs.larry_spring2d` exposes the same six Slurm IDs and D4
 evaluation protocol as `configs.larry_pca50`, with representation-specific
 classifiers and output names.
 
+`configs.larry_spring2d_stochastic` and
+`py/launchers/larry_stochastic.py` expose the seven SSFM variants used by the
+other lineage experiments: standard, endpoint-prior, endpoint-prior
+constrained, prior-filtered minibatch OT, its directly constrained version,
+plain minibatch OT, and rollout-constrained prior-filtered minibatch OT. Final
+population and classifier metrics use 50-step composed stochastic maps for
+IDs 0--5 and small-step Euler--Maruyama rollouts for local-only ID 6.
+For every clone represented at D2 and a requested target day, the stochastic
+clone evaluator draws an equal number of independent futures from each D2
+cell, using the same sampler selected above, and compares their pooled
+empirical distribution with all observed target cousins using exact W1, then
+averages over independent Monte Carlo repeats. D4 and D6 are evaluated by
+default; D4 remains the held-out
+interpolation test, whereas D6 is an endpoint diagnostic. The defaults are 32
+samples per source cell and three repeats, configurable with
+`--clone_samples_per_source` and `--clone_noise_draws`.
+
 For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
 `--heldout_day` is `3` or `4`. Its IDs mirror the Maizels experiment: 0 is
 vanilla flow matching, 1 vanilla flow map, 2 prior-filtered flow matching, 3
@@ -255,11 +280,15 @@ endpoint-prior, and endpoint-prior constrained SSFM; IDs 3--4 add minibatch OT
 to the latter two; ID 5 is plain minibatch-OT SSFM. ID 6 is the minibatch-OT
 rollout-constrained variant: its lineage loss backpropagates through a
 differentiable Euler--Maruyama composition of the current model's learned local
-drift/diffusion steps. Stochastic biological-prior variants filter endpoint
-cell-type transitions only. Final evaluation compares
-both a direct stochastic map and a 100-step composed stochastic map with the
-full omitted-day population, and scores held-out day-2-to-day-7 composed paths
-with both the observed-days and all-days classifiers.
+drift/diffusion steps, and its local fraction is 1.0 (no semigroup loss).
+Its independently sampled constraint horizons follow the same configured
+log-uniform maximum-horizon curriculum as the other stochastic variants.
+Stochastic biological-prior variants filter endpoint cell-type transitions
+only. For IDs 0--5, final evaluation compares both a direct stochastic map and
+a 100-step composed stochastic map with the full omitted-day population, and
+scores held-out day-2-to-day-7 composed paths with both the observed-days and
+all-days classifiers. Local-only ID 6 instead uses Euler--Maruyama rollouts for
+both evaluations.
 
 Run any selection of those variants over datasets, held-out days, and seeds:
 
@@ -339,7 +368,13 @@ Completed runs are skipped when the command is resumed. Override the grids with
 Run all seven Maizels stochastic variants over several seeds without sweeping
 their hyperparameters with the command below. ID 6 is the endpoint-prior,
 minibatch-OT SSFM whose lineage loss is evaluated through a differentiable
-Euler--Maruyama rollout; IDs 2 and 4 retain the cheaper direct-map constraint.
+Euler--Maruyama rollout and whose local fraction is 1.0; IDs 2 and 4 retain the
+75/25 local/semigroup objective and cheaper direct-map constraint.
+Any stochastic configuration with `ssfm.local_fraction = 1.0` automatically
+uses only Euler--Maruyama rollouts for periodic plots, final population EMDs,
+classifier lineage diagnostics, and trajectory plots. These evaluations use
+`evaluation.euler_maruyama_n_steps = 50`; direct and composed-flow-map
+evaluation is retained only when off-diagonal maps were trained.
 
 ```bash
 python scripts/run_maizels_stochastic_multiseed.py \

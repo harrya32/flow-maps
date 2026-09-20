@@ -32,7 +32,7 @@ from scripts import run_maizels_stochastic_multiseed as runner_utils  # noqa: E4
 from scripts import sweep_maizels_hparams as sweep_utils  # noqa: E402
 
 
-DEFAULT_OBJECTIVE_METRIC = "final_eval/flowmap_mean_emd"
+DEFAULT_OBJECTIVE_METRIC = "final_eval/evaluation_mean_emd"
 parse_slurm_ids = runner_utils.parse_slurm_ids
 
 

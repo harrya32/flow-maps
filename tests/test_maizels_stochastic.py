@@ -72,8 +72,10 @@ def test_stochastic_config_has_seven_isolated_variants():
         rollout_constrained_bio_ot.constraints.path_mode
         == "stochastic_rollout_endpoint_nll"
     )
-    assert rollout_constrained_bio_ot.constraints.stochastic_rollout_max_step == 0.05
-    assert rollout_constrained_bio_ot.constraints.stochastic_rollout_batch_size == 2
+    assert rollout_constrained_bio_ot.ssfm.local_fraction == 1.0
+    assert constrained_bio_ot.ssfm.local_fraction == 0.75
+    assert rollout_constrained_bio_ot.constraints.stochastic_rollout_max_step == 0.01
+    assert rollout_constrained_bio_ot.constraints.stochastic_rollout_batch_size == 0
     assert maizels_stochastic.get_hparam_sweep_spec(2)["diffusion_scale"]
     assert maizels_stochastic.get_hparam_sweep_spec(3)["minibatch_ot"]
 
@@ -318,6 +320,87 @@ def test_stochastic_rollout_uses_variable_em_steps_and_backpropagates():
     np.testing.assert_allclose(np.asarray(gradient), 0.66, rtol=1e-6)
 
 
+def test_rollout_constrained_variant_uses_all_local_examples_and_separate_times(
+    monkeypatch,
+):
+    cfg = maizels_stochastic.get_config(6, total_steps=10, batch_size=8, n_pairs=20)
+    cfg.problem.d = 2
+    cfg.ssfm.horizon_curriculum_fraction = 1.0
+
+    class CountingMap:
+        def __init__(self):
+            self.calls = []
+
+        def apply(self, variables, s, t, x, coefficients):
+            del coefficients
+            self.calls.append((variables["params"], x.shape[0]))
+            return x + (t - s)[:, None], jnp.zeros_like(s)
+
+    seen = {}
+
+    def fake_rollout(model, params, x_start, s, t, key, **kwargs):
+        del model, key, kwargs
+        seen["params"] = params
+        seen["s"] = np.asarray(s)
+        seen["t"] = np.asarray(t)
+        path = jnp.stack([x_start, x_start + 1.0], axis=1)
+        return path, jnp.ones((x_start.shape[0], 1), dtype=x_start.dtype)
+
+    def fake_lineage_loss(path, labels, classifier, **kwargs):
+        del labels, classifier, kwargs
+        seen["path"] = np.asarray(path)
+        zero = jnp.asarray(0.0, dtype=path.dtype)
+        return zero, {
+            "transition_invalid_mass": zero,
+            "transition_valid_mass": zero,
+            "final_entropy_loss": zero,
+        }
+
+    monkeypatch.setattr(
+        maizels_stochastic_training, "stochastic_rollout_paths", fake_rollout
+    )
+    monkeypatch.setattr(
+        maizels_stochastic_training, "lineage_loss_for_path", fake_lineage_loss
+    )
+    model = CountingMap()
+    labels = jnp.tile(jnp.asarray([[0.0, 1.0, 0.2, 0.8]]), (8, 1))
+    batch = {
+        "x0": jnp.zeros((8, 2)),
+        "x1": jnp.ones((8, 2)),
+        "label": labels,
+    }
+    loss_fn = maizels_stochastic_training.make_loss_fn(
+        model, cfg, jnp.ones((2,)), classifier=object()
+    )
+
+    loss, metrics = loss_fn(
+        "student",
+        "ema",
+        batch,
+        jax.random.PRNGKey(23),
+        jnp.asarray(1),
+    )
+
+    assert bool(jnp.isfinite(loss))
+    assert model.calls == [("student", 8)]
+    assert seen["params"] == "student"
+    assert seen["path"].shape == (2, 2, 2)
+    assert np.all(seen["s"] >= 0.2)
+    assert np.all(seen["t"] <= 0.8)
+    assert np.all(seen["s"] <= seen["t"])
+    sampled_horizon_fraction = (seen["t"] - seen["s"]) / 0.6
+    expected_horizon_max = 0.02 * (0.98 / 0.02) ** 0.1
+    assert np.all(sampled_horizon_fraction >= 0.02)
+    assert np.all(sampled_horizon_fraction <= expected_horizon_max)
+    assert float(metrics["loss/semigroup"]) == 0.0
+    np.testing.assert_allclose(
+        np.asarray(metrics["training/horizon_max_fraction"]),
+        expected_horizon_max,
+        rtol=1e-6,
+    )
+    assert float(metrics["lineage/stochastic_rollout_mean_steps"]) == 1.0
+
+
 def test_composed_pushforward_reapplies_the_flow_map():
     class MultiplicativeMap:
         @staticmethod
@@ -349,6 +432,64 @@ def test_composed_pushforward_reapplies_the_flow_map():
 
     np.testing.assert_allclose(direct, 2.0)
     np.testing.assert_allclose(composed, 2.25)
+
+
+def test_euler_maruyama_rollout_uses_fixed_equal_steps():
+    class LocalEulerMap:
+        @staticmethod
+        def apply(variables, s, t, x, coefficients):
+            del variables, coefficients
+            prediction = x + (t - s)[:, None]
+            return prediction, jnp.zeros_like(s)
+
+    source = np.zeros((2, 2), dtype=np.float32)
+    path = maizels_stochastic_eval.sample_euler_maruyama_path(
+        LocalEulerMap(),
+        {},
+        source,
+        0.0,
+        0.05,
+        jax.random.PRNGKey(7),
+        n_coefficients=3,
+        n_steps=3,
+    )
+
+    # Evaluation uses the requested fixed number of equal EM updates.
+    assert path.shape == (2, 3, 2)
+    np.testing.assert_allclose(path[:, -1], 0.05, rtol=1e-6, atol=1e-6)
+
+
+def test_local_only_trajectory_dispatch_uses_euler_maruyama(monkeypatch):
+    cfg = maizels_stochastic.get_config(6, total_steps=10, batch_size=8, n_pairs=20)
+    expected = np.ones((2, 4, 2), dtype=np.float32)
+    seen = []
+
+    def fake_em(model, params, x, *args, **kwargs):
+        seen.append(kwargs["n_steps"])
+        return expected
+
+    monkeypatch.setattr(maizels_stochastic_eval, "sample_euler_maruyama_path", fake_em)
+    monkeypatch.setattr(
+        maizels_stochastic_eval,
+        "sample_composed_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("local-only trajectory composed a flow map")
+        ),
+    )
+
+    actual = maizels_stochastic_eval.sample_evaluation_path(
+        object(),
+        {},
+        np.zeros((2, 2), dtype=np.float32),
+        0.0,
+        1.0,
+        jax.random.PRNGKey(0),
+        cfg,
+        n_steps=50,
+    )
+
+    assert seen == [50]
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_stochastic_distribution_eval_uses_full_populations_and_both_samplers(
@@ -401,6 +542,57 @@ def test_stochastic_distribution_eval_uses_full_populations_and_both_samplers(
     assert metrics["final_eval/flowmap_mean_emd_hparam_val_times"] == 2.0
     assert metrics["final_eval/ssfm_mean_emd_hparam_val_times"] == 1.0
     assert [values.shape[0] for values in plot_data["D3.4"]] == [5, 3, 3]
+
+
+def test_local_only_distribution_eval_uses_only_euler_maruyama(monkeypatch):
+    cfg = maizels_stochastic.get_config(6, total_steps=10, batch_size=8, n_pairs=20)
+    cfg.problem.evaluation_timepoints = ["D3.4"]
+    cfg.problem.hparam_val_times = ["D3.4"]
+    pools = {
+        "D3": {"x": np.zeros((3, 2), dtype=np.float32)},
+        "D3.4": {"x": np.full((5, 2), 4.0, dtype=np.float32)},
+    }
+    monkeypatch.setattr(
+        maizels_stochastic_eval.maizels,
+        "timepoint_pool_splits",
+        lambda cfg, dataset_location=None: pools,
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("local-only evaluation used a flow-map sampler")
+
+    monkeypatch.setattr(maizels_stochastic_eval, "sample_pushforward", forbidden)
+    monkeypatch.setattr(
+        maizels_stochastic_eval, "sample_composed_pushforward", forbidden
+    )
+    seen_n_steps = []
+
+    def fake_em(model, params, x, *args, **kwargs):
+        seen_n_steps.append(kwargs["n_steps"])
+        return x + 3.0
+
+    monkeypatch.setattr(
+        maizels_stochastic_eval, "sample_euler_maruyama_pushforward", fake_em
+    )
+    monkeypatch.setattr(
+        maizels_stochastic_eval.wasserstein,
+        "exact_emd",
+        lambda prediction, target: float(np.mean(prediction)),
+    )
+    monkeypatch.setattr(
+        maizels_stochastic_eval, "rbf_mmd2", lambda *args, **kwargs: 0.0
+    )
+
+    metrics, plot_data = maizels_stochastic_eval.distribution_metrics(
+        object(), {}, cfg, n_noise_draws=1
+    )
+
+    assert seen_n_steps == [50]
+    assert metrics["final_eval/D3p4_euler_maruyama_emd"] == 3.0
+    assert metrics["final_eval/ssfm_mean_emd_hparam_val_times"] == 3.0
+    assert "final_eval/D3p4_direct_emd" not in metrics
+    assert "final_eval/D3p4_flowmap_emd" not in metrics
+    assert [values.shape[0] for values in plot_data["D3.4"]] == [5, 3]
 
 
 def test_lineage_eval_uses_heldout_d3_cells_and_both_classifiers(monkeypatch, tmp_path):
@@ -580,4 +772,5 @@ def test_constrained_ssfm_reuses_direct_student_prediction(monkeypatch):
     np.testing.assert_allclose(
         seen["path"][:, 1] - seen["path"][:, 0],
         1.0,
+        atol=1e-6,
     )

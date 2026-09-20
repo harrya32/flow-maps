@@ -49,6 +49,7 @@ def test_config_exposes_all_seven_ssfm_variants_for_both_datasets():
             )
             if constrained:
                 assert cfg.constraints.path_mode == expected_path_mode
+            assert cfg.ssfm.local_fraction == (1.0 if slurm_id == 6 else 0.75)
 
 
 def test_config_uses_dataset_specific_training_and_full_data_classifiers():
@@ -220,7 +221,68 @@ def test_distribution_eval_uses_preceding_day_full_populations_and_two_samplers(
     assert metrics["mfm/test_EMD_flowmap"] == 2.0
     assert metrics["final_eval/day4_direct_emd"] == 1.0
     assert metrics["final_eval/day4_flowmap_emd"] == 2.0
+    assert metrics["final_eval/evaluation_mean_emd"] == 2.0
     assert [values.shape[0] for values in plot_data["4"]] == [5, 3, 3]
+
+
+def test_local_only_distribution_eval_uses_only_euler_maruyama(monkeypatch):
+    cfg = cite_multi_stochastic.get_config(
+        6, heldout_day="4", total_steps=10, batch_size=8, n_pairs=20
+    )
+    pools = {
+        "3": {"x": np.zeros((3, 2), dtype=np.float32)},
+        "4": {"x": np.full((5, 2), 4.0, dtype=np.float32)},
+    }
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval.cite_multi,
+        "timepoint_pool_splits",
+        lambda cfg, dataset_location=None: pools,
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("local-only evaluation used a flow-map sampler")
+
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval.shared_eval, "sample_pushforward", forbidden
+    )
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval.shared_eval,
+        "sample_composed_pushforward",
+        forbidden,
+    )
+    seen_n_steps = []
+
+    def fake_em(model, params, x, *args, **kwargs):
+        seen_n_steps.append(kwargs["n_steps"])
+        return x + 3.0
+
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval.shared_eval,
+        "sample_euler_maruyama_pushforward",
+        fake_em,
+    )
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval.wasserstein,
+        "exact_emd",
+        lambda prediction, target: float(np.mean(prediction)),
+    )
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval.shared_eval,
+        "rbf_mmd2",
+        lambda *args, **kwargs: 0.0,
+    )
+
+    metrics, plot_data = cite_multi_stochastic_eval.distribution_metrics(
+        object(), {}, cfg, n_noise_draws=1
+    )
+
+    assert seen_n_steps == [50]
+    assert metrics["mfm/test_EMD_euler_maruyama"] == 3.0
+    assert metrics["final_eval/ssfm_mean_emd"] == 3.0
+    assert metrics["final_eval/evaluation_mean_emd"] == 3.0
+    assert "mfm/test_EMD_direct_ssfm" not in metrics
+    assert "mfm/test_EMD_flowmap" not in metrics
+    assert [values.shape[0] for values in plot_data["4"]] == [5, 3]
 
 
 def test_lineage_eval_uses_heldout_day2_cells_and_both_classifiers(

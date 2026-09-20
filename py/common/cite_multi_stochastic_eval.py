@@ -46,8 +46,8 @@ def distribution_metrics(
     max_source_points: Optional[int] = None,
     max_target_points: Optional[int] = None,
     n_noise_draws: Optional[int] = None,
-) -> Tuple[Dict[str, float], Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]]:
-    """Evaluate direct and composed samples at the omitted CITE/Multi day."""
+) -> Tuple[Dict[str, float], Dict[str, Tuple[np.ndarray, ...]]]:
+    """Evaluate valid model samples at the omitted CITE/Multi day."""
     seed = int(cfg.evaluation.seed if seed is None else seed)
     max_source_points = int(
         cfg.evaluation.max_source_points
@@ -64,8 +64,9 @@ def distribution_metrics(
     )
     if n_draws <= 0:
         raise ValueError("evaluation.n_noise_draws must be positive.")
+    use_euler_maruyama = shared_eval.uses_euler_maruyama_evaluation(cfg)
     flowmap_n_steps = int(cfg.evaluation.flowmap_n_steps)
-    if flowmap_n_steps <= 0:
+    if not use_euler_maruyama and flowmap_n_steps <= 0:
         raise ValueError("evaluation.flowmap_n_steps must be positive.")
 
     source_day, heldout_day = _heldout_interval(cfg)
@@ -75,41 +76,53 @@ def distribution_metrics(
     rng = np.random.default_rng(seed)
     source_all = np.asarray(pools[source_day]["x"], dtype=np.float32)
     target_all = np.asarray(pools[heldout_day]["x"], dtype=np.float32)
-    source = source_all[
-        _sample_indices(rng, source_all.shape[0], max_source_points)
-    ]
-    target = target_all[
-        _sample_indices(rng, target_all.shape[0], max_target_points)
-    ]
+    source = source_all[_sample_indices(rng, source_all.shape[0], max_source_points)]
+    target = target_all[_sample_indices(rng, target_all.shape[0], max_target_points)]
     start_time = cite_multi.normalized_time(source_day)
     end_time = cite_multi.normalized_time(heldout_day)
     key = jax.random.PRNGKey(seed)
-    emd_values = {"direct": [], "flowmap": []}
-    mmd_values = {"direct": [], "flowmap": []}
+    samplers = ("euler_maruyama",) if use_euler_maruyama else ("direct", "flowmap")
+    emd_values = {name: [] for name in samplers}
+    mmd_values = {name: [] for name in samplers}
     first_prediction = {}
     for draw in range(n_draws):
-        key, direct_key, flowmap_key = jax.random.split(key, 3)
-        predictions = {
-            "direct": shared_eval.sample_pushforward(
-                model,
-                params,
-                source,
-                start_time,
-                end_time,
-                direct_key,
-                n_coefficients=int(cfg.ssfm.n_coefficients),
-            ),
-            "flowmap": shared_eval.sample_composed_pushforward(
-                model,
-                params,
-                source,
-                start_time,
-                end_time,
-                flowmap_key,
-                n_coefficients=int(cfg.ssfm.n_coefficients),
-                n_steps=flowmap_n_steps,
-            ),
-        }
+        if use_euler_maruyama:
+            key, rollout_key = jax.random.split(key)
+            predictions = {
+                "euler_maruyama": shared_eval.sample_euler_maruyama_pushforward(
+                    model,
+                    params,
+                    source,
+                    start_time,
+                    end_time,
+                    rollout_key,
+                    n_coefficients=int(cfg.ssfm.n_coefficients),
+                    n_steps=shared_eval.euler_maruyama_n_steps(cfg),
+                )
+            }
+        else:
+            key, direct_key, flowmap_key = jax.random.split(key, 3)
+            predictions = {
+                "direct": shared_eval.sample_pushforward(
+                    model,
+                    params,
+                    source,
+                    start_time,
+                    end_time,
+                    direct_key,
+                    n_coefficients=int(cfg.ssfm.n_coefficients),
+                ),
+                "flowmap": shared_eval.sample_composed_pushforward(
+                    model,
+                    params,
+                    source,
+                    start_time,
+                    end_time,
+                    flowmap_key,
+                    n_coefficients=int(cfg.ssfm.n_coefficients),
+                    n_steps=flowmap_n_steps,
+                ),
+            }
         for sampler, prediction in predictions.items():
             first_prediction.setdefault(sampler, prediction)
             emd_values[sampler].append(wasserstein.exact_emd(prediction, target))
@@ -122,7 +135,7 @@ def distribution_metrics(
         "final_eval/source_count": float(source.shape[0]),
         "final_eval/target_count": float(target.shape[0]),
     }
-    for sampler in ("direct", "flowmap"):
+    for sampler in samplers:
         mean_emd = float(np.mean(emd_values[sampler]))
         metrics[f"final_eval/{tag}_{sampler}_emd"] = mean_emd
         metrics[f"final_eval/{tag}_{sampler}_emd_std_over_noise"] = float(
@@ -133,27 +146,31 @@ def distribution_metrics(
         )
         metrics[f"final_eval/{sampler}_mean_emd"] = mean_emd
 
-    # Keep the original benchmark namespace while naming both stochastic
-    # samplers explicitly.  The unsuffixed key is the native direct SSFM draw.
-    metrics["mfm/test_EMD"] = metrics[f"final_eval/{tag}_direct_emd"]
-    metrics["mfm/test_EMD_direct_ssfm"] = metrics["mfm/test_EMD"]
-    metrics["mfm/test_EMD_flowmap"] = metrics[f"final_eval/{tag}_flowmap_emd"]
+    primary_sampler = "euler_maruyama" if use_euler_maruyama else "direct"
+    metrics["mfm/test_EMD"] = metrics[f"final_eval/{tag}_{primary_sampler}_emd"]
+    if use_euler_maruyama:
+        metrics["mfm/test_EMD_euler_maruyama"] = metrics["mfm/test_EMD"]
+    else:
+        metrics["mfm/test_EMD_direct_ssfm"] = metrics["mfm/test_EMD"]
+        metrics["mfm/test_EMD_flowmap"] = metrics[f"final_eval/{tag}_flowmap_emd"]
     metrics[f"final_eval/{tag}_ssfm_emd"] = metrics["mfm/test_EMD"]
     metrics["final_eval/ssfm_mean_emd"] = metrics["mfm/test_EMD"]
+    evaluation_sampler = "euler_maruyama" if use_euler_maruyama else "flowmap"
+    metrics["final_eval/evaluation_mean_emd"] = metrics[
+        f"final_eval/{evaluation_sampler}_mean_emd"
+    ]
+    sampler_summary = ", ".join(
+        f"{sampler}_EMD={metrics[f'final_eval/{tag}_{sampler}_emd']:.8g}"
+        for sampler in samplers
+    )
     print(
         "Held-out stochastic EMD evaluation: "
         f"{source_day}->{heldout_day}, t={start_time:g}->{end_time:g}, "
         f"source_n={source.shape[0]}, target_n={target.shape[0]}, "
-        f"draws={n_draws}, direct_EMD={metrics['mfm/test_EMD']:.8g}, "
-        f"flowmap_EMD={metrics['mfm/test_EMD_flowmap']:.8g}"
+        f"draws={n_draws}, {sampler_summary}"
     )
-    return metrics, {
-        heldout_day: (
-            target,
-            first_prediction["direct"],
-            first_prediction["flowmap"],
-        )
-    }
+    predictions = tuple(first_prediction[sampler] for sampler in samplers)
+    return metrics, {heldout_day: (target, *predictions)}
 
 
 def pushforward_plot_data(
@@ -163,7 +180,7 @@ def pushforward_plot_data(
     *,
     seed: Optional[int] = None,
     max_points: Optional[int] = None,
-) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+) -> Dict[str, Tuple[np.ndarray, ...]]:
     """Sample the held-out population plot without calculating EMD."""
     seed = int(cfg.evaluation.seed if seed is None else seed)
     max_points = int(cfg.logging.maizels.plot_bs if max_points is None else max_points)
@@ -178,9 +195,21 @@ def pushforward_plot_data(
     target_all = np.asarray(pools[heldout_day]["x"], dtype=np.float32)
     source = source_all[_sample_indices(rng, source_all.shape[0], max_points)]
     target = target_all[_sample_indices(rng, target_all.shape[0], max_points)]
-    _, direct_key, flowmap_key = jax.random.split(jax.random.PRNGKey(seed), 3)
     start_time = cite_multi.normalized_time(source_day)
     end_time = cite_multi.normalized_time(heldout_day)
+    if shared_eval.uses_euler_maruyama_evaluation(cfg):
+        rollout = shared_eval.sample_euler_maruyama_pushforward(
+            model,
+            params,
+            source,
+            start_time,
+            end_time,
+            jax.random.PRNGKey(seed),
+            n_coefficients=int(cfg.ssfm.n_coefficients),
+            n_steps=shared_eval.euler_maruyama_n_steps(cfg),
+        )
+        return {heldout_day: (target, rollout)}
+    _, direct_key, flowmap_key = jax.random.split(jax.random.PRNGKey(seed), 3)
     direct = shared_eval.sample_pushforward(
         model,
         params,
@@ -255,22 +284,24 @@ def lineage_metrics(
     classifiers = _available_lineage_classifiers(cfg)
     if not classifiers:
         return {}
+    use_euler_maruyama = shared_eval.uses_euler_maruyama_evaluation(cfg)
     n_steps = int(cfg.evaluation.lineage_n_steps)
-    if n_steps <= 0:
+    if not use_euler_maruyama and n_steps <= 0:
         raise ValueError("evaluation.lineage_n_steps must be positive.")
+    sampler_tag = "euler_maruyama" if use_euler_maruyama else "flowmap"
 
     key = jax.random.PRNGKey(seed)
     valid_fractions = {name: [] for name in classifiers}
     for _ in range(int(cfg.evaluation.n_noise_draws)):
         key, draw_key = jax.random.split(key)
-        path = shared_eval.sample_composed_path(
+        path = shared_eval.sample_evaluation_path(
             model,
             params,
             source_x,
             cite_multi.normalized_time(cfg.problem.source_time),
             cite_multi.normalized_time(cfg.problem.target_time),
             draw_key,
-            n_coefficients=int(cfg.ssfm.n_coefficients),
+            cfg,
             n_steps=n_steps,
         )
         for name, classifier_path in classifiers.items():
@@ -294,9 +325,11 @@ def lineage_metrics(
         prefix = f"final_eval/{name}"
         metrics[f"{prefix}/stochastic_path_valid_fraction"] = mean
         metrics[f"{prefix}/stochastic_path_valid_fraction_std_over_noise"] = std
-        metrics[f"{prefix}/flowmap_valid_trajectory_pct"] = 100.0 * mean
-        metrics[f"{prefix}/flowmap_invalid_trajectory_pct"] = 100.0 * (1.0 - mean)
-        metrics[f"{prefix}/flowmap_valid_trajectory_pct_std_over_noise"] = 100.0 * std
+        metrics[f"{prefix}/{sampler_tag}_valid_trajectory_pct"] = 100.0 * mean
+        metrics[f"{prefix}/{sampler_tag}_invalid_trajectory_pct"] = 100.0 * (1.0 - mean)
+        metrics[f"{prefix}/{sampler_tag}_valid_trajectory_pct_std_over_noise"] = (
+            100.0 * std
+        )
     if "schedule_classifier" in valid_fractions:
         metrics["final_eval/stochastic_path_valid_fraction"] = metrics[
             "final_eval/schedule_classifier/stochastic_path_valid_fraction"
@@ -304,11 +337,11 @@ def lineage_metrics(
         metrics["final_eval/stochastic_path_valid_fraction_std_over_noise"] = metrics[
             "final_eval/schedule_classifier/stochastic_path_valid_fraction_std_over_noise"
         ]
-        metrics["final_eval/flowmap_valid_trajectory_pct"] = metrics[
-            "final_eval/schedule_classifier/flowmap_valid_trajectory_pct"
+        metrics[f"final_eval/{sampler_tag}_valid_trajectory_pct"] = metrics[
+            f"final_eval/schedule_classifier/{sampler_tag}_valid_trajectory_pct"
         ]
-        metrics["final_eval/flowmap_invalid_trajectory_pct"] = metrics[
-            "final_eval/schedule_classifier/flowmap_invalid_trajectory_pct"
+        metrics[f"final_eval/{sampler_tag}_invalid_trajectory_pct"] = metrics[
+            f"final_eval/schedule_classifier/{sampler_tag}_invalid_trajectory_pct"
         ]
     return metrics
 
@@ -321,9 +354,7 @@ def full_data_trajectory_plot_data(
     seed: Optional[int] = None,
 ):
     """Generate held-out day-2 trajectories and full-classifier validity."""
-    classifier_path = _classifier_npz(
-        cfg.logging.maizels.full_data_classifier_path
-    )
+    classifier_path = _classifier_npz(cfg.logging.maizels.full_data_classifier_path)
     if not classifier_path.is_file():
         print(
             "Skipping stochastic validity trajectory plot because the full-data "
@@ -337,14 +368,15 @@ def full_data_trajectory_plot_data(
     target = np.asarray(
         pools[str(cfg.problem.target_time)]["holdout_x"], dtype=np.float32
     )
-    generated = shared_eval.sample_composed_path(
+    use_euler_maruyama = shared_eval.uses_euler_maruyama_evaluation(cfg)
+    generated = shared_eval.sample_evaluation_path(
         model,
         params,
         source,
         cite_multi.normalized_time(cfg.problem.source_time),
         cite_multi.normalized_time(cfg.problem.target_time),
         jax.random.PRNGKey(seed),
-        n_coefficients=int(cfg.ssfm.n_coefficients),
+        cfg,
         n_steps=int(cfg.evaluation.lineage_n_steps),
     )
     validity = cite_multi.check_paths_with_classifier(
@@ -363,6 +395,11 @@ def full_data_trajectory_plot_data(
         "target": target,
         "source_day": str(cfg.problem.source_time),
         "target_day": str(cfg.problem.target_time),
+        "sampler_label": (
+            "Euler--Maruyama rollout"
+            if use_euler_maruyama
+            else "Composed SSFM trajectories"
+        ),
     }
 
 
@@ -422,7 +459,7 @@ def save_full_data_trajectory_plot(plot_data, output_path: Path) -> None:
     axis.set_xlabel("PC1")
     axis.set_ylabel("PC2")
     axis.set_title(
-        "Composed SSFM trajectories: "
+        f"{plot_data.get('sampler_label', 'Composed SSFM trajectories')}: "
         f"{100.0 * float(np.mean(valid)):.1f}% lineage-valid\n"
         "(full-data classifier)"
     )
@@ -446,6 +483,8 @@ def final_evaluation(model, params, cfg, output_dir: Path) -> Dict[str, float]:
             plot_data,
             Path(output_dir) / "heldout_pushforwards.png",
             flowmap_n_steps=int(cfg.evaluation.flowmap_n_steps),
+            euler_maruyama=shared_eval.uses_euler_maruyama_evaluation(cfg),
+            euler_maruyama_n_steps=shared_eval.euler_maruyama_n_steps(cfg),
         )
         trajectory_data = full_data_trajectory_plot_data(model, params, cfg)
         if trajectory_data is not None:

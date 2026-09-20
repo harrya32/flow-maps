@@ -264,11 +264,14 @@ def make_loss_fn(
 
     The EMA model is an internal consistency target, not a separately trained
     SDE teacher.  Direct constrained variants score the current model's
-    off-diagonal prediction.  Rollout-constrained variants instead compose the
-    current model's local Euler--Maruyama drift/diffusion steps and backpropagate
-    the classifier loss through the complete stochastic solver trajectory.
+    off-diagonal prediction.  The local-only rollout variant omits the
+    semigroup loss, independently samples its constraint interval, composes the
+    current model's Euler--Maruyama drift/diffusion steps, and backpropagates the
+    classifier loss through the complete stochastic solver trajectory.
     """
     eta = float(cfg.ssfm.local_fraction)
+    if not 0.0 < eta <= 1.0:
+        raise ValueError("ssfm.local_fraction must lie in (0, 1].")
     dt = float(cfg.ssfm.local_step_fraction)
     eps = float(cfg.ssfm.time_eps_fraction)
     max_horizon = float(cfg.ssfm.max_horizon_fraction)
@@ -288,6 +291,11 @@ def make_loss_fn(
     if constraints_enabled and classifier is None:
         raise ValueError("The constrained SSFM variant requires a classifier.")
     constraint_mode = _constraint_path_mode(cfg) if constraints_enabled else "none"
+    if constraint_mode == "direct" and eta >= 1.0:
+        raise ValueError(
+            "A direct off-diagonal SSFM constraint requires local_fraction < 1; "
+            "use a stochastic_rollout path_mode for local-only training."
+        )
     rollout_max_step = float(
         getattr(cfg.constraints, "stochastic_rollout_max_step", 0.05)
     )
@@ -316,16 +324,102 @@ def make_loss_fn(
             diffusion_scale=diffusion_scale,
         )
 
+    def scheduled_horizon_max(step, dtype):
+        if curriculum:
+            progress = jnp.clip(step / curriculum_steps, 0.0, 1.0)
+            progress = progress**curriculum_power
+            horizon_max = dt * (max_horizon / dt) ** progress
+        else:
+            progress = jnp.asarray(1.0, dtype=dtype)
+            horizon_max = jnp.asarray(max_horizon, dtype=dtype)
+        return jnp.asarray(horizon_max, dtype=dtype), jnp.asarray(progress, dtype=dtype)
+
+    def rollout_constraint_loss(params, batch_values, constraint_key, step):
+        """Sample an independent off-diagonal interval and roll the student."""
+        cx0, cx1, clabels = batch_values
+        constraint_bs = _stochastic_rollout_batch_size(cfg, cx0.shape[0])
+        # The constraint subset is independent of any semigroup partition and
+        # gets fresh times/noise, while retaining the same horizon curriculum.
+        cx0 = cx0[-constraint_bs:]
+        cx1 = cx1[-constraint_bs:]
+        clabels = clabels[-constraint_bs:]
+        key_h, key_tau, key_epsilon, key_rollout = jax.random.split(constraint_key, 4)
+
+        duration = jnp.maximum(clabels[:, 3] - clabels[:, 2], 1e-6)
+        horizon_max, horizon_progress = scheduled_horizon_max(step, cx0.dtype)
+        h_fraction = _sample_horizon(
+            key_h,
+            (constraint_bs,),
+            dt,
+            horizon_max,
+            log_uniform,
+        )
+        tau_start = eps + jax.random.uniform(
+            key_tau, (constraint_bs,), dtype=cx0.dtype
+        ) * jnp.maximum(1.0 - 2.0 * eps - h_fraction, 1e-6)
+        tau_end = tau_start + h_fraction
+        targets = interpolant_state(
+            cx0,
+            cx1,
+            tau_start,
+            duration,
+            key_epsilon,
+        )
+        start_time = clabels[:, 2] + tau_start * duration
+        end_time = clabels[:, 2] + tau_end * duration
+        path, transition_mask = stochastic_rollout_paths(
+            model,
+            params,
+            targets.state,
+            start_time,
+            end_time,
+            key_rollout,
+            n_coefficients=n_coefficients,
+            data_dim=data_dim,
+            max_step=rollout_max_step,
+            max_steps=rollout_max_steps,
+        )
+        rollout_mean_steps = jnp.mean(jnp.sum(transition_mask, axis=1))
+        rollout_mean_horizon = jnp.mean(tau_end - tau_start)
+        if rollout_scope == "endpoints":
+            path = jnp.stack([path[:, 0, :], path[:, -1, :]], axis=1)
+            transition_mask = jnp.ones((constraint_bs, 1), dtype=path.dtype)
+        lineage_loss, lineage_terms = lineage_loss_for_path(
+            path,
+            clabels,
+            classifier,
+            temperature=float(cfg.constraints.classifier_temperature),
+            lambda_start=float(cfg.constraints.lambda_start),
+            lambda_transition=float(cfg.constraints.lambda_transition),
+            lambda_final=float(cfg.constraints.lambda_final),
+            entropy_weight=float(cfg.constraints.loss_point_entropy_weight),
+            transition_mask=transition_mask,
+            backend=backend,
+        )
+        return (
+            lineage_loss,
+            lineage_terms,
+            rollout_mean_steps,
+            rollout_mean_horizon,
+            horizon_max,
+            horizon_progress,
+        )
+
     def loss_fn(params, ema_params, batch, key, step):
         x0 = batch["x0"]
         x1 = batch["x1"]
         labels = batch["label"]
         if x0.shape[0] < 2:
             raise ValueError("SSFM training batches require at least two examples.")
-        n_local = max(1, min(x0.shape[0] - 1, int(x0.shape[0] * eta)))
+        pure_local = eta >= 1.0
+        if pure_local:
+            n_local = x0.shape[0]
+            semigroup = None
+        else:
+            n_local = max(1, min(x0.shape[0] - 1, int(x0.shape[0] * eta)))
+            semigroup = (x0[n_local:], x1[n_local:], labels[n_local:])
         local = (x0[:n_local], x1[:n_local], labels[:n_local])
-        semigroup = (x0[n_local:], x1[n_local:], labels[n_local:])
-        key_local, key_semigroup = jax.random.split(key)
+        key_local, key_semigroup, key_constraint = jax.random.split(key, 3)
 
         def local_loss(batch_values, local_key):
             lx0, lx1, llabels = batch_values
@@ -367,16 +461,9 @@ def make_loss_fn(
                 key_epsilon,
                 key_left,
                 key_right,
-                key_rollout,
-            ) = jax.random.split(semigroup_key, 6)
+            ) = jax.random.split(semigroup_key, 5)
             duration = jnp.maximum(dlabels[:, 3] - dlabels[:, 2], 1e-6)
-            if curriculum:
-                progress = jnp.clip(step / curriculum_steps, 0.0, 1.0)
-                progress = progress**curriculum_power
-                horizon_max = dt * (max_horizon / dt) ** progress
-            else:
-                progress = jnp.asarray(1.0, dtype=dx0.dtype)
-                horizon_max = jnp.asarray(max_horizon, dtype=dx0.dtype)
+            horizon_max, progress = scheduled_horizon_max(step, dx0.dtype)
             h_fraction = _sample_horizon(
                 key_h,
                 (dx0.shape[0],),
@@ -437,35 +524,14 @@ def make_loss_fn(
                 "transition_valid_mass": lineage_loss,
                 "final_entropy_loss": lineage_loss,
             }
-            rollout_mean_steps = jnp.asarray(0.0, dtype=consistency.dtype)
-            if constraints_enabled:
-                if constraint_mode == "rollout":
-                    constraint_bs = _stochastic_rollout_batch_size(cfg, dx0.shape[0])
-                    path, transition_mask = stochastic_rollout_paths(
-                        model,
-                        params,
-                        targets.state[:constraint_bs],
-                        s[:constraint_bs],
-                        t[:constraint_bs],
-                        key_rollout,
-                        n_coefficients=n_coefficients,
-                        data_dim=data_dim,
-                        max_step=rollout_max_step,
-                        max_steps=rollout_max_steps,
-                    )
-                    rollout_mean_steps = jnp.mean(jnp.sum(transition_mask, axis=1))
-                    if rollout_scope == "endpoints":
-                        path = jnp.stack([path[:, 0, :], path[:, -1, :]], axis=1)
-                        transition_mask = jnp.ones((constraint_bs, 1), dtype=path.dtype)
-                else:
-                    constraint_bs = min(
-                        int(cfg.constraints.constraint_batch_size), dx0.shape[0]
-                    )
-                    path = jnp.stack(
-                        [targets.state[:constraint_bs], prediction[:constraint_bs]],
-                        axis=1,
-                    )
-                    transition_mask = None
+            if constraints_enabled and constraint_mode == "direct":
+                constraint_bs = min(
+                    int(cfg.constraints.constraint_batch_size), dx0.shape[0]
+                )
+                path = jnp.stack(
+                    [targets.state[:constraint_bs], prediction[:constraint_bs]],
+                    axis=1,
+                )
                 lineage_loss, lineage_terms = lineage_loss_for_path(
                     path,
                     dlabels[:constraint_bs],
@@ -475,7 +541,6 @@ def make_loss_fn(
                     lambda_transition=float(cfg.constraints.lambda_transition),
                     lambda_final=float(cfg.constraints.lambda_final),
                     entropy_weight=float(cfg.constraints.loss_point_entropy_weight),
-                    transition_mask=transition_mask,
                     backend=backend,
                 )
             return (
@@ -484,18 +549,43 @@ def make_loss_fn(
                 lineage_terms,
                 horizon_max,
                 progress,
-                rollout_mean_steps,
             )
 
         local_value = local_loss(local, key_local)
-        (
-            distill_value,
-            lineage_value,
-            lineage_terms,
-            horizon_max,
-            horizon_progress,
-            rollout_mean_steps,
-        ) = semigroup_loss(semigroup, key_semigroup)
+        zero = jnp.asarray(0.0, dtype=local_value.dtype)
+        lineage_terms = {
+            "transition_invalid_mass": zero,
+            "transition_valid_mass": zero,
+            "final_entropy_loss": zero,
+        }
+        distill_value = zero
+        lineage_value = zero
+        horizon_max = zero
+        horizon_progress = zero
+        rollout_mean_steps = zero
+        rollout_mean_horizon = zero
+        if not pure_local:
+            (
+                distill_value,
+                lineage_value,
+                lineage_terms,
+                horizon_max,
+                horizon_progress,
+            ) = semigroup_loss(semigroup, key_semigroup)
+        if constraints_enabled and constraint_mode == "rollout":
+            (
+                lineage_value,
+                lineage_terms,
+                rollout_mean_steps,
+                rollout_mean_horizon,
+                horizon_max,
+                horizon_progress,
+            ) = rollout_constraint_loss(
+                params,
+                (x0, x1, labels),
+                key_constraint,
+                step,
+            )
         ssfm_value = eta * local_value + (1.0 - eta) * distill_value
         total = ssfm_value + float(cfg.constraints.weight) * lineage_value
         metrics = {
@@ -509,6 +599,7 @@ def make_loss_fn(
             "lineage/transition_valid_mass": lineage_terms["transition_valid_mass"],
             "lineage/final_entropy": lineage_terms["final_entropy_loss"],
             "lineage/stochastic_rollout_mean_steps": rollout_mean_steps,
+            "lineage/stochastic_rollout_mean_horizon_fraction": rollout_mean_horizon,
             "training/horizon_max_fraction": horizon_max,
             "training/horizon_progress": horizon_progress,
         }

@@ -33,9 +33,9 @@ VARIANTS = (
         True,
     ),
     ("minibatch_ot_ssfm", "ot_plain", False, True),
-    # Stochastic analogue of deterministic constrained flow matching: train
-    # the same direct SSFM objective, but evaluate the lineage penalty after a
-    # differentiable Euler--Maruyama rollout of its local drift/diffusion map.
+    # Stochastic analogue of deterministic constrained flow matching: use only
+    # the local stochastic target and evaluate the lineage penalty after a
+    # differentiable Euler--Maruyama rollout of the learned local map.
     (
         "bio_prior_minibatch_ot_rollout_constrained_ssfm",
         "ot_endpoint",
@@ -142,7 +142,11 @@ def get_config(
         raise ValueError("gamma_scale must be positive.")
     if cfg.ssfm.diffusion_scale < 0.0:
         raise ValueError("diffusion_scale must be non-negative.")
-    cfg.ssfm.local_fraction = 0.75
+    # ID 6 is the stochastic analogue of constrained flow matching: train only
+    # the local Euler--Maruyama target and obtain its constraint path by a
+    # separate differentiable rollout.  Other IDs retain direct SSFM's 75/25
+    # local/semigroup split.
+    cfg.ssfm.local_fraction = 1.0 if rollout_constrained else 0.75
     cfg.ssfm.local_step_fraction = 0.02
     cfg.ssfm.time_eps_fraction = 0.005
     cfg.ssfm.max_horizon_fraction = 0.98
@@ -165,11 +169,9 @@ def get_config(
     cfg.constraints.path_n_times = 2
     cfg.constraints.constraint_batch_size = max(1, min(64, cfg.optimization.bs // 4))
     # The rollout uses the current model (never the EMA target) at every local
-    # Euler--Maruyama step.  A smaller default constraint sub-batch keeps the
-    # reverse-mode scan tractable; set 0 to reuse constraint_batch_size.
-    cfg.constraints.stochastic_rollout_batch_size = max(
-        1, min(16, cfg.optimization.bs // 4)
-    )
+    # Euler--Maruyama step.  Zero reuses constraint_batch_size, matching the
+    # effective constraint batch of the corresponding 75/25 direct variant.
+    cfg.constraints.stochastic_rollout_batch_size = 0
     cfg.constraints.stochastic_rollout_max_step = 0.01
     cfg.constraints.stochastic_rollout_max_steps = 0
     cfg.constraints.stochastic_rollout_loss_scope = "endpoints"
@@ -203,6 +205,9 @@ def get_config(
     cfg.evaluation.max_source_points = 0
     cfg.evaluation.max_target_points = 0
     cfg.evaluation.flowmap_n_steps = 50
+    # Local-only variants are evaluated with a fixed 50-step EM rollout,
+    # never as a direct or composed flow map.
+    cfg.evaluation.euler_maruyama_n_steps = 50
     # Match deterministic trajectory diagnostics: follow held-out D3 cells,
     # using every held-out cell when this cap exceeds the holdout size.
     cfg.evaluation.lineage_max_source_points = 512

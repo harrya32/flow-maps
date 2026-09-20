@@ -129,7 +129,7 @@ def get_config(
         raise ValueError("gamma_scale must be positive.")
     if cfg.ssfm.diffusion_scale < 0.0:
         raise ValueError("diffusion_scale must be non-negative.")
-    cfg.ssfm.local_fraction = 0.75
+    cfg.ssfm.local_fraction = 1.0 if rollout_constrained else 0.75
     cfg.ssfm.local_step_fraction = 0.02
     cfg.ssfm.time_eps_fraction = 0.005
     cfg.ssfm.max_horizon_fraction = 0.98
@@ -151,9 +151,9 @@ def get_config(
     )
     cfg.constraints.path_n_times = 2
     cfg.constraints.constraint_batch_size = max(1, min(64, cfg.optimization.bs // 4))
-    cfg.constraints.stochastic_rollout_batch_size = max(
-        1, min(16, cfg.optimization.bs // 4)
-    )
+    # Zero reuses constraint_batch_size, matching the effective batch used by
+    # the corresponding 75/25 direct-constraint variant.
+    cfg.constraints.stochastic_rollout_batch_size = 0
     cfg.constraints.stochastic_rollout_max_step = 0.01
     cfg.constraints.stochastic_rollout_max_steps = 0
     cfg.constraints.stochastic_rollout_loss_scope = "endpoints"
@@ -187,6 +187,7 @@ def get_config(
     cfg.evaluation.max_source_points = 0
     cfg.evaluation.max_target_points = 0
     cfg.evaluation.flowmap_n_steps = 100
+    cfg.evaluation.euler_maruyama_n_steps = 50
     cfg.evaluation.lineage_max_source_points = 0
     cfg.evaluation.lineage_n_steps = 100
     cfg.evaluation.seed = int(cfg.training.seed) + 2_901
