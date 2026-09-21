@@ -1,4 +1,4 @@
-"""Evaluation for LARRY strong stochastic flow maps in SPRING2D."""
+"""Evaluation for LARRY strong stochastic flow maps."""
 
 from __future__ import annotations
 
@@ -201,6 +201,7 @@ def distribution_metrics(
         f"final_eval/{tag}_{sampler}_emd_std_over_noise": float(np.std(emd_values)),
         f"final_eval/{tag}_{sampler}_rbf_mmd2": float(np.mean(mmd_values)),
         f"final_eval/{sampler}_mean_emd": mean_emd,
+        "final_eval/evaluation_mean_emd": mean_emd,
         # Preserve the sampler-neutral benchmark key.
         "mfm/test_EMD": mean_emd,
         f"mfm/test_EMD_{sampler}": mean_emd,
@@ -436,7 +437,10 @@ def clone_wasserstein_metrics(
     if not bool(cfg.evaluation.clone_wasserstein_enabled):
         return {}
     base_seed = int(cfg.evaluation.clone_seed if seed is None else seed)
-    data = larry.all_timepoint_data(cfg.problem.dataset_location)
+    data = larry.all_timepoint_data(
+        cfg.problem.dataset_location,
+        representation=str(cfg.problem.larry_representation),
+    )
     metrics = {}
     for index, target_time in enumerate(_clone_target_times(cfg)):
         metrics.update(
@@ -627,7 +631,7 @@ def save_pushforward_plot(
     euler_maruyama: bool = False,
     euler_maruyama_n_steps: int = 50,
 ) -> None:
-    """Plot actual and valid stochastic populations in SPRING space."""
+    """Plot actual and generated populations in the first two coordinates."""
     if not plot_data:
         return
     import matplotlib.pyplot as plt
@@ -641,23 +645,28 @@ def save_pushforward_plot(
         sharex=True,
         sharey=True,
     )
+    coordinate_labels = None
     for row, timepoint in enumerate(timepoints):
         actual, prediction = plot_data[timepoint]
+        if coordinate_labels is None:
+            coordinate_labels = (
+                ("SPRING-1", "SPRING-2") if actual.shape[-1] == 2 else ("PC1", "PC2")
+            )
         axes[row, 0].scatter(actual[:, 0], actual[:, 1], s=4, alpha=0.35)
         axes[row, 1].scatter(prediction[:, 0], prediction[:, 1], s=4, alpha=0.35)
-        axes[row, 0].set_ylabel(timepoint)
-        axes[row, 0].set_title("Actual" if row == 0 else "")
+        axes[row, 0].set_title(f"Actual {timepoint}")
         axes[row, 1].set_title(
-            (
+            f"{timepoint}: "
+            + (
                 f"Euler--Maruyama rollout ({int(euler_maruyama_n_steps)} steps)"
                 if euler_maruyama
                 else f"Composed SSFM ({flowmap_n_steps} steps)"
             )
-            if row == 0
-            else ""
         )
     for axis in axes[-1]:
-        axis.set_xlabel("SPRING-1")
+        axis.set_xlabel(coordinate_labels[0])
+    for axis in axes[:, 0]:
+        axis.set_ylabel(coordinate_labels[1])
     figure.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, dpi=180, bbox_inches="tight")
@@ -718,7 +727,7 @@ def full_data_trajectory_plot_data(
 
 
 def save_full_data_trajectory_plot(plot_data, output_path: Path) -> None:
-    """Plot SPRING trajectories by all-days-classifier validity."""
+    """Plot the first two trajectory coordinates by classifier validity."""
     if plot_data is None:
         return
     import matplotlib.pyplot as plt
@@ -770,8 +779,11 @@ def save_full_data_trajectory_plot(plot_data, output_path: Path) -> None:
         label="D2 holdout",
     )
     axis.autoscale_view()
-    axis.set_xlabel("SPRING-1")
-    axis.set_ylabel("SPRING-2")
+    coordinate_labels = (
+        ("SPRING-1", "SPRING-2") if source.shape[-1] == 2 else ("PC1", "PC2")
+    )
+    axis.set_xlabel(coordinate_labels[0])
+    axis.set_ylabel(coordinate_labels[1])
     axis.set_title(
         f"{plot_data.get('sampler_label', 'Composed SSFM trajectories')}: "
         f"{100.0 * float(np.mean(valid)):.1f}% lineage-valid"

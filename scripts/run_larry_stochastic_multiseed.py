@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run selected LARRY SPRING2D SSFM variants over multiple seeds.
+"""Run selected LARRY SSFM variants over multiple seeds.
 
 Runs are sequential so that they do not compete for one accelerator.  Each
 launcher writes a final-metrics JSON file; this wrapper maintains resumable
@@ -33,14 +33,14 @@ from scripts import run_maizels_stochastic_multiseed as runner_utils  # noqa: E4
 from scripts import sweep_maizels_hparams as sweep_utils  # noqa: E402
 
 
-DEFAULT_OBJECTIVE_METRIC = "final_eval/d2_to_d4_flowmap_emd"
+DEFAULT_OBJECTIVE_METRIC = "final_eval/evaluation_mean_emd"
 parse_slurm_ids = runner_utils.parse_slurm_ids
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run selected LARRY SPRING2D SSFM settings over multiple seeds "
+            "Run selected LARRY SSFM settings over multiple seeds "
             "and collect their population, lineage, and clonal metrics."
         )
     )

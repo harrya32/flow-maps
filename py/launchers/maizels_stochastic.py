@@ -411,6 +411,52 @@ def _json_scalars(values: Dict[str, object]) -> Dict[str, float]:
     return result
 
 
+def _suffix_metric_sections(metrics: Dict[str, float], suffix: str) -> Dict[str, float]:
+    """Append ``suffix`` to each top-level metric section."""
+    renamed = {}
+    for name, value in metrics.items():
+        section, separator, metric_name = name.partition("/")
+        renamed[
+            f"{section}{suffix}/{metric_name}" if separator else f"{name}{suffix}"
+        ] = value
+    return renamed
+
+
+def _evaluate_best_parameters(
+    model,
+    instantaneous_params,
+    ema_params,
+    cfg,
+    run_dir: Path,
+    evaluation_backend,
+) -> Dict[str, float]:
+    """Evaluate the selected EMA snapshot, plus raw weights when requested."""
+    compare_parameters = bool(
+        getattr(cfg.evaluation, "evaluate_instantaneous_and_ema", False)
+    )
+    if not compare_parameters:
+        return evaluation_backend.final_evaluation(model, ema_params, cfg, run_dir)
+    if instantaneous_params is None:
+        raise ValueError("Instantaneous best-step parameters were not retained.")
+
+    print("Evaluating instantaneous parameters at the best validation step.")
+    metrics = evaluation_backend.final_evaluation(
+        model,
+        instantaneous_params,
+        cfg,
+        run_dir / "final_eval",
+    )
+    print("Evaluating EMA parameters from the same best validation step.")
+    ema_metrics = evaluation_backend.final_evaluation(
+        model,
+        ema_params,
+        cfg,
+        run_dir / "final_eval_EMA",
+    )
+    metrics.update(_suffix_metric_sections(ema_metrics, "_EMA"))
+    return metrics
+
+
 def _wandb_setup(cfg, mode: Optional[str]):
     try:
         import wandb
@@ -603,7 +649,8 @@ def train(
     validation_key = jax.random.PRNGKey(int(cfg.logging.maizels.validation_seed) + 31)
     best_metric = math.inf
     best_step = 0
-    best_params = None
+    best_ema_params = None
+    best_instantaneous_params = None
     checks_without_improvement = 0
     started = time.monotonic()
 
@@ -676,7 +723,15 @@ def train(
                 if objective < best_metric - min_delta:
                     best_metric = objective
                     best_step = step
-                    best_params = jax.device_get(ema_params)
+                    best_ema_params = jax.device_get(ema_params)
+                    if bool(
+                        getattr(
+                            cfg.evaluation,
+                            "evaluate_instantaneous_and_ema",
+                            False,
+                        )
+                    ):
+                        best_instantaneous_params = jax.device_get(state.params)
                     checks_without_improvement = 0
                     _save_checkpoint(
                         run_dir / "best.msgpack",
@@ -719,7 +774,7 @@ def train(
         best_metric,
         best_step,
     )
-    if best_params is None:
+    if best_ema_params is None:
         validation, best_metric = _validation_loss_metrics(
             validation_step,
             state.params,
@@ -729,7 +784,9 @@ def train(
             int(state.step),
         )
         best_step = int(state.step)
-        best_params = jax.device_get(ema_params)
+        best_ema_params = jax.device_get(ema_params)
+        if bool(getattr(cfg.evaluation, "evaluate_instantaneous_and_ema", False)):
+            best_instantaneous_params = jax.device_get(state.params)
         _save_checkpoint(
             run_dir / "best.msgpack",
             state,
@@ -741,8 +798,13 @@ def train(
         )
 
     print(f"Evaluating best stochastic checkpoint from step {best_step}.")
-    final_metrics = evaluation_backend.final_evaluation(
-        model, best_params, cfg, run_dir
+    final_metrics = _evaluate_best_parameters(
+        model,
+        best_instantaneous_params,
+        best_ema_params,
+        cfg,
+        run_dir,
+        evaluation_backend,
     )
     final_metrics.update(
         {

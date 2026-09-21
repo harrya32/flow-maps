@@ -245,7 +245,7 @@ other lineage experiments: standard, endpoint-prior, endpoint-prior
 constrained, prior-filtered minibatch OT, its directly constrained version,
 plain minibatch OT, and rollout-constrained prior-filtered minibatch OT. Final
 population and classifier metrics use 50-step composed stochastic maps for
-IDs 0--5 and small-step Euler--Maruyama rollouts for local-only ID 6.
+IDs 0--5 and 50-step Euler--Maruyama rollouts for local-only ID 6.
 For every clone represented at D2 and a requested target day, the stochastic
 clone evaluator draws an equal number of independent futures from each D2
 cell, using the same sampler selected above, and compares their pooled
@@ -255,6 +255,30 @@ default; D4 remains the held-out
 interpolation test, whereas D6 is an endpoint diagnostic. The defaults are 32
 samples per source cell and three repeats, configurable with
 `--clone_samples_per_source` and `--clone_noise_draws`.
+
+The same stochastic catalogue is available in the 50-dimensional HVG-PCA
+space through `configs.larry_pca50_stochastic`. It selects the PCA50 H5AD and
+PCA50 classifier checkpoints automatically; all remaining model, coupling,
+constraint, training, and evaluation defaults are identical to SPRING2D:
+
+```bash
+python py/launchers/larry_stochastic.py \
+    --cfg_path configs.larry_pca50_stochastic \
+    --slurm_id 4 \
+    --dataset_location ~/Desktop/flow-maps-data \
+    --output_folder outputs/larry_pca50_stochastic
+```
+
+Population and clone Wasserstein distances from this configuration are
+measured in PCA50 space and are therefore not numerically comparable with the
+SPRING2D metrics. For both stochastic LARRY representations, final metrics
+from the instantaneous best-step parameters are logged under `final_eval/`,
+while metrics from the matching EMA snapshot are logged under
+`final_eval_EMA/`. Their plots are saved in matching subdirectories.
+
+The multiseed runner accepts the same configuration via
+`--cfg-path configs.larry_pca50_stochastic`; set `--output-dir` to a PCA50
+directory to keep its summaries separate from the SPRING2D runs.
 
 Run any selection of the seven LARRY stochastic settings over several seeds:
 

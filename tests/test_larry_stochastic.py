@@ -6,6 +6,7 @@ import pytest
 from common import larry
 from common import larry_stochastic_eval
 from configs import larry_pca50
+from configs import larry_pca50_stochastic
 from configs import larry_spring2d_stochastic
 from launchers import larry_stochastic as larry_stochastic_launcher
 from launchers import maizels_stochastic as shared_launcher
@@ -77,6 +78,74 @@ def test_config_uses_training_classifier_for_constraints_and_all_days_for_eval()
         "celltype_classifier_larry_spring2d_all_days.pt"
     )
     assert cfg.problem.flow_training_requires_classifier
+
+
+def test_pca50_stochastic_config_only_changes_larry_representation():
+    spring = larry_spring2d_stochastic.get_config(
+        4, total_steps=20, batch_size=8, n_pairs=24
+    )
+    pca = larry_pca50_stochastic.get_config(4, total_steps=20, batch_size=8, n_pairs=24)
+
+    assert pca.problem.target == "larry_pca50"
+    assert pca.problem.larry_representation == "pca50"
+    assert pca.problem.larry_representation_key == "X_pca"
+    assert pca.problem.d == 50
+    assert tuple(pca.network.input_dims) == (50,)
+    assert pca.network.output_dim == 50
+    assert Path(pca.problem.dataset_location).name == (
+        "stateFate_inVitro_hvg2000_pca50.h5ad"
+    )
+    assert Path(pca.problem.classifier_path).name == (
+        "celltype_classifier_larry_hvg2000_pca50_train_days_d2_d6.pt"
+    )
+    assert Path(pca.logging.maizels.full_data_classifier_path).name == (
+        "celltype_classifier_larry_hvg2000_pca50_all_days.pt"
+    )
+    assert pca.logging.output_name.startswith("larry_pca50_holdout_d4_")
+    assert pca.evaluation.evaluate_instantaneous_and_ema
+
+    assert pca.problem.maizels_pair_mode == spring.problem.maizels_pair_mode
+    assert pca.optimization.to_dict() == spring.optimization.to_dict()
+    assert pca.ssfm.to_dict() == spring.ssfm.to_dict()
+    assert pca.constraints.to_dict() == spring.constraints.to_dict()
+
+
+def test_final_evaluation_separates_instantaneous_and_ema_metrics(tmp_path):
+    cfg = larry_spring2d_stochastic.get_config(
+        0, total_steps=20, batch_size=8, n_pairs=24
+    )
+    calls = []
+
+    class FakeEvaluationBackend:
+        @staticmethod
+        def final_evaluation(model, params, cfg, output_dir):
+            del model, cfg
+            calls.append((params, Path(output_dir)))
+            value = float(params)
+            return {
+                "final_eval/evaluation_mean_emd": value,
+                "mfm/test_EMD": value + 1.0,
+            }
+
+    metrics = shared_launcher._evaluate_best_parameters(
+        object(),
+        2.0,
+        3.0,
+        cfg,
+        tmp_path,
+        FakeEvaluationBackend,
+    )
+
+    assert calls == [
+        (2.0, tmp_path / "final_eval"),
+        (3.0, tmp_path / "final_eval_EMA"),
+    ]
+    assert metrics == {
+        "final_eval/evaluation_mean_emd": 2.0,
+        "mfm/test_EMD": 3.0,
+        "final_eval_EMA/evaluation_mean_emd": 3.0,
+        "mfm_EMA/test_EMD": 4.0,
+    }
 
 
 def test_launcher_applies_clone_and_runtime_overrides():
@@ -253,6 +322,7 @@ def test_population_eval_uses_only_composed_stochastic_maps(monkeypatch):
     assert calls == [((3, 2), 50), ((3, 2), 50)]
     assert metrics["mfm/test_EMD"] == 2.0
     assert metrics["final_eval/d2_to_d4_flowmap_emd"] == 2.0
+    assert metrics["final_eval/evaluation_mean_emd"] == 2.0
     assert plot_data["D4"][0].shape == (5, 2)
     assert plot_data["D4"][1].shape == (3, 2)
 
@@ -305,6 +375,7 @@ def test_local_only_population_eval_uses_euler_maruyama(monkeypatch):
     assert seen == [50]
     assert metrics["mfm/test_EMD_euler_maruyama"] == 3.0
     assert metrics["final_eval/d2_to_d4_euler_maruyama_emd"] == 3.0
+    assert metrics["final_eval/evaluation_mean_emd"] == 3.0
     assert "final_eval/d2_to_d4_flowmap_emd" not in metrics
 
 

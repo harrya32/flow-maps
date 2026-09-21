@@ -12,18 +12,19 @@ from typing import Optional
 
 import ml_collections
 
-from . import larry_spring2d
+from common import larry
+from . import larry_pca50
 
 
 VARIANTS = (
     # name, endpoint pair mode, differentiable lineage loss, minibatch OT
     ("standard_ssfm", "none", False, False),
-    ("bio_prior_ssfm", "endpoint", False, False),
-    ("bio_prior_constrained_ssfm", "endpoint", True, False),
+    ("bio_prior_ssfm", "endpoint_interpolant", False, False),
+    ("bio_prior_constrained_ssfm", "endpoint_interpolant", True, False),
     ("bio_prior_minibatch_ot_ssfm", "ot_endpoint", False, True),
     (
         "bio_prior_minibatch_ot_constrained_ssfm",
-        "ot_endpoint",
+        "ot_endpoint_interpolant",
         True,
         True,
     ),
@@ -77,17 +78,19 @@ def get_config(
     ot_minibatch_size: Optional[int] = None,
     clone_samples_per_source: Optional[int] = None,
     clone_noise_draws: Optional[int] = None,
+    larry_representation: str = larry.SPRING2D_REPRESENTATION,
 ) -> ml_collections.ConfigDict:
-    """Return one of seven LARRY SPRING2D SSFM experiments."""
+    """Return one of seven LARRY SSFM experiments in one representation."""
     variant_name, pair_mode, constrained, minibatch_ot = VARIANTS[
         int(slurm_id) % len(VARIANTS)
     ]
     rollout_constrained = "rollout_constrained" in variant_name
     ot_size = 32 if ot_minibatch_size is None else int(ot_minibatch_size)
+    representation = larry.canonical_representation(larry_representation)
 
     # ID 0 is used only as a neutral source of LARRY data and classifier
     # metadata. The objective and pair modes are replaced below.
-    cfg = larry_spring2d.get_config(
+    cfg = larry_pca50.get_config(
         0,
         dataset_location=dataset_location,
         output_folder=output_folder,
@@ -96,13 +99,14 @@ def get_config(
         early_stopping_patience=early_stopping_patience,
         seed=seed,
         ot_minibatch_size=ot_size,
+        larry_representation=representation,
     )
 
     cfg.problem.maizels_pair_mode = pair_mode
     cfg.problem.pair_mode = pair_mode
     # Endpoint annotations, rather than deterministic straight-line paths,
     # provide the biological filter for a Gaussian-noised interpolant.
-    cfg.problem.n_interpolant_check_times = 0
+    cfg.problem.n_interpolant_check_times = 50
     if minibatch_ot:
         cfg.problem.maizels_ot_coupling = "minibatch_ot"
     cfg.problem.ot_minibatch_size = ot_size
@@ -125,11 +129,15 @@ def get_config(
         cfg.problem.full_data_classifier_path
     )
     if constrained and not cfg.problem.training_classifier_available:
+        representation_label = (
+            "SPRING2D" if representation == larry.SPRING2D_REPRESENTATION else "PCA50"
+        )
         raise FileNotFoundError(
-            "A constrained LARRY SPRING2D SSFM requires the D2/D6 classifier "
+            f"A constrained LARRY {representation_label} SSFM requires the "
+            "D2/D6 classifier "
             f"checkpoint at {cfg.problem.training_classifier_path}. Run "
             "`python scripts/train_larry_celltype_classifiers.py "
-            "--representation spring2d` first."
+            f"--representation {representation}` first."
         )
 
     cfg.optimization.bs = int(128 if batch_size is None else batch_size)
@@ -184,7 +192,6 @@ def get_config(
         if rollout_constrained
         else "direct_offdiagonal_endpoint_nll"
     )
-    cfg.constraints.path_n_times = 2
     cfg.constraints.constraint_batch_size = max(1, min(64, cfg.optimization.bs // 4))
     cfg.constraints.stochastic_rollout_batch_size = 0
     cfg.constraints.stochastic_rollout_max_step = 0.01
@@ -198,7 +205,7 @@ def get_config(
     cfg.constraints.lambda_final = 0.0
     cfg.constraints.classifier_temperature = 1.0
     cfg.constraints.loss_point_entropy_weight = float(
-        0.01 if entropy_weight is None else entropy_weight
+        0.0 if entropy_weight is None else entropy_weight
     )
     if constraint_weight is not None and not constrained:
         raise ValueError(
@@ -226,6 +233,10 @@ def get_config(
     cfg.evaluation.lineage_n_steps = 50
     cfg.evaluation.seed = int(cfg.training.seed) + 2_901
     cfg.evaluation.save_plot = True
+    # Compare the raw optimizer weights with their matching EMA snapshot at
+    # the validation-selected best step. Other stochastic datasets retain the
+    # existing EMA-only final evaluation unless they opt into this flag.
+    cfg.evaluation.evaluate_instantaneous_and_ema = False
 
     # Clone-conditioned evaluation draws an equal number of independent
     # stochastic trajectories from every D2 cell, while retaining every
@@ -273,7 +284,7 @@ def get_config(
     cfg.logging.scalar_freq = 50
     cfg.logging.progress_freq = 50
     cfg.logging.save_freq = 5_000
-    cfg.logging.wandb_name = f"larry_spring2d_holdout_d4_{variant_name}"
+    cfg.logging.wandb_name = f"larry_{representation}_holdout_d4_{variant_name}"
     cfg.logging.output_name = cfg.logging.wandb_name
     cfg.logging.comparison_mode = variant_name
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train strong stochastic flow maps on LARRY SPRING2D."""
+"""Train strong stochastic flow maps on a configured LARRY representation."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from launchers import maizels_stochastic as ssfm_launcher
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train a strong stochastic flow map on LARRY SPRING2D."
+        description="Train a strong stochastic flow map on LARRY."
     )
     parser.add_argument(
         "--cfg-path", "--cfg_path", default="configs.larry_spring2d_stochastic"
@@ -196,14 +196,20 @@ def _build_config(args: argparse.Namespace):
 def main(argv=None) -> int:
     args = parse_args(argv)
     cfg = _build_config(args)
+    representation = larry.canonical_representation(
+        getattr(cfg.problem, "larry_representation", larry.PCA50_REPRESENTATION)
+    )
+    representation_label = (
+        "SPRING2D" if representation == larry.SPRING2D_REPRESENTATION else "PCA50"
+    )
     ssfm_launcher.train(
         cfg,
         final_metrics_path=args.final_metrics_path,
         wandb_mode=args.wandb_mode,
         data_backend=larry,
         evaluation_backend=larry_stochastic_eval,
-        dataset_label="LARRY SPRING2D",
-        default_output_folder="outputs/larry_spring2d_stochastic",
+        dataset_label=f"LARRY {representation_label}",
+        default_output_folder=f"outputs/larry_{representation}_stochastic",
         trajectory_tag="heldout_d2",
     )
     return 0
