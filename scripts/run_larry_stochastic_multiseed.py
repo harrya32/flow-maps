@@ -66,6 +66,22 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=str(larry.DEFAULT_DATA_DIR),
     )
     parser.add_argument(
+        "--larry-clone-labelled-only",
+        "--larry_clone_labelled_only",
+        action="store_true",
+        help=(
+            "Use the cached clone-labelled-only PCA and classifiers for PCA "
+            "runs. Missing artifacts are prepared by the first run."
+        ),
+    )
+    parser.add_argument(
+        "--larry-n-pcs",
+        "--larry_n_pcs",
+        type=int,
+        default=None,
+        help="Number of PCs for PCA-space LARRY runs (default: 50).",
+    )
+    parser.add_argument(
         "--output-dir",
         default="outputs/larry_spring2d_stochastic_multiseed",
     )
@@ -86,6 +102,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--batch-size", "--batch_size", type=int)
     parser.add_argument("--n-pairs", "--n_pairs", type=int)
     parser.add_argument("--ot-minibatch-size", "--ot_minibatch_size", type=int)
+    parser.add_argument(
+        "--interpolant-check-times", "--interpolant_check_times", type=int
+    )
     parser.add_argument("--validation-frequency", "--validation_frequency", type=int)
     parser.add_argument(
         "--early-stopping-patience", "--early_stopping_patience", type=int
@@ -102,6 +121,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
     )
     parser.add_argument("--clone-noise-draws", "--clone_noise_draws", type=int)
+    parser.add_argument(
+        "--clone-min-source-cells", "--clone_min_source_cells", type=int
+    )
+    parser.add_argument(
+        "--clone-min-target-cells", "--clone_min_target_cells", type=int
+    )
     parser.add_argument(
         "--clone-target-times",
         "--clone_target_times",
@@ -143,6 +168,7 @@ def build_command(
     seed: int,
     constrained: bool,
     minibatch_ot: bool,
+    interpolant_filter: bool,
     output_folder: Path,
     metrics_path: Path,
 ) -> List[str]:
@@ -163,6 +189,9 @@ def build_command(
         "--final_metrics_path",
         str(metrics_path),
     ]
+    if args.larry_clone_labelled_only:
+        command.append("--larry_clone_labelled_only")
+    _optional_arg(command, "--larry_n_pcs", args.larry_n_pcs)
     _optional_arg(command, "--classifier_path", args.classifier_path)
     _optional_arg(
         command, "--full_data_classifier_path", args.full_data_classifier_path
@@ -175,6 +204,10 @@ def build_command(
         _optional_arg(command, "--entropy_weight", args.entropy_weight)
     if minibatch_ot:
         _optional_arg(command, "--ot_minibatch_size", args.ot_minibatch_size)
+    if interpolant_filter:
+        _optional_arg(
+            command, "--interpolant_check_times", args.interpolant_check_times
+        )
     _optional_arg(command, "--total_steps", args.total_steps)
     _optional_arg(command, "--batch_size", args.batch_size)
     _optional_arg(command, "--n_pairs", args.n_pairs)
@@ -186,6 +219,8 @@ def build_command(
     _optional_arg(command, "--eval_flowmap_steps", args.eval_flowmap_steps)
     _optional_arg(command, "--clone_samples_per_source", args.clone_samples_per_source)
     _optional_arg(command, "--clone_noise_draws", args.clone_noise_draws)
+    _optional_arg(command, "--clone_min_source_cells", args.clone_min_source_cells)
+    _optional_arg(command, "--clone_min_target_cells", args.clone_min_target_cells)
     _optional_arg(command, "--clone_target_times", args.clone_target_times)
     _optional_arg(command, "--clone_eval_batch_size", args.clone_eval_batch_size)
     _optional_arg(command, "--visual_frequency", args.visual_frequency)
@@ -200,6 +235,7 @@ def _setting_id(
     variant_name: str,
     constrained: bool,
     minibatch_ot: bool,
+    interpolant_filter: bool,
 ) -> str:
     ignored = {
         "slurm_ids",
@@ -219,6 +255,8 @@ def _setting_id(
         payload.pop("entropy_weight", None)
     if not minibatch_ot:
         payload.pop("ot_minibatch_size", None)
+    if not interpolant_filter:
+        payload.pop("interpolant_check_times", None)
     payload["slurm_id"] = int(slurm_id)
     digest = hashlib.sha1(
         json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
@@ -246,12 +284,16 @@ def _validate_numeric_args(args: argparse.Namespace) -> None:
         "batch_size",
         "n_pairs",
         "ot_minibatch_size",
+        "interpolant_check_times",
         "validation_frequency",
         "eval_noise_draws",
         "eval_flowmap_steps",
         "clone_samples_per_source",
         "clone_noise_draws",
+        "clone_min_source_cells",
+        "clone_min_target_cells",
         "clone_eval_batch_size",
+        "larry_n_pcs",
     )
     for name in positive:
         value = getattr(args, name)
@@ -305,17 +347,21 @@ def main(argv=None) -> int:
         variant_name = str(spec["variant_name"])
         constrained = bool(spec.get("constraint_weight", False))
         minibatch_ot = bool(spec.get("minibatch_ot", False))
+        interpolant_filter = bool(spec.get("interpolant_filter", False))
         setting_id = _setting_id(
             args,
             slurm_id=slurm_id,
             variant_name=variant_name,
             constrained=constrained,
             minibatch_ot=minibatch_ot,
+            interpolant_filter=interpolant_filter,
         )
         setting = {
             "setting_id": setting_id,
             "slurm_id": int(slurm_id),
             "variant_name": variant_name,
+            "larry_clone_labelled_only": bool(args.larry_clone_labelled_only),
+            "larry_n_pcs": args.larry_n_pcs or larry.DEFAULT_N_PCS,
             "learning_rate": (
                 args.learning_rate if args.learning_rate is not None else "default"
             ),
@@ -340,6 +386,11 @@ def main(argv=None) -> int:
                 if minibatch_ot and args.ot_minibatch_size is not None
                 else "default" if minibatch_ot else ""
             ),
+            "interpolant_check_times": (
+                args.interpolant_check_times
+                if interpolant_filter and args.interpolant_check_times is not None
+                else "default" if interpolant_filter else ""
+            ),
             "clone_samples_per_source": (
                 args.clone_samples_per_source
                 if args.clone_samples_per_source is not None
@@ -350,21 +401,33 @@ def main(argv=None) -> int:
                 if args.clone_noise_draws is not None
                 else "default"
             ),
+            "clone_min_source_cells": (
+                args.clone_min_source_cells
+                if args.clone_min_source_cells is not None
+                else "default"
+            ),
+            "clone_min_target_cells": (
+                args.clone_min_target_cells
+                if args.clone_min_target_cells is not None
+                else "default"
+            ),
             "clone_target_times": args.clone_target_times or "default",
         }
         settings.append(setting)
         for seed in seeds:
-            planned_runs.append((setting, constrained, minibatch_ot, int(seed)))
+            planned_runs.append(
+                (setting, constrained, minibatch_ot, interpolant_filter, int(seed))
+            )
 
     if (args.constraint_weight is not None or args.entropy_weight is not None) and any(
-        not constrained for _, constrained, _, _ in planned_runs
+        not constrained for _, constrained, _, _, _ in planned_runs
     ):
         print(
             "Constraint/entropy overrides will be applied only to constrained "
             "settings."
         )
     if args.ot_minibatch_size is not None and any(
-        not minibatch_ot for _, _, minibatch_ot, _ in planned_runs
+        not minibatch_ot for _, _, minibatch_ot, _, _ in planned_runs
     ):
         print("The OT minibatch override will be applied only to OT settings.")
 
@@ -373,7 +436,7 @@ def main(argv=None) -> int:
         f"Planned {len(slurm_ids)} setting(s) x {len(seeds)} seed(s) "
         f"= {total_runs} sequential runs."
     )
-    for index, (setting, constrained, minibatch_ot, seed) in enumerate(
+    for index, (setting, constrained, minibatch_ot, interpolant_filter, seed) in enumerate(
         planned_runs, start=1
     ):
         setting_id = str(setting["setting_id"])
@@ -404,6 +467,7 @@ def main(argv=None) -> int:
             seed=seed,
             constrained=constrained,
             minibatch_ot=minibatch_ot,
+            interpolant_filter=interpolant_filter,
             output_folder=checkpoint_root,
             metrics_path=metrics_path,
         )

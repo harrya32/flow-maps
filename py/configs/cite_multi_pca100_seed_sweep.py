@@ -18,6 +18,7 @@ def get_config(
     output_folder: str = "",
     dataset_name: str | None = None,
     heldout_day: str | int | None = None,
+    cite_multi_time_mode: str | None = None,
     classifier_path: str | None = None,
     full_data_classifier_path: str | None = None,
 ):
@@ -27,6 +28,7 @@ def get_config(
         output_folder,
         dataset_name=dataset_name,
         heldout_day=heldout_day,
+        cite_multi_time_mode=cite_multi_time_mode,
         classifier_path=classifier_path,
         full_data_classifier_path=full_data_classifier_path,
     )

@@ -1503,8 +1503,16 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             if stats.get("coupling") == "dynamic_minibatch_ot"
             else ""
         )
+        larry_representation = str(
+            getattr(cfg.problem, "larry_representation", "pca50")
+        )
+        larry_representation_label = (
+            f"pca{int(getattr(cfg.problem, 'n_pcs', larry.DEFAULT_N_PCS))}"
+            if larry_representation == larry.PCA50_REPRESENTATION
+            else larry_representation
+        )
         print(
-            f"Loaded LARRY {getattr(cfg.problem, 'larry_representation', 'pca50')} "
+            f"Loaded LARRY {larry_representation_label} "
             "pairs: "
             f"training_days=D2,D6, heldout_day=D4, mode={pair_mode}, "
             f"pairs={cfg.problem.n}, dim={cfg.problem.d}{coupling_summary}"
@@ -1589,6 +1597,11 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
                 f"{stats['stored_endpoint_bytes'] / 1e6:.1f} MB"
             )
         if "intervals" in stats:
+            clock_mode = getattr(
+                cfg.problem,
+                "cite_multi_time_mode",
+                getattr(cfg.problem, "maizels_time_mode", "real_time"),
+            )
             interval_summary = ", ".join(
                 f"{item['source_time']}->{item['target_time']}: "
                 f"{item['sampled_pairs']} pairs"
@@ -1602,7 +1615,7 @@ def setup_target(cfg: config_dict.ConfigDict, prng_key: jnp.ndarray):
             print(
                 "Loaded Maizels PCA50 interval pairs: "
                 f"schedule={getattr(cfg.problem, 'maizels_schedule', 'custom')}, "
-                f"clock={getattr(cfg.problem, 'maizels_time_mode', 'real_time')}, "
+                f"clock={clock_mode}, "
                 f"mode={getattr(cfg.problem, 'maizels_pair_mode', 'none')}, "
                 f"total_pairs={cfg.problem.n}{coupling_summary}, "
                 f"candidate_acceptance={stats['candidate_acceptance_rate']:.4f}, "

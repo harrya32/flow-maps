@@ -1,0 +1,37 @@
+# Endpoint-only SF2M baseline on Maizels PCA50 (D3 -> D8).
+data_type: "maizels"
+data_name: "maizels"
+accelerator: "gpu"
+dim: 50
+t_exclude: null
+whiten: false
+
+maizels_schedule: "d3_d8"
+maizels_time_mode: "real_time"
+maizels_pair_mode: "none"
+maizels_holdout_fraction: 0.1
+
+hidden_dims_flow: [1024, 1024, 1024]
+activation_flow: "selu"
+flow_optimizer: "adamw"
+flow_lr: 0.001
+flow_weight_decay: 0.00001
+batch_size: 128
+patience: 10
+
+mfm: false
+sf2m: true
+sf2m_sigma: 0.2
+sf2m_ot_method: "exact"
+sf2m_score_weight: 1.0
+sf2m_time_eps: 0.001
+optimal_transport_method: "None"
+
+max_steps: 10000
+val_check_interval: 100
+seeds: [0, 1, 2, 3, 4]
+
+maizels_eval_every_n_steps: 500
+maizels_eval_euler_steps: 50
+maizels_eval_points_per_time: 1024
+wandb_project: "self-distill-flow-maps"

@@ -78,8 +78,8 @@ def distribution_metrics(
     target_all = np.asarray(pools[heldout_day]["x"], dtype=np.float32)
     source = source_all[_sample_indices(rng, source_all.shape[0], max_source_points)]
     target = target_all[_sample_indices(rng, target_all.shape[0], max_target_points)]
-    start_time = cite_multi.normalized_time(source_day)
-    end_time = cite_multi.normalized_time(heldout_day)
+    start_time = cite_multi.normalized_time(source_day, cfg)
+    end_time = cite_multi.normalized_time(heldout_day, cfg)
     key = jax.random.PRNGKey(seed)
     samplers = ("euler_maruyama",) if use_euler_maruyama else ("direct", "flowmap")
     emd_values = {name: [] for name in samplers}
@@ -195,8 +195,8 @@ def pushforward_plot_data(
     target_all = np.asarray(pools[heldout_day]["x"], dtype=np.float32)
     source = source_all[_sample_indices(rng, source_all.shape[0], max_points)]
     target = target_all[_sample_indices(rng, target_all.shape[0], max_points)]
-    start_time = cite_multi.normalized_time(source_day)
-    end_time = cite_multi.normalized_time(heldout_day)
+    start_time = cite_multi.normalized_time(source_day, cfg)
+    end_time = cite_multi.normalized_time(heldout_day, cfg)
     if shared_eval.uses_euler_maruyama_evaluation(cfg):
         rollout = shared_eval.sample_euler_maruyama_pushforward(
             model,
@@ -298,8 +298,8 @@ def lineage_metrics(
             model,
             params,
             source_x,
-            cite_multi.normalized_time(cfg.problem.source_time),
-            cite_multi.normalized_time(cfg.problem.target_time),
+            cite_multi.normalized_time(cfg.problem.source_time, cfg),
+            cite_multi.normalized_time(cfg.problem.target_time, cfg),
             draw_key,
             cfg,
             n_steps=n_steps,
@@ -373,8 +373,8 @@ def full_data_trajectory_plot_data(
         model,
         params,
         source,
-        cite_multi.normalized_time(cfg.problem.source_time),
-        cite_multi.normalized_time(cfg.problem.target_time),
+        cite_multi.normalized_time(cfg.problem.source_time, cfg),
+        cite_multi.normalized_time(cfg.problem.target_time, cfg),
         jax.random.PRNGKey(seed),
         cfg,
         n_steps=int(cfg.evaluation.lineage_n_steps),
@@ -477,6 +477,14 @@ def final_evaluation(model, params, cfg, output_dir: Path) -> Dict[str, float]:
     """Run held-out-population and full-trajectory evaluation."""
     distribution, plot_data = distribution_metrics(model, params, cfg)
     metrics = dict(distribution)
+    metrics.update(
+        shared_eval.observed_distribution_metrics(
+            model,
+            params,
+            cfg,
+            data_backend=cite_multi,
+        )
+    )
     metrics.update(lineage_metrics(model, params, cfg))
     if bool(cfg.evaluation.save_plot):
         save_pushforward_plot(

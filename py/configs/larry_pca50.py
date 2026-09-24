@@ -1,4 +1,4 @@
-"""LARRY in-vitro D2--D6 flow maps with held-out D4 evaluation.
+"""LARRY in-vitro PCA flow maps with held-out D4 evaluation.
 
 The active jobs compare independent and minibatch-OT couplings, optional
 endpoint/interpolant lineage filtering, and the differentiable lineage
@@ -108,6 +108,8 @@ def get_config(
     seed: int | None = None,
     ot_minibatch_size: int | None = None,
     larry_representation: str = larry.PCA50_REPRESENTATION,
+    larry_clone_labelled_only: bool = False,
+    larry_n_pcs: int | None = None,
 ) -> ml_collections.ConfigDict:
     """Return an active LARRY flow-map configuration."""
     slurm_id = int(slurm_id)
@@ -118,14 +120,47 @@ def get_config(
     variant_name = ACTIVE_VARIANTS[slurm_id]
     base_id, pair_mode, constrained, path_mode = VARIANT_CATALOG[variant_name]
     representation = larry.canonical_representation(larry_representation)
-    representation_dim = larry.representation_dim(representation)
+    clone_labelled_only = bool(larry_clone_labelled_only)
+    if clone_labelled_only and representation != larry.PCA50_REPRESENTATION:
+        raise ValueError(
+            "larry_clone_labelled_only is supported only for the PCA "
+            "representation."
+        )
     is_spring = representation == larry.SPRING2D_REPRESENTATION
-    representation_label = "SPRING2D" if is_spring else "PCA50"
+    if is_spring:
+        if larry_n_pcs is not None:
+            raise ValueError("larry_n_pcs is available only for PCA experiments.")
+        representation_dim = larry.DEFAULT_SPRING_DIM
+    else:
+        representation_dim = int(
+            larry.DEFAULT_N_PCS if larry_n_pcs is None else larry_n_pcs
+        )
+        if representation_dim <= 0:
+            raise ValueError("larry_n_pcs must be positive.")
+        if representation_dim >= larry.DEFAULT_N_HVGS:
+            raise ValueError(
+                "larry_n_pcs must be smaller than the number of selected HVGs "
+                f"({larry.DEFAULT_N_HVGS})."
+            )
+    representation_label = "SPRING2D" if is_spring else f"PCA{representation_dim}"
+    representation_tag = "spring2d" if is_spring else f"pca{representation_dim}"
 
     resolved_dataset = larry.resolve_dataset_path(
         dataset_location,
+        n_pcs=representation_dim,
         representation=representation,
+        clone_labelled_only=clone_labelled_only,
     )
+    requested_location = (
+        larry.DEFAULT_DATA_DIR
+        if dataset_location in (None, "")
+        else Path(str(dataset_location)).expanduser()
+    )
+    raw_data_dir = (
+        requested_location.parent
+        if requested_location.suffix.lower() == ".h5ad"
+        else requested_location
+    ).resolve()
     # LARRY OT jobs are dynamic minibatch OT by default. An explicit launcher
     # override may still request the global solver for diagnostic comparisons.
     if maizels_ot_coupling is None:
@@ -146,15 +181,32 @@ def get_config(
     # Dataset and D2--D6 training schedule. D4 is represented on the global
     # clock but is absent from every training and validation pair pool.
     cfg.problem.target = "larry_spring2d" if is_spring else "larry_pca50"
-    cfg.problem.dataset_name = "larry_invitro"
+    subset_suffix = "_clone_labelled" if clone_labelled_only else ""
+    cfg.problem.dataset_name = f"larry_invitro{subset_suffix}"
     cfg.problem.lineage_dataset_name = (
-        "larry_invitro_spring2d" if is_spring else "larry_invitro_hvg2000_pca50"
+        "larry_invitro_spring2d"
+        if is_spring
+        else (
+            f"larry_invitro{subset_suffix}_hvg{larry.DEFAULT_N_HVGS}_"
+            f"pca{representation_dim}"
+        )
     )
     cfg.problem.dataset_location = str(resolved_dataset)
-    cfg.problem.larry_filename = (
-        larry.DEFAULT_SPRING_FILENAME if is_spring else larry.DEFAULT_FILENAME
-    )
+    cfg.problem.larry_filename = resolved_dataset.name
     cfg.problem.larry_representation = representation
+    cfg.problem.larry_clone_labelled_only = clone_labelled_only
+    cfg.problem.larry_auto_prepare_artifacts = bool(
+        not is_spring
+        and (clone_labelled_only or larry_n_pcs is not None)
+    )
+    cfg.problem.larry_raw_data_dir = str(raw_data_dir)
+    # Representation/classifier preprocessing is shared by every flow-model
+    # seed, so keep its seed fixed rather than inheriting cfg.training.seed.
+    cfg.problem.larry_artifact_seed = 0
+    cfg.problem.larry_classifier_batch_size = 512
+    cfg.problem.larry_classifier_max_epochs = 100
+    cfg.problem.larry_classifier_patience = 20
+    cfg.problem.larry_classifier_device = "cpu"
     cfg.problem.larry_representation_key = larry.representation_key(representation)
     cfg.problem.representation_dim = representation_dim
     cfg.problem.n_hvgs = 0 if is_spring else larry.DEFAULT_N_HVGS
@@ -207,24 +259,42 @@ def get_config(
         "LARRY_LINEAGE_TRANSITION_MODE", "descendant"
     )
 
+    if clone_labelled_only and representation_dim == larry.DEFAULT_N_PCS:
+        training_classifier_env = "LARRY_CLONE_CLASSIFIER_PATH"
+        full_data_classifier_env = "LARRY_CLONE_FULL_DATA_CLASSIFIER_PATH"
+    elif clone_labelled_only:
+        training_classifier_env = f"LARRY_CLONE_PCA{representation_dim}_CLASSIFIER_PATH"
+        full_data_classifier_env = (
+            f"LARRY_CLONE_PCA{representation_dim}_FULL_DATA_CLASSIFIER_PATH"
+        )
+    elif representation_dim != larry.DEFAULT_N_PCS:
+        training_classifier_env = f"LARRY_PCA{representation_dim}_CLASSIFIER_PATH"
+        full_data_classifier_env = (
+            f"LARRY_PCA{representation_dim}_FULL_DATA_CLASSIFIER_PATH"
+        )
+    else:
+        training_classifier_env = "LARRY_CLASSIFIER_PATH"
+        full_data_classifier_env = "LARRY_FULL_DATA_CLASSIFIER_PATH"
     training_classifier = _optional_path(
         classifier_path,
-        "LARRY_CLASSIFIER_PATH",
+        training_classifier_env,
     ) or str(
         larry.classifier_checkpoint_path(
             training_timepoints=("D2", "D6"),
             representation=representation,
             n_pcs=representation_dim,
+            clone_labelled_only=clone_labelled_only,
         )
     )
     evaluation_classifier = _optional_path(
         full_data_classifier_path,
-        "LARRY_FULL_DATA_CLASSIFIER_PATH",
+        full_data_classifier_env,
     ) or str(
         larry.classifier_checkpoint_path(
             all_days=True,
             representation=representation,
             n_pcs=representation_dim,
+            clone_labelled_only=clone_labelled_only,
         )
     )
     cfg.problem.flow_training_requires_classifier = (
@@ -235,6 +305,7 @@ def get_config(
     if (
         cfg.problem.flow_training_requires_classifier
         and not training_classifier_available
+        and not cfg.problem.larry_auto_prepare_artifacts
     ):
         raise FileNotFoundError(
             f"LARRY {representation_label} variant {variant_name!r} requires "
@@ -242,6 +313,7 @@ def get_config(
             "Run `conda run -n mfm_env python "
             "scripts/train_larry_celltype_classifiers.py"
             + (" --representation spring2d" if is_spring else "")
+            + (" --clone-labelled-only" if clone_labelled_only else "")
             + "` first, or provide "
             "--classifier_path."
         )
@@ -258,7 +330,10 @@ def get_config(
     cfg.network.output_dim = representation_dim
     cfg.network.input_dims = (representation_dim,)
 
-    run_name = f"larry_invitro_{representation}_holdout_d4_{variant_name}"
+    subset_tag = "_clone_labelled" if clone_labelled_only else ""
+    run_name = (
+        f"larry_invitro_{representation_tag}{subset_tag}_holdout_d4_{variant_name}"
+    )
     cfg.logging.wandb_name = run_name
     cfg.logging.output_name = run_name
     cfg.logging.comparison_mode = variant_name
@@ -289,6 +364,7 @@ def get_config(
         "`conda run -n mfm_env python "
         "scripts/train_larry_celltype_classifiers.py"
         + (" --representation spring2d" if is_spring else "")
+        + (" --clone-labelled-only" if clone_labelled_only else "")
         + "`."
         if not evaluation_classifier_available
         else ""

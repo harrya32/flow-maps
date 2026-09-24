@@ -6,9 +6,10 @@ variants.  ``dataset_name`` selects CITE or Multi, while ``heldout_day`` selects
 which internal population is excluded from training and used for trajectory
 evaluation.
 
-The original four timepoints are assigned the traditional MFM clock
-``2 -> 0, 3 -> 1/3, 4 -> 2/3, 7 -> 1``.  Training pairs are balanced across
-the two adjacent intervals remaining after one internal day is removed.
+The clock is configurable: ``equal_time`` assigns the four observations to
+``0, 1/3, 2/3, 1``, whereas ``real_time`` normalizes elapsed days to
+``0, 1/5, 2/5, 1``. Training pairs are balanced across the two adjacent
+intervals remaining after one internal day is removed.
 """
 
 from __future__ import annotations
@@ -62,6 +63,7 @@ def get_config(
     output_folder: str = "",
     dataset_name: str | None = None,
     heldout_day: str | int | None = None,
+    cite_multi_time_mode: str | None = None,
     classifier_path: str | None = None,
     full_data_classifier_path: str | None = None,
 ) -> ml_collections.ConfigDict:
@@ -76,6 +78,11 @@ def get_config(
     )
     if heldout_day not in ("3", "4"):
         raise ValueError("heldout_day must be 3 or 4.")
+    time_mode = cite_multi.canonical_time_mode(
+        cite_multi_time_mode
+        if cite_multi_time_mode is not None
+        else os.getenv("CITE_MULTI_TIME_MODE", cite_multi.DEFAULT_TIME_MODE)
+    )
 
     cfg = _maizels_config(slurm_id, dataset_location, output_folder)
     variant_name = str(cfg.logging.comparison_mode)
@@ -94,14 +101,18 @@ def get_config(
     cfg.problem.source_time = "2"
     cfg.problem.target_time = "7"
     cfg.problem.heldout_timepoint = heldout_day
+    cfg.problem.cite_multi_time_mode = time_mode
+    # Shared Maizels-derived logging utilities still inspect this legacy field.
+    cfg.problem.maizels_time_mode = time_mode
     cfg.problem.maizels_holdout_fraction = 0.1
     cfg.problem.cite_multi_train_fraction = 0.9
     cfg.problem.retained_timepoints = list(
         timepoint for timepoint in cite_multi.TIMEPOINTS if timepoint != heldout_day
     )
     cfg.problem.timepoint_order = list(cite_multi.TIMEPOINTS)
+    time_map = cite_multi.normalized_time_map(time_mode)
     cfg.problem.timepoint_values = [
-        cite_multi.NORMALIZED_TIMES[timepoint] for timepoint in cite_multi.TIMEPOINTS
+        time_map[timepoint] for timepoint in cite_multi.TIMEPOINTS
     ]
     cfg.problem.interp_type = "time_rescaled_linear"
     cfg.problem.interp_uses_labels = True
@@ -138,7 +149,7 @@ def get_config(
     )
 
     cfg.logging.wandb_name = (
-        f"{dataset_name}_pca100_holdout_day{heldout_day}_{variant_name}"
+        f"{dataset_name}_pca100_holdout_day{heldout_day}_{time_mode}_{variant_name}"
     )
     cfg.logging.output_name = cfg.logging.wandb_name
     cfg.logging.comparison_mode = variant_name

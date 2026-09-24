@@ -8,6 +8,30 @@ from torchcfm.optimal_transport import OTPlanSampler
 from pytorch_lightning.utilities.combined_loader import CombinedLoader
 
 
+CITE_MULTI_TIMEPOINTS = ("2", "3", "4", "7")
+CITE_MULTI_TIME_MODES = ("equal_time", "real_time")
+
+
+def cite_multi_time_values(unique_labels, time_mode="equal_time"):
+    """Return the global CITE/Multi model clock in dataset-label order."""
+    labels = tuple(str(label) for label in unique_labels)
+    if labels != CITE_MULTI_TIMEPOINTS:
+        raise ValueError(
+            "CITE/Multi requires ordered day labels "
+            f"{CITE_MULTI_TIMEPOINTS}, got {labels}."
+        )
+    mode = str(time_mode)
+    if mode not in CITE_MULTI_TIME_MODES:
+        raise ValueError(
+            f"cite_multi_time_mode must be one of {CITE_MULTI_TIME_MODES}, "
+            f"got {time_mode!r}."
+        )
+    if mode == "equal_time":
+        return np.linspace(0.0, 1.0, len(labels), dtype=np.float32)
+    days = np.asarray(labels, dtype=np.float32)
+    return (days - days[0]) / (days[-1] - days[0])
+
+
 class TemporalDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -24,6 +48,9 @@ class TemporalDataModule(pl.LightningDataModule):
         self.split_ratios = args.split_ratios
         self.max_dim = args.dim
         self.whiten = args.whiten
+        self.cite_multi_time_mode = str(
+            getattr(args, "cite_multi_time_mode", "equal_time")
+        )
         self.skipped_datapoint = skipped_datapoint
         self._prepare_data()
 
@@ -66,6 +93,14 @@ class TemporalDataModule(pl.LightningDataModule):
             for label in unique_labels
         }
         self.num_timesteps = len(unique_labels)
+        if load_cell_types:
+            self.times = torch.tensor(
+                cite_multi_time_values(
+                    unique_labels,
+                    self.cite_multi_time_mode,
+                ),
+                dtype=torch.float32,
+            )
         if cell_types is not None:
             # The evaluation callback uses these model-space coordinates and
             # matching ground-truth labels. Keeping the split here guarantees

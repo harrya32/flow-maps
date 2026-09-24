@@ -215,6 +215,38 @@ def test_temporal_data_split_preserves_cell_type_alignment(monkeypatch):
         ]
 
 
+def test_temporal_data_module_supports_equal_and_real_cite_multi_clocks(monkeypatch):
+    days = np.repeat(np.asarray(["2", "3", "4", "7"]), 4)
+    cell_types = np.asarray([cite_multi.CLASS_NAMES[ii % 7] for ii in range(16)])
+    x = np.zeros((16, 100), dtype=np.float32)
+
+    def fake_load(path, max_dim, *, return_cell_types):
+        return x, days, np.asarray(["2", "3", "4", "7"]), cell_types
+
+    monkeypatch.setattr(trajectory_data, "custom_load_dataset", fake_load)
+    equal = trajectory_data.TemporalDataModule(
+        _eval_args(
+            data_type="scrna",
+            data_path="unused.h5ad",
+            batch_size=1,
+            split_ratios=[0.5, 0.5],
+            cite_multi_time_mode="equal_time",
+        )
+    )
+    real = trajectory_data.TemporalDataModule(
+        _eval_args(
+            data_type="scrna",
+            data_path="unused.h5ad",
+            batch_size=1,
+            split_ratios=[0.5, 0.5],
+            cite_multi_time_mode="real_time",
+        )
+    )
+
+    assert equal.times.tolist() == pytest.approx([0.0, 1 / 3, 2 / 3, 1.0])
+    assert real.times.tolist() == pytest.approx([0.0, 0.2, 0.4, 1.0])
+
+
 def test_flow_callbacks_include_cite_multi_evaluator(tmp_path):
     classifier_path = tmp_path / "all_days.pt"
     classifier_path.touch()

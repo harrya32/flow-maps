@@ -15,7 +15,9 @@ from mfm.flow_matchers.flow_net_train import (
     FlowNetTrainTrajectory,
     FlowNetTrainLidar,
     FlowNetTrainImage,
+    SF2MFlowNetTrainTrajectory,
 )
+from mfm.flow_matchers.models.sf2m import IntervalSchrodingerBridgeFlowMatcher
 from mfm.flow_matchers.geopath_net_train import GeoPathNetTrain
 from mfm.dataloaders.trajectory_data import TemporalDataModule
 from mfm.dataloaders.maizels_data import MaizelsEndpointDataModule
@@ -85,6 +87,20 @@ def torch_device_for_accelerator(accelerator: str) -> torch.device:
 
 def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     set_seed(seed)
+    if bool(args.sf2m):
+        if bool(args.mfm):
+            raise ValueError("SF2M is a separate baseline; set mfm: false.")
+        if args.data_type not in ("scrna", "maizels"):
+            raise ValueError(
+                "SF2M is currently supported for CITE, Multi, and Maizels."
+            )
+        if str(args.optimal_transport_method).lower() != "none":
+            raise ValueError(
+                "SF2M performs its TorchCFM coupling internally; set "
+                "optimal_transport_method: None to avoid applying OT twice."
+            )
+        if float(args.sf2m_score_weight) < 0.0:
+            raise ValueError("sf2m_score_weight must be non-negative.")
     if args.data_type == "lidar":
         assert args.dim == 3 and args.data_name == "lidar"
     elif args.data_type == "arch":
@@ -111,7 +127,7 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     skipped_time_points = [t_exclude] if t_exclude else []
     geopath_accelerator = phase_accelerator(args, "geopath")
     flow_accelerator = phase_accelerator(args, "flow")
-    if geopath_accelerator != args.accelerator:
+    if args.mfm and geopath_accelerator != args.accelerator:
         print(
             "Using CPU for metric/geopath training because PyTorch's "
             "time-JVP backward is unsupported on Apple MPS."
@@ -137,12 +153,23 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         raise ValueError("Data type not recognized")
 
     ### Interpolation and Vector Field Networks
+    score_net = None
     if args.data_type in ["arch", "scrna", "maizels", "lidar", "sphere"]:
         flow_net = VelocityNet(
             dim=args.dim,
             hidden_dims=args.hidden_dims_flow,
             activation=args.activation_flow,
             batch_norm=False,
+        )
+        score_net = (
+            VelocityNet(
+                dim=args.dim,
+                hidden_dims=args.hidden_dims_flow,
+                activation=args.activation_flow,
+                batch_norm=False,
+            )
+            if args.sf2m
+            else None
         )
         geopath_net = GeoPathMLP(
             input_dim=args.dim,
@@ -179,6 +206,8 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
 
     if args.ema_decay is not None:
         flow_net = EMA(model=flow_net, decay=args.ema_decay)
+        if score_net is not None:
+            score_net = EMA(model=score_net, decay=args.ema_decay)
         geopath_net = EMA(model=geopath_net, decay=args.ema_decay)
 
     ot_requested = str(args.optimal_transport_method).lower() != "none"
@@ -187,7 +216,7 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     )
     ot_sampler = (
         OTPlanSampler(method=args.optimal_transport_method)
-        if ot_requested and use_native_ot
+        if ot_requested and use_native_ot and not args.sf2m
         else None
     )
 
@@ -197,7 +226,10 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         else f"mfm-{args.data_type}-{args.data_name}"
     )
     if args.data_type == "maizels":
-        if datamodule.uses_native_marginal_pairing:
+        if args.sf2m:
+            mfm_variant = "sf2m"
+            default_run_name = f"maizels_pca50_sf2m_{args.maizels_schedule}_seed{seed}"
+        elif datamodule.uses_native_marginal_pairing:
             mfm_variant = "ot-mfm" if ot_sampler is not None else "i-mfm"
             default_run_name = (
                 f"maizels_pca50_{mfm_variant}_{args.maizels_schedule}_seed{seed}"
@@ -208,6 +240,19 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     else:
         mfm_variant = None
         default_run_name = None
+    if args.data_type == "scrna" and args.data_name in ("cite", "multi"):
+        mfm_variant = (
+            "sf2m" if args.sf2m else ("ot-mfm" if ot_sampler is not None else "i-mfm")
+        )
+        heldout_day = (
+            "none"
+            if t_exclude is None
+            else str(list(datamodule.timepoint_splits)[t_exclude])
+        )
+        default_run_name = (
+            f"{args.data_name}_pca100_{mfm_variant}_"
+            f"{args.cite_multi_time_mode}_holdout_day{heldout_day}_seed{seed}"
+        )
     run_name = args.wandb_name or default_run_name
     wandb.init(
         project=project,
@@ -217,10 +262,17 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         config=vars(args),
         dir=args.working_dir,
     )
+    wandb.config.update(
+        {
+            "method": "sf2m" if args.sf2m else "mfm",
+            "evaluation_sampler": ("euler_maruyama" if args.sf2m else "euler"),
+        },
+        allow_val_change=True,
+    )
     if args.data_type == "maizels":
         wandb.config.update(
             {
-                "method": "mfm",
+                "method": "sf2m" if args.sf2m else "mfm",
                 "mfm_variant": mfm_variant,
                 "protocol": (
                     args.maizels_schedule
@@ -228,7 +280,7 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
                     else "D3_to_D8_endpoint"
                 ),
                 "maizels_time_mode": args.maizels_time_mode,
-                "native_minibatch_ot": ot_sampler is not None,
+                "native_minibatch_ot": ot_sampler is not None or bool(args.sf2m),
                 "maizels_pair_mode_requested": datamodule.requested_pair_mode,
                 "maizels_geopath_pair_mode": datamodule.geopath_pair_mode,
                 "maizels_interpolant_check_times": int(
@@ -244,11 +296,18 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         )
 
     ### Metric Flow Matching Module
-    flow_matcher_base = MetricFlowMatcher(
-        geopath_net=geopath_net,
-        sigma=args.sigma,
-        alpha=int(args.mfm),
-    )
+    if args.sf2m:
+        flow_matcher_base = IntervalSchrodingerBridgeFlowMatcher(
+            sigma=args.sf2m_sigma,
+            ot_method=args.sf2m_ot_method,
+            time_eps=args.sf2m_time_eps,
+        )
+    else:
+        flow_matcher_base = MetricFlowMatcher(
+            geopath_net=geopath_net,
+            sigma=args.sigma,
+            alpha=int(args.mfm),
+        )
 
     ##### ALGO 1: Training of Geodesic Interpolants Beginning #####
     if args.mfm:
@@ -342,7 +401,9 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     )
 
     if args.data_type in ["arch", "scrna", "maizels", "sphere"]:
-        FlowNetTrain = FlowNetTrainTrajectory
+        FlowNetTrain = (
+            SF2MFlowNetTrainTrajectory if args.sf2m else FlowNetTrainTrajectory
+        )
     elif args.data_type == "lidar":
         FlowNetTrain = FlowNetTrainLidar
     elif args.data_type == "image":
@@ -350,13 +411,16 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     else:
         raise ValueError("Data type not recognized")
 
-    flow_train = FlowNetTrain(
+    flow_train_kwargs = dict(
         flow_matcher=flow_matcher_base,
         flow_net=flow_net,
         ot_sampler=ot_sampler,
         skipped_time_points=skipped_time_points,
         args=args,
     )
+    if args.sf2m:
+        flow_train_kwargs["score_net"] = score_net
+    flow_train = FlowNetTrain(**flow_train_kwargs)
 
     wandb_logger = WandbLogger()
 

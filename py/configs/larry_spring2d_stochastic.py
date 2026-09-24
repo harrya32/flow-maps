@@ -19,12 +19,12 @@ from . import larry_pca50
 VARIANTS = (
     # name, endpoint pair mode, differentiable lineage loss, minibatch OT
     ("standard_ssfm", "none", False, False),
-    ("bio_prior_ssfm", "endpoint_interpolant", False, False),
-    ("bio_prior_constrained_ssfm", "endpoint_interpolant", True, False),
+    ("bio_prior_ssfm", "endpoint", False, False),
+    ("bio_prior_constrained_ssfm", "endpoint", True, False),
     ("bio_prior_minibatch_ot_ssfm", "ot_endpoint", False, True),
     (
         "bio_prior_minibatch_ot_constrained_ssfm",
-        "ot_endpoint_interpolant",
+        "ot_endpoint",
         True,
         True,
     ),
@@ -35,12 +35,26 @@ VARIANTS = (
         True,
         True,
     ),
+    (
+        "bio_prior_minibatch_ot_interpolant_ssfm",
+        "ot_endpoint_interpolant",
+        False,
+        True,
+    ),
+    (
+        "bio_prior_minibatch_ot_interpolant_constrained_ssfm",
+        "ot_endpoint_interpolant",
+        True,
+        True,
+    ),
 )
 
 
 def get_hparam_sweep_spec(slurm_id: int) -> dict:
     """Declare the grid dimensions relevant to one stochastic variant."""
-    name, _, constrained, minibatch_ot = VARIANTS[int(slurm_id) % len(VARIANTS)]
+    name, pair_mode, constrained, minibatch_ot = VARIANTS[
+        int(slurm_id) % len(VARIANTS)
+    ]
     return {
         "variant_name": name,
         "learning_rate": True,
@@ -48,6 +62,7 @@ def get_hparam_sweep_spec(slurm_id: int) -> dict:
         "constraint_weight": bool(constrained),
         "entropy_weight": bool(constrained),
         "minibatch_ot": bool(minibatch_ot),
+        "interpolant_filter": pair_mode == "ot_endpoint_interpolant",
         "launcher": "larry_stochastic.py",
         "objective_sampler": "ssfm",
     }
@@ -76,11 +91,16 @@ def get_config(
     batch_size: Optional[int] = None,
     n_pairs: Optional[int] = None,
     ot_minibatch_size: Optional[int] = None,
+    interpolant_check_times: Optional[int] = None,
     clone_samples_per_source: Optional[int] = None,
     clone_noise_draws: Optional[int] = None,
+    clone_min_source_cells: Optional[int] = None,
+    clone_min_target_cells: Optional[int] = None,
     larry_representation: str = larry.SPRING2D_REPRESENTATION,
+    larry_clone_labelled_only: bool = False,
+    larry_n_pcs: Optional[int] = None,
 ) -> ml_collections.ConfigDict:
-    """Return one of seven LARRY SSFM experiments in one representation."""
+    """Return one of nine LARRY SSFM experiments in one representation."""
     variant_name, pair_mode, constrained, minibatch_ot = VARIANTS[
         int(slurm_id) % len(VARIANTS)
     ]
@@ -100,13 +120,30 @@ def get_config(
         seed=seed,
         ot_minibatch_size=ot_size,
         larry_representation=representation,
+        larry_clone_labelled_only=larry_clone_labelled_only,
+        larry_n_pcs=larry_n_pcs,
     )
 
     cfg.problem.maizels_pair_mode = pair_mode
     cfg.problem.pair_mode = pair_mode
-    # Endpoint annotations, rather than deterministic straight-line paths,
-    # provide the biological filter for a Gaussian-noised interpolant.
-    cfg.problem.n_interpolant_check_times = 50
+    # Existing stochastic bio-prior variants retain endpoint-only filtering.
+    # The explicitly named interpolant variants form a matched ablation that
+    # additionally checks 50 points on each deterministic coupling segment.
+    if interpolant_check_times is not None and pair_mode != "ot_endpoint_interpolant":
+        raise ValueError(
+            "interpolant_check_times is relevant only to an "
+            "ot_endpoint_interpolant variant."
+        )
+    cfg.problem.n_interpolant_check_times = (
+        int(50 if interpolant_check_times is None else interpolant_check_times)
+        if pair_mode == "ot_endpoint_interpolant"
+        else 0
+    )
+    if (
+        pair_mode == "ot_endpoint_interpolant"
+        and cfg.problem.n_interpolant_check_times <= 0
+    ):
+        raise ValueError("interpolant_check_times must be positive.")
     if minibatch_ot:
         cfg.problem.maizels_ot_coupling = "minibatch_ot"
     cfg.problem.ot_minibatch_size = ot_size
@@ -128,7 +165,11 @@ def get_config(
     cfg.problem.full_data_classifier_available = _checkpoint_exists(
         cfg.problem.full_data_classifier_path
     )
-    if constrained and not cfg.problem.training_classifier_available:
+    if (
+        constrained
+        and not cfg.problem.training_classifier_available
+        and not bool(getattr(cfg.problem, "larry_auto_prepare_artifacts", False))
+    ):
         representation_label = (
             "SPRING2D" if representation == larry.SPRING2D_REPRESENTATION else "PCA50"
         )
@@ -253,14 +294,22 @@ def get_config(
     )
     cfg.evaluation.clone_flowmap_n_steps = 50
     cfg.evaluation.clone_batch_size = 2_048
-    cfg.evaluation.clone_min_source_cells = 1
-    cfg.evaluation.clone_min_target_cells = 1
+    cfg.evaluation.clone_min_source_cells = int(
+        1 if clone_min_source_cells is None else clone_min_source_cells
+    )
+    cfg.evaluation.clone_min_target_cells = int(
+        10 if clone_min_target_cells is None else clone_min_target_cells
+    )
     cfg.evaluation.clone_max_target_cells = 0
     cfg.evaluation.clone_seed = int(cfg.training.seed) + 3_901
     if cfg.evaluation.clone_samples_per_source <= 0:
         raise ValueError("clone_samples_per_source must be positive.")
     if cfg.evaluation.clone_n_noise_draws <= 0:
         raise ValueError("clone_noise_draws must be positive.")
+    if cfg.evaluation.clone_min_source_cells <= 0:
+        raise ValueError("clone_min_source_cells must be positive.")
+    if cfg.evaluation.clone_min_target_cells <= 0:
+        raise ValueError("clone_min_target_cells must be positive.")
 
     # Keep the inherited metadata informative even though stochastic metrics
     # are produced by cfg.evaluation rather than deterministic logging hooks.
@@ -284,7 +333,19 @@ def get_config(
     cfg.logging.scalar_freq = 50
     cfg.logging.progress_freq = 50
     cfg.logging.save_freq = 5_000
-    cfg.logging.wandb_name = f"larry_{representation}_holdout_d4_{variant_name}"
+    subset_tag = (
+        "_clone_labelled"
+        if bool(getattr(cfg.problem, "larry_clone_labelled_only", False))
+        else ""
+    )
+    representation_tag = (
+        "spring2d"
+        if representation == larry.SPRING2D_REPRESENTATION
+        else f"pca{int(cfg.problem.n_pcs)}"
+    )
+    cfg.logging.wandb_name = (
+        f"larry_{representation_tag}{subset_tag}_holdout_d4_{variant_name}"
+    )
     cfg.logging.output_name = cfg.logging.wandb_name
     cfg.logging.comparison_mode = variant_name
 

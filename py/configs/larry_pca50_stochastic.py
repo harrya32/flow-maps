@@ -1,6 +1,6 @@
-"""Strong stochastic flow maps for LARRY in the 50-dimensional PCA space.
+"""Strong stochastic flow maps for LARRY in a configurable PCA space.
 
-This exposes exactly the same seven variants and defaults as
+This exposes exactly the same nine variants and defaults as
 ``larry_spring2d_stochastic``; only the representation, dimensionality,
 processed dataset, classifier checkpoints, and run-name prefix differ.
 """
@@ -34,10 +34,15 @@ def get_config(
     batch_size: Optional[int] = None,
     n_pairs: Optional[int] = None,
     ot_minibatch_size: Optional[int] = None,
+    interpolant_check_times: Optional[int] = None,
     clone_samples_per_source: Optional[int] = None,
     clone_noise_draws: Optional[int] = None,
+    clone_min_source_cells: Optional[int] = None,
+    clone_min_target_cells: Optional[int] = None,
+    larry_clone_labelled_only: bool = False,
+    larry_n_pcs: Optional[int] = None,
 ) -> ml_collections.ConfigDict:
-    """Return a LARRY PCA50 SSFM configuration."""
+    """Return a LARRY PCA SSFM configuration (50 PCs by default)."""
     return _shared_get_config(
         slurm_id,
         dataset_location=dataset_location,
@@ -55,7 +60,12 @@ def get_config(
         batch_size=batch_size,
         n_pairs=n_pairs,
         ot_minibatch_size=ot_minibatch_size,
+        interpolant_check_times=interpolant_check_times,
         clone_samples_per_source=clone_samples_per_source,
         clone_noise_draws=clone_noise_draws,
+        clone_min_source_cells=clone_min_source_cells,
+        clone_min_target_cells=clone_min_target_cells,
         larry_representation=larry.PCA50_REPRESENTATION,
+        larry_clone_labelled_only=larry_clone_labelled_only,
+        larry_n_pcs=larry_n_pcs,
     )

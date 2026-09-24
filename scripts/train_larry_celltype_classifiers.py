@@ -85,6 +85,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--n-hvgs", type=int, default=larry.DEFAULT_N_HVGS)
     parser.add_argument("--n-pcs", type=int, default=larry.DEFAULT_N_PCS)
+    parser.add_argument(
+        "--clone-labelled-only",
+        "--clone-labeled-only",
+        action="store_true",
+        help=(
+            "Use the separately cached PCA representation fitted only on "
+            "clone-labelled cells and write separately named checkpoints."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--max-epochs", type=int, default=100)
@@ -120,6 +129,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
     args.representation = larry.canonical_representation(args.representation)
+    if args.clone_labelled_only and args.representation != larry.PCA50_REPRESENTATION:
+        parser.error("--clone-labelled-only is supported only for PCA data")
     if args.representation == larry.SPRING2D_REPRESENTATION:
         # The shared trainer uses n_pcs as its generic input-dimension field.
         args.n_pcs = larry.DEFAULT_SPRING_DIM
@@ -160,6 +171,7 @@ def checkpoint_path(
     n_pcs: int = larry.DEFAULT_N_PCS,
     n_hvgs: int = larry.DEFAULT_N_HVGS,
     representation: str = larry.PCA50_REPRESENTATION,
+    clone_labelled_only: bool = False,
 ) -> Path:
     if variant not in CLASSIFIER_VARIANTS:
         raise KeyError(f"Unknown LARRY classifier variant {variant!r}.")
@@ -170,6 +182,7 @@ def checkpoint_path(
             n_pcs=n_pcs,
             n_hvgs=n_hvgs,
             representation=representation,
+            clone_labelled_only=clone_labelled_only,
         )
     return larry.classifier_checkpoint_path(
         training_timepoints=("D2", "D6"),
@@ -177,6 +190,7 @@ def checkpoint_path(
         n_pcs=n_pcs,
         n_hvgs=n_hvgs,
         representation=representation,
+        clone_labelled_only=clone_labelled_only,
     )
 
 
@@ -193,6 +207,7 @@ def requested_runs(
                 n_pcs=args.n_pcs,
                 n_hvgs=args.n_hvgs,
                 representation=args.representation,
+                clone_labelled_only=bool(args.clone_labelled_only),
             ),
         )
         for name in args.variants
@@ -226,7 +241,11 @@ def load_training_data(
     try:
         representation_name = larry.canonical_representation(args.representation)
         representation_key = larry.representation_key(representation_name)
-        expected_dim = larry.representation_dim(representation_name)
+        expected_dim = (
+            int(args.n_pcs)
+            if representation_name == larry.PCA50_REPRESENTATION
+            else larry.representation_dim(representation_name)
+        )
         if representation_key not in adata.obsm:
             raise KeyError(
                 f"{input_path.name} is missing adata.obsm[{representation_key!r}]."
@@ -240,7 +259,7 @@ def load_training_data(
                 f"{input_path.name} stores {adata.n_vars} HVGs; {args.n_hvgs} "
                 "were requested."
             )
-        if stored_n_pcs != expected_dim or args.n_pcs != expected_dim:
+        if stored_n_pcs != expected_dim:
             raise ValueError(
                 f"{input_path.name} stores {stored_n_pcs} {representation_name} "
                 f"dimensions; expected {expected_dim}."
@@ -251,6 +270,28 @@ def load_training_data(
             raise KeyError(
                 f"{input_path.name} does not contain LARRY cell-type/day metadata."
             )
+        if args.clone_labelled_only:
+            if "clone_id" not in adata.obs:
+                raise KeyError(
+                    f"{input_path.name} is missing obs['clone_id']; it is not a "
+                    "valid clone-labelled-only cache."
+                )
+            clone_values = np.asarray(adata.obs["clone_id"])
+            missing_clone = np.asarray(
+                [
+                    value is None
+                    or str(value).strip().lower()
+                    in {"", "nan", "none", "<na>", "-1", "-1.0"}
+                    for value in clone_values
+                ],
+                dtype=bool,
+            )
+            if bool(missing_clone.any()):
+                raise ValueError(
+                    f"{input_path.name} contains {int(missing_clone.sum())} cells "
+                    "without clone assignments; rebuild it with "
+                    "--clone-labelled-only."
+                )
 
         labels = adata.obs[label_key].astype("string").str.strip()
         if bool(labels.isna().any()) or bool(labels.eq("").fillna(True).any()):
@@ -290,7 +331,7 @@ def load_training_data(
             "feature_names": (
                 ["SPRING-x", "SPRING-y"]
                 if representation_name == larry.SPRING2D_REPRESENTATION
-                else [str(value) for value in adata.var_names]
+                else [f"PC{index + 1}" for index in range(expected_dim)]
             ),
             "n_cells": int(adata.n_obs),
             "n_features": int(adata.n_vars),
@@ -333,6 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_pcs=args.n_pcs,
             n_hvgs=args.n_hvgs,
             representation=args.representation,
+            clone_labelled_only=bool(args.clone_labelled_only),
         )
         print(f"[larry] Reading {input_path}", flush=True)
         data = load_training_data(args, input_path)

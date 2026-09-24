@@ -221,8 +221,18 @@ class FlowNetTrainBase(pl.LightningModule):
 
 
 class FlowNetTrainTrajectory(FlowNetTrainBase):
-    def test_step(self, batch, batch_idx):
-        data_type = self.trainer.datamodule.data_type
+    evaluation_sampler = "euler"
+
+    def evaluation_trajectory(
+        self,
+        x0,
+        *,
+        start_time: float,
+        end_time: float,
+        n_steps: int,
+        seed: int | None = None,
+    ):
+        del seed
         node = NeuralODE(
             flow_model_torch_wrapper(self.flow_net),
             solver="euler",
@@ -230,23 +240,37 @@ class FlowNetTrainTrajectory(FlowNetTrainBase):
             atol=1e-5,
             rtol=1e-5,
         )
+        return node.trajectory(
+            x0,
+            t_span=torch.linspace(
+                float(start_time),
+                float(end_time),
+                max(1, int(n_steps)) + 1,
+                device=x0.device,
+                dtype=x0.dtype,
+            ),
+        )
+
+    def test_step(self, batch, batch_idx):
+        self.timesteps = self._configured_timesteps(len(batch))
+        data_type = self.trainer.datamodule.data_type
 
         t_exclude = self.skipped_time_points[0] if self.skipped_time_points else None
         if t_exclude is not None:
-            traj = node.trajectory(
+            traj = self.evaluation_trajectory(
                 batch[t_exclude - 1],
-                t_span=torch.linspace(
-                    self.timesteps[t_exclude - 1], self.timesteps[t_exclude], 101
-                ),
+                start_time=self.timesteps[t_exclude - 1],
+                end_time=self.timesteps[t_exclude],
+                n_steps=100,
+                seed=self.seed_current + 2901,
             )
             X_mid_pred = traj[-1]
-            traj = node.trajectory(
+            traj = self.evaluation_trajectory(
                 batch[t_exclude - 1],
-                t_span=torch.linspace(
-                    self.timesteps[t_exclude - 1],
-                    self.timesteps[t_exclude + 1],
-                    101,
-                ),
+                start_time=self.timesteps[t_exclude - 1],
+                end_time=self.timesteps[t_exclude + 1],
+                n_steps=100,
+                seed=self.seed_current + 2902,
             )
             if data_type == "arch":
                 plot_arch(
@@ -331,6 +355,217 @@ class FlowNetTrainTrajectory(FlowNetTrainBase):
                     on_epoch=True,
                     prog_bar=False,
                 )
+
+                if self.evaluation_sampler != "euler":
+                    sampler = self.evaluation_sampler
+                    self.log(
+                        f"distribution_eval/{heldout_tag}_{sampler}_emd",
+                        EMD,
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=False,
+                    )
+                    self.log(
+                        f"distribution_eval/{heldout_tag}_{sampler}_rbf_mmd2",
+                        mmd2,
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=False,
+                    )
+                    self.log(
+                        f"sf2m/test_EMD_{sampler}",
+                        EMD,
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=False,
+                    )
+                    self.log(
+                        f"sf2m/test_rbf_MMD2_{sampler}",
+                        mmd2,
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=False,
+                    )
+                    self.log(
+                        f"final_eval/{sampler}_mean_emd",
+                        EMD,
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=False,
+                    )
+                    self.log(
+                        f"final_eval/{sampler}_mean_rbf_mmd2",
+                        mmd2,
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=False,
+                    )
+
+
+class SF2MFlowNetTrainTrajectory(FlowNetTrainTrajectory):
+    """Train SF2M velocity and score fields and evaluate its stochastic SDE."""
+
+    evaluation_sampler = "euler_maruyama"
+
+    def __init__(self, *args, score_net, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.score_net = score_net
+        config = kwargs["args"]
+        self.sf2m_sigma = float(config.sf2m_sigma)
+        self.sf2m_score_weight = float(config.sf2m_score_weight)
+
+    def _compute_sf2m_loss(self, main_batch):
+        retained_indices = [
+            index
+            for index in range(len(main_batch))
+            if index not in self.skipped_time_points
+        ]
+        retained = [main_batch[index] for index in retained_indices]
+        ts, xts, uts, score_scales, noises = [], [], [], [], []
+        for pair_index, (x0, x1) in enumerate(zip(retained[:-1], retained[1:])):
+            x0, x1 = torch.squeeze(x0), torch.squeeze(x1)
+            t_start = self.timesteps[retained_indices[pair_index]]
+            t_end = self.timesteps[retained_indices[pair_index + 1]]
+            t, xt, ut, score_scale, noise = (
+                self.flow_matcher.sample_location_flow_and_score(
+                    x0,
+                    x1,
+                    t_start,
+                    t_end,
+                )
+            )
+            ts.append(t)
+            xts.append(xt)
+            uts.append(ut)
+            score_scales.append(score_scale)
+            noises.append(noise)
+
+        t = torch.cat(ts).detach()
+        xt = torch.cat(xts).detach()
+        ut = torch.cat(uts).detach()
+        score_scale = torch.cat(score_scales).detach()
+        noise = torch.cat(noises).detach()
+        velocity = self(t[:, None], xt)
+        score = self.score_net(t[:, None], xt)
+        velocity_loss = mean_squared_error(velocity, ut)
+        # Denoising score matching written in its endpoint-stable form:
+        # sigma_t * score(xt, t) = -epsilon.
+        score_loss = torch.mean((score_scale * score + noise) ** 2)
+        total = velocity_loss + self.sf2m_score_weight * score_loss
+        return total, velocity_loss, score_loss
+
+    def _shared_sf2m_step(self, batch, *, stage: str):
+        main_batch = batch[f"{stage}_samples"][0]
+        self.timesteps = self._configured_timesteps(len(main_batch))
+        total, velocity_loss, score_loss = self._compute_sf2m_loss(main_batch)
+        log_stage = "train" if stage == "train" else "val"
+        self.log(
+            f"FlowNet/{log_stage}_loss_cfm",
+            total,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            f"SF2M/{log_stage}_velocity_loss",
+            velocity_loss,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+        )
+        self.log(
+            f"SF2M/{log_stage}_score_loss",
+            score_loss,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+        )
+        self.log(
+            f"SF2M/{log_stage}_loss",
+            total,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+        )
+        if self.is_maizels:
+            name = "loss" if stage == "train" else "validation_loss"
+            self.log(
+                name,
+                total,
+                on_step=stage == "train",
+                on_epoch=stage != "train",
+                logger=True,
+            )
+        return total
+
+    def training_step(self, batch, batch_idx):
+        del batch_idx
+        return self._shared_sf2m_step(batch, stage="train")
+
+    def validation_step(self, batch, batch_idx):
+        del batch_idx
+        return self._shared_sf2m_step(batch, stage="val")
+
+    @torch.no_grad()
+    def evaluation_trajectory(
+        self,
+        x0,
+        *,
+        start_time: float,
+        end_time: float,
+        n_steps: int,
+        seed: int | None = None,
+    ):
+        n_steps = max(1, int(n_steps))
+        start_time = float(start_time)
+        end_time = float(end_time)
+        if end_time < start_time:
+            raise ValueError("SF2M rollout end time precedes its start time.")
+        dt = (end_time - start_time) / n_steps
+        state = x0
+        trajectory = [state]
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(self.seed_current if seed is None else int(seed))
+        for step in range(n_steps):
+            t = torch.full(
+                (state.shape[0], 1),
+                start_time + step * dt,
+                dtype=state.dtype,
+                device=state.device,
+            )
+            velocity = self.flow_net(t, state)
+            score = self.score_net(t, state)
+            drift = velocity + 0.5 * self.sf2m_sigma**2 * score
+            noise = torch.randn(
+                state.shape,
+                generator=generator,
+                dtype=state.dtype,
+                device="cpu",
+            ).to(state.device)
+            state = state + dt * drift + self.sf2m_sigma * np.sqrt(dt) * noise
+            trajectory.append(state)
+        return torch.stack(trajectory, dim=0)
+
+    def on_before_optimizer_step(self, optimizer):
+        if not self.is_maizels:
+            return
+        grad_norm_sq = torch.zeros((), device=self.device)
+        for parameter in self.parameters():
+            if parameter.grad is not None:
+                grad_norm_sq = grad_norm_sq + parameter.grad.detach().pow(2).sum()
+        self.log(
+            "grad",
+            torch.sqrt(grad_norm_sq),
+            on_step=True,
+            on_epoch=False,
+            logger=True,
+        )
+
+    def optimizer_step(self, *args, **kwargs):
+        super().optimizer_step(*args, **kwargs)
+        if isinstance(self.score_net, EMA):
+            self.score_net.update_ema()
 
 
 class FlowNetTrainLidar(FlowNetTrainBase):

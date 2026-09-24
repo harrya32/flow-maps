@@ -104,6 +104,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Comma-separated selection from 3,4, or 'all'.",
     )
     parser.add_argument(
+        "--cite-multi-time-mode",
+        "--cite_multi_time_mode",
+        choices=("equal_time", "real_time"),
+        default="equal_time",
+        help="Clock used for every run (default: equal_time).",
+    )
+    parser.add_argument(
         "--cfg-path", "--cfg_path", default="configs.cite_multi_stochastic"
     )
     parser.add_argument("--dataset-location", "--dataset_location", required=True)
@@ -187,6 +194,8 @@ def build_command(
         str(dataset_name),
         "--heldout_day",
         str(heldout_day),
+        "--cite_multi_time_mode",
+        str(args.cite_multi_time_mode),
         "--dataset_location",
         str(Path(args.dataset_location).expanduser()),
         "--output_folder",
@@ -263,7 +272,8 @@ def _setting_id(
         for character in str(variant_name)
     )
     return (
-        f"{dataset_name}_day{heldout_day}_sid{int(slurm_id)}_"
+        f"{dataset_name}_{args.cite_multi_time_mode}_day{heldout_day}_"
+        f"sid{int(slurm_id)}_"
         f"{safe_variant}_{digest}"
     )
 
@@ -335,6 +345,7 @@ def main(argv=None) -> int:
                     "setting_id": setting_id,
                     "dataset_name": dataset_name,
                     "heldout_day": heldout_day,
+                    "cite_multi_time_mode": args.cite_multi_time_mode,
                     "slurm_id": int(slurm_id),
                     "variant_name": variant_name,
                     "learning_rate": (
@@ -377,7 +388,7 @@ def main(argv=None) -> int:
     print(
         f"Planned {len(datasets)} dataset(s) x {len(heldout_days)} holdout(s) x "
         f"{len(slurm_ids)} variant(s) x {len(seeds)} seed(s) = "
-        f"{total_runs} sequential runs."
+        f"{total_runs} sequential runs ({args.cite_multi_time_mode})."
     )
     for index, (setting, constrained, seed) in enumerate(planned_runs, start=1):
         setting_id = str(setting["setting_id"])

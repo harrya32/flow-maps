@@ -533,6 +533,216 @@ def distribution_metrics(
     return metrics, plot_data
 
 
+def _observed_time_tag(timepoint: str) -> str:
+    tag = _time_tag(timepoint)
+    return tag if str(timepoint).upper().startswith("D") else f"day{tag}"
+
+
+def _observed_draw_key(
+    seed: int,
+    draw: int,
+    interval_index: int,
+    protocol: int,
+):
+    key = jax.random.PRNGKey(int(seed))
+    key = jax.random.fold_in(key, 73_019)
+    key = jax.random.fold_in(key, int(draw))
+    key = jax.random.fold_in(key, int(interval_index))
+    return jax.random.fold_in(key, int(protocol))
+
+
+def observed_distribution_metrics(
+    model,
+    params,
+    cfg,
+    *,
+    data_backend=maizels,
+    seed: Optional[int] = None,
+    max_source_points: Optional[int] = None,
+    max_target_points: Optional[int] = None,
+    n_noise_draws: Optional[int] = None,
+) -> Dict[str, float]:
+    """Score retained marginals and a source-to-final stochastic rollout.
+
+    Observed-marginal metrics restart from the real population at the nearest
+    retained left endpoint.  The rollout metric instead starts at the original
+    source once and carries samples through every retained interval.  Full
+    SSFMs use composed-map sampling; local-only models use Euler--Maruyama.
+    """
+    if not bool(getattr(cfg.evaluation, "observed_marginal_emd_enabled", True)):
+        return {}
+    seed = int(cfg.evaluation.seed if seed is None else seed)
+    max_source_points = int(
+        cfg.evaluation.max_source_points
+        if max_source_points is None
+        else max_source_points
+    )
+    max_target_points = int(
+        cfg.evaluation.max_target_points
+        if max_target_points is None
+        else max_target_points
+    )
+    n_draws = int(
+        cfg.evaluation.n_noise_draws if n_noise_draws is None else n_noise_draws
+    )
+    if n_draws <= 0:
+        raise ValueError("evaluation.n_noise_draws must be positive.")
+
+    retained = tuple(str(value) for value in data_backend.retained_timepoints(cfg))
+    if len(retained) < 2:
+        return {}
+    pools = data_backend.timepoint_pool_splits(
+        cfg,
+        dataset_location=cfg.problem.dataset_location,
+    )
+    rng = np.random.default_rng(seed)
+
+    def selected_population(timepoint: str, maximum: int) -> np.ndarray:
+        population = np.asarray(pools[timepoint]["x"], dtype=np.float32)
+        return population[_sample_indices(rng, population.shape[0], maximum)]
+
+    sources = {
+        timepoint: selected_population(timepoint, max_source_points)
+        for timepoint in retained[:-1]
+    }
+    targets = {
+        timepoint: selected_population(timepoint, max_target_points)
+        for timepoint in retained[1:]
+    }
+
+    use_euler_maruyama = uses_euler_maruyama_evaluation(cfg)
+    sampler = "euler_maruyama" if use_euler_maruyama else "flowmap"
+    n_steps = (
+        euler_maruyama_n_steps(cfg)
+        if use_euler_maruyama
+        else int(cfg.evaluation.flowmap_n_steps)
+    )
+    if n_steps <= 0:
+        raise ValueError("Observed-marginal evaluation requires positive steps.")
+
+    def pushforward(
+        x: np.ndarray,
+        source_time: str,
+        target_time: str,
+        key,
+    ) -> np.ndarray:
+        start = float(data_backend.normalized_time(source_time, cfg))
+        end = float(data_backend.normalized_time(target_time, cfg))
+        if use_euler_maruyama:
+            return sample_euler_maruyama_pushforward(
+                model,
+                params,
+                x,
+                start,
+                end,
+                key,
+                n_coefficients=int(cfg.ssfm.n_coefficients),
+                n_steps=n_steps,
+            )
+        return sample_composed_pushforward(
+            model,
+            params,
+            x,
+            start,
+            end,
+            key,
+            n_coefficients=int(cfg.ssfm.n_coefficients),
+            n_steps=n_steps,
+        )
+
+    interval_emd = {
+        (source_time, target_time): []
+        for source_time, target_time in zip(retained[:-1], retained[1:])
+    }
+    rollout_emd = []
+    for draw in range(n_draws):
+        rollout = sources[retained[0]]
+        final_interval_emd = None
+        for interval_index, (source_time, target_time) in enumerate(
+            zip(retained[:-1], retained[1:])
+        ):
+            prediction = pushforward(
+                sources[source_time],
+                source_time,
+                target_time,
+                _observed_draw_key(seed, draw, interval_index, protocol=0),
+            )
+            emd = wasserstein.exact_emd(prediction, targets[target_time])
+            interval_emd[(source_time, target_time)].append(emd)
+            final_interval_emd = emd
+            if interval_index == 0:
+                rollout = prediction
+            else:
+                rollout = pushforward(
+                    rollout,
+                    source_time,
+                    target_time,
+                    _observed_draw_key(seed, draw, interval_index, protocol=1),
+                )
+
+        if len(retained) == 2:
+            rollout_emd.append(float(final_interval_emd))
+        else:
+            rollout_emd.append(
+                wasserstein.exact_emd(rollout, targets[retained[-1]])
+            )
+
+    metrics: Dict[str, float] = {}
+    interval_means = []
+    for (source_time, target_time), values in interval_emd.items():
+        transition_tag = (
+            f"{_observed_time_tag(source_time)}_to_"
+            f"{_observed_time_tag(target_time)}"
+        )
+        mean_emd = float(np.mean(values))
+        std_emd = float(np.std(values))
+        metrics[
+            f"final_eval/observed_{transition_tag}_{sampler}_emd"
+        ] = mean_emd
+        metrics[
+            f"final_eval/observed_{transition_tag}_{sampler}_emd_std_over_noise"
+        ] = std_emd
+        metrics[
+            f"final_eval/observed_{transition_tag}_evaluation_emd"
+        ] = mean_emd
+        interval_means.append(mean_emd)
+        print(
+            "Observed stochastic EMD evaluation: "
+            f"{source_time}->{target_time}, sampler={sampler}, "
+            f"steps={n_steps}, source_n={sources[source_time].shape[0]}, "
+            f"target_n={targets[target_time].shape[0]}, draws={n_draws}, "
+            f"EMD={mean_emd:.8g}"
+        )
+
+    metrics[f"final_eval/observed_{sampler}_mean_emd"] = float(
+        np.mean(interval_means)
+    )
+    metrics["final_eval/observed_evaluation_mean_emd"] = metrics[
+        f"final_eval/observed_{sampler}_mean_emd"
+    ]
+    mean_rollout_emd = float(np.mean(rollout_emd))
+    rollout_tag = (
+        f"{_observed_time_tag(retained[0])}_to_"
+        f"{_observed_time_tag(retained[-1])}"
+    )
+    metrics[
+        f"final_eval/{rollout_tag}_rollout_{sampler}_emd"
+    ] = mean_rollout_emd
+    metrics[
+        f"final_eval/{rollout_tag}_rollout_{sampler}_emd_std_over_noise"
+    ] = float(np.std(rollout_emd))
+    metrics[
+        f"final_eval/{rollout_tag}_rollout_evaluation_emd"
+    ] = mean_rollout_emd
+    print(
+        "Source-to-final stochastic EMD evaluation: "
+        f"{retained[0]}->{retained[-1]}, sampler={sampler}, "
+        f"source_n={rollout.shape[0]}, target_n={targets[retained[-1]].shape[0]}, "
+        f"draws={n_draws}, EMD={mean_rollout_emd:.8g}"
+    )
+    return metrics
+
+
 def pushforward_plot_data(
     model,
     params,
@@ -922,6 +1132,7 @@ def final_evaluation(model, params, cfg, output_dir: Path) -> Dict[str, float]:
     """Run distribution and lineage evaluation for one checkpoint."""
     distribution, plot_data = distribution_metrics(model, params, cfg)
     metrics = dict(distribution)
+    metrics.update(observed_distribution_metrics(model, params, cfg))
     metrics.update(lineage_metrics(model, params, cfg))
     if bool(cfg.evaluation.save_plot):
         save_pushforward_plot(

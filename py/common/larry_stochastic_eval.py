@@ -440,6 +440,7 @@ def clone_wasserstein_metrics(
     data = larry.all_timepoint_data(
         cfg.problem.dataset_location,
         representation=str(cfg.problem.larry_representation),
+        n_pcs=int(cfg.problem.n_pcs),
     )
     metrics = {}
     for index, target_time in enumerate(_clone_target_times(cfg)):

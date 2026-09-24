@@ -45,6 +45,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n-hvgs", type=int, default=larry.DEFAULT_N_HVGS)
     parser.add_argument("--n-pcs", type=int, default=larry.DEFAULT_N_PCS)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--clone-labelled-only",
+        "--clone-labeled-only",
+        action="store_true",
+        help=(
+            "Fit HVGs and PCA using only cells with a LARRY clone assignment. "
+            "D2, D4, and D6 remain included in the fit."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args(argv)
     if args.n_hvgs <= 0 or args.n_pcs <= 0:
@@ -67,7 +76,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     target = (
         args.output.expanduser().resolve()
         if args.output is not None
-        else data_dir / larry.pca_dataset_filename(args.n_pcs, args.n_hvgs)
+        else data_dir
+        / larry.pca_dataset_filename(
+            args.n_pcs,
+            args.n_hvgs,
+            clone_labelled_only=bool(args.clone_labelled_only),
+        )
     )
     if target.exists() and not args.overwrite:
         print(f"Reusing existing PCA dataset: {target}")
@@ -110,6 +124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         gene_names = [line.rstrip("\r\n") for line in handle]
 
     n_cells = len(metadata)
+    source_n_cells = n_cells
     if expression.shape == (len(gene_names), n_cells):
         expression = expression.T.tocsr()
     if clone_matrix.shape[0] != n_cells and clone_matrix.shape[1] == n_cells:
@@ -145,6 +160,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     clone_coo = clone_matrix.tocoo()
     clone_ids[clone_coo.row] = clone_coo.col.astype(np.int64)
     del clone_assignments, clone_coo, clone_matrix
+
+    if args.clone_labelled_only:
+        selected = np.flatnonzero(clone_ids >= 0)
+        if selected.size == 0:
+            raise ValueError("The LARRY clone matrix contains no labelled cells.")
+        expression = expression[selected].tocsr()
+        metadata = metadata.iloc[selected].copy()
+        day = day.iloc[selected]
+        day_label = day_label.iloc[selected]
+        clone_ids = clone_ids[selected]
+        n_cells = int(selected.size)
+        print(
+            f"Restricting PCA fit to {n_cells:,}/{source_n_cells:,} "
+            "clone-labelled cells across D2, D4, and D6.",
+            flush=True,
+        )
 
     cell_barcodes = metadata["Cell barcode"].astype(str)
     libraries = metadata["Library"].astype(str)
@@ -213,6 +244,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "source_clone_matrix": paths["clones"].name,
         "fit_days": ["D2", "D4", "D6"],
         "heldout_day": "D4",
+        "cell_subset": (
+            "clone_labelled_only" if args.clone_labelled_only else "all_cells"
+        ),
+        "source_cell_count": int(source_n_cells),
+        "retained_cell_count": int(n_cells),
         "n_highly_variable_genes": n_hvgs,
         "n_pcs": int(args.n_pcs),
         "random_seed": int(args.seed),

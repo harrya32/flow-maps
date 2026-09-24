@@ -57,6 +57,17 @@ def test_checkpoint_path_can_be_relocated(tmp_path: Path):
     assert path.name == ("celltype_classifier_larry_hvg2000_pca50_train_days_d2_d6.pt")
 
 
+def test_classifier_checkpoint_name_tracks_requested_pca_dimension(tmp_path: Path):
+    path = trainer.checkpoint_path(
+        tmp_path,
+        "all_days",
+        n_pcs=20,
+        n_hvgs=2000,
+    )
+
+    assert path.name == "celltype_classifier_larry_hvg2000_pca20_all_days.pt"
+
+
 def test_spring_classifier_uses_separate_two_dimensional_checkpoint_names():
     args = trainer.parse_args(["--representation", "spring2d"])
     runs = trainer.requested_runs(args)
@@ -65,4 +76,17 @@ def test_spring_classifier_uses_separate_two_dimensional_checkpoint_names():
     assert [path.name for _, path in runs] == [
         "celltype_classifier_larry_spring2d_all_days.pt",
         "celltype_classifier_larry_spring2d_train_days_d2_d6.pt",
+    ]
+
+
+def test_clone_labelled_classifiers_use_separate_checkpoint_names():
+    args = trainer.parse_args(["--clone-labelled-only"])
+    runs = trainer.requested_runs(args)
+
+    assert [path.name for _, path in runs] == [
+        "celltype_classifier_larry_clone_labelled_hvg2000_pca50_all_days.pt",
+        (
+            "celltype_classifier_larry_clone_labelled_hvg2000_pca50_"
+            "train_days_d2_d6.pt"
+        ),
     ]

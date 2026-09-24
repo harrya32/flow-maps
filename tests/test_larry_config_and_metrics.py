@@ -71,6 +71,69 @@ def test_larry_filtered_variant_uses_d2_d6_classifier(monkeypatch):
     assert not cfg.constraints.enabled
 
 
+def test_clone_labelled_setting_selects_separate_cached_artifacts(tmp_path):
+    cfg = larry_pca50.get_config(
+        0,
+        dataset_location=str(tmp_path),
+        larry_clone_labelled_only=True,
+    )
+
+    assert cfg.problem.larry_clone_labelled_only
+    assert cfg.problem.larry_auto_prepare_artifacts
+    assert Path(cfg.problem.dataset_location).name == (
+        "stateFate_inVitro_clone_labelled_hvg2000_pca50.h5ad"
+    )
+    assert list(cfg.problem.pca_fit_timepoints) == ["D2", "D4", "D6"]
+    assert Path(cfg.problem.training_classifier_path).name == (
+        "celltype_classifier_larry_clone_labelled_hvg2000_pca50_"
+        "train_days_d2_d6.pt"
+    )
+    assert Path(cfg.problem.full_data_classifier_path).name == (
+        "celltype_classifier_larry_clone_labelled_hvg2000_pca50_all_days.pt"
+    )
+    assert "clone_labelled" in cfg.logging.output_name
+
+
+def test_larry_pca_dimension_selects_matching_data_model_and_cache_names(tmp_path):
+    cfg = larry_pca50.get_config(
+        0,
+        dataset_location=str(tmp_path),
+        larry_n_pcs=20,
+    )
+
+    assert cfg.problem.n_pcs == 20
+    assert cfg.problem.d == 20
+    assert tuple(cfg.network.input_dims) == (20,)
+    assert cfg.network.output_dim == 20
+    assert cfg.problem.larry_auto_prepare_artifacts
+    assert Path(cfg.problem.dataset_location).name == (
+        "stateFate_inVitro_hvg2000_pca20.h5ad"
+    )
+    assert Path(cfg.problem.training_classifier_path).name == (
+        "celltype_classifier_larry_hvg2000_pca20_train_days_d2_d6.pt"
+    )
+    assert Path(cfg.problem.full_data_classifier_path).name == (
+        "celltype_classifier_larry_hvg2000_pca20_all_days.pt"
+    )
+    assert "pca20" in cfg.logging.output_name
+
+
+def test_larry_pca_dimension_must_be_positive():
+    with pytest.raises(ValueError, match="larry_n_pcs must be positive"):
+        larry_pca50.get_config(0, larry_n_pcs=0)
+
+
+def test_clone_labelled_setting_is_not_available_for_spring():
+    with pytest.raises(ValueError, match="PCA"):
+        larry_pca50.get_config(
+            0,
+            larry_representation=larry.SPRING2D_REPRESENTATION,
+            larry_clone_labelled_only=True,
+        )
+    with pytest.raises(ValueError, match="only for PCA"):
+        larry_spring2d.get_config(0, larry_n_pcs=20)
+
+
 @pytest.mark.parametrize(
     (
         "slurm_id",

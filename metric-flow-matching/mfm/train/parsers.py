@@ -171,6 +171,16 @@ def datasets_parser(parser):
         ),
     )
     parser.add_argument(
+        "--cite_multi_time_mode",
+        type=str,
+        default="equal_time",
+        choices=["equal_time", "real_time"],
+        help=(
+            "CITE/Multi clock: equal spacing of D2,D3,D4,D7 or normalized "
+            "elapsed experimental time."
+        ),
+    )
+    parser.add_argument(
         "--cite_multi_eval_classifier_path",
         type=str,
         default="",
@@ -452,6 +462,37 @@ def geopath_network_parser(parser):
 def flow_network_parser(parser):
     parser.add_argument(
         "--sigma", type=float, default=0.1, help="Sigma parameter for CFM (variance)"
+    )
+    parser.add_argument(
+        "--sf2m",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Train the stochastic SF2M velocity and score baseline.",
+    )
+    parser.add_argument(
+        "--sf2m_sigma",
+        type=float,
+        default=0.2,
+        help="Constant reference-SDE diffusion scale used by SF2M.",
+    )
+    parser.add_argument(
+        "--sf2m_ot_method",
+        type=str,
+        default="exact",
+        choices=["exact", "sinkhorn"],
+        help="TorchCFM minibatch coupling used internally by SF2M.",
+    )
+    parser.add_argument(
+        "--sf2m_score_weight",
+        type=float,
+        default=1.0,
+        help="Multiplier on the denoising score-matching objective.",
+    )
+    parser.add_argument(
+        "--sf2m_time_eps",
+        type=float,
+        default=1e-3,
+        help="Exclude this local-time margin near stochastic bridge endpoints.",
     )
     parser.add_argument(
         "--patience",

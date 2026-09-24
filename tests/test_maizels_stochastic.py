@@ -55,6 +55,7 @@ def test_stochastic_config_has_seven_isolated_variants():
     assert constrained.optimization.early_stopping.patience == 10
     assert constrained.evaluation.max_source_points == 0
     assert constrained.evaluation.max_target_points == 0
+    assert constrained.evaluation.observed_marginal_emd_enabled
     assert constrained.evaluation.flowmap_n_steps == 50
     assert constrained.evaluation.lineage_max_source_points == 512
     assert constrained.evaluation.lineage_n_steps == 50
@@ -555,6 +556,117 @@ def test_stochastic_distribution_eval_uses_full_populations_and_both_samplers(
     assert metrics["final_eval/flowmap_mean_emd_hparam_val_times"] == 2.0
     assert metrics["final_eval/ssfm_mean_emd_hparam_val_times"] == 1.0
     assert [values.shape[0] for values in plot_data["D3.4"]] == [5, 3, 3]
+
+
+def test_observed_stochastic_eval_restarts_intervals_and_rolls_from_source(
+    monkeypatch,
+):
+    cfg = maizels_stochastic.get_config(
+        0,
+        maizels_schedule="d3_d3p8_d8",
+        total_steps=10,
+        batch_size=8,
+        n_pairs=20,
+    )
+    pools = {
+        "D3": {"x": np.zeros((2, 2), dtype=np.float32)},
+        "D3.8": {"x": np.full((3, 2), 10.0, dtype=np.float32)},
+        "D8": {"x": np.full((4, 2), 20.0, dtype=np.float32)},
+    }
+    monkeypatch.setattr(
+        maizels_stochastic_eval.maizels,
+        "timepoint_pool_splits",
+        lambda cfg, dataset_location=None: pools,
+    )
+    seen = []
+
+    def fake_flowmap(model, params, x, *args, **kwargs):
+        seen.append((float(np.mean(x)), kwargs["n_steps"]))
+        return np.asarray(x) + 1.0
+
+    monkeypatch.setattr(
+        maizels_stochastic_eval,
+        "sample_composed_pushforward",
+        fake_flowmap,
+    )
+    monkeypatch.setattr(
+        maizels_stochastic_eval.wasserstein,
+        "exact_emd",
+        lambda prediction, target: float(np.mean(prediction)),
+    )
+
+    metrics = maizels_stochastic_eval.observed_distribution_metrics(
+        object(),
+        {},
+        cfg,
+        n_noise_draws=1,
+    )
+
+    assert seen == [(0.0, 50), (10.0, 50), (1.0, 50)]
+    assert metrics["final_eval/observed_D3_to_D3p8_flowmap_emd"] == 1.0
+    assert metrics["final_eval/observed_D3p8_to_D8_flowmap_emd"] == 11.0
+    assert metrics["final_eval/observed_flowmap_mean_emd"] == 6.0
+    assert metrics["final_eval/D3_to_D8_rollout_flowmap_emd"] == 2.0
+    assert metrics["final_eval/D3_to_D8_rollout_evaluation_emd"] == 2.0
+    assert "final_eval/source_to_final_rollout_evaluation_emd" not in metrics
+
+
+def test_observed_stochastic_eval_uses_em_for_local_only_model(monkeypatch):
+    cfg = maizels_stochastic.get_config(
+        6,
+        maizels_schedule="d3_d3p8_d8",
+        total_steps=10,
+        batch_size=8,
+        n_pairs=20,
+    )
+    pools = {
+        "D3": {"x": np.zeros((2, 2), dtype=np.float32)},
+        "D3.8": {"x": np.full((3, 2), 10.0, dtype=np.float32)},
+        "D8": {"x": np.full((4, 2), 20.0, dtype=np.float32)},
+    }
+    monkeypatch.setattr(
+        maizels_stochastic_eval.maizels,
+        "timepoint_pool_splits",
+        lambda cfg, dataset_location=None: pools,
+    )
+    seen_steps = []
+
+    def fake_em(model, params, x, *args, **kwargs):
+        seen_steps.append(kwargs["n_steps"])
+        return np.asarray(x) + 1.0
+
+    monkeypatch.setattr(
+        maizels_stochastic_eval,
+        "sample_euler_maruyama_pushforward",
+        fake_em,
+    )
+    monkeypatch.setattr(
+        maizels_stochastic_eval,
+        "sample_composed_pushforward",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("local-only observed evaluation used a flow map")
+        ),
+    )
+    monkeypatch.setattr(
+        maizels_stochastic_eval.wasserstein,
+        "exact_emd",
+        lambda prediction, target: float(np.mean(prediction)),
+    )
+
+    metrics = maizels_stochastic_eval.observed_distribution_metrics(
+        object(),
+        {},
+        cfg,
+        n_noise_draws=1,
+    )
+
+    assert seen_steps == [50, 50, 50]
+    assert metrics[
+        "final_eval/observed_D3_to_D3p8_euler_maruyama_emd"
+    ] == 1.0
+    assert metrics[
+        "final_eval/D3_to_D8_rollout_euler_maruyama_emd"
+    ] == 2.0
 
 
 def test_local_only_distribution_eval_uses_only_euler_maruyama(monkeypatch):

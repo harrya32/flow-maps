@@ -21,6 +21,7 @@ import importlib
 import inspect
 
 from common import larry
+from common import larry_artifact_training
 from common import larry_stochastic_eval
 from launchers import maizels_stochastic as ssfm_launcher
 
@@ -34,6 +35,25 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument("--slurm-id", "--slurm_id", type=int, required=True)
     parser.add_argument("--dataset-location", "--dataset_location", default="")
+    parser.add_argument(
+        "--larry-clone-labelled-only",
+        "--larry_clone_labelled_only",
+        action="store_true",
+        help=(
+            "Use a separately cached PCA and classifiers fitted only on cells "
+            "with clone assignments. Available for PCA experiments."
+        ),
+    )
+    parser.add_argument(
+        "--larry-n-pcs",
+        "--larry_n_pcs",
+        type=int,
+        default=None,
+        help=(
+            "Number of LARRY principal components. A missing PCA cache and "
+            "matching classifiers are prepared automatically."
+        ),
+    )
     parser.add_argument("--output-folder", "--output_folder", default="")
     parser.add_argument("--classifier-path", "--classifier_path", default=None)
     parser.add_argument(
@@ -52,6 +72,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--n-pairs", "--n_pairs", type=int, default=None)
     parser.add_argument(
         "--ot-minibatch-size", "--ot_minibatch_size", type=int, default=None
+    )
+    parser.add_argument(
+        "--interpolant-check-times",
+        "--interpolant_check_times",
+        type=int,
+        default=None,
     )
     parser.add_argument(
         "--validation-frequency",
@@ -96,6 +122,18 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=None,
     )
     parser.add_argument(
+        "--clone-min-source-cells",
+        "--clone_min_source_cells",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--clone-min-target-cells",
+        "--clone_min_target_cells",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
         "--clone-target-times",
         "--clone_target_times",
         default=None,
@@ -124,6 +162,8 @@ def _build_config(args: argparse.Namespace):
     module = importlib.import_module(args.cfg_path)
     arguments = {
         "dataset_location": args.dataset_location,
+        "larry_clone_labelled_only": args.larry_clone_labelled_only,
+        "larry_n_pcs": args.larry_n_pcs,
         "output_folder": args.output_folder,
         "classifier_path": args.classifier_path,
         "full_data_classifier_path": args.full_data_classifier_path,
@@ -138,8 +178,11 @@ def _build_config(args: argparse.Namespace):
         "batch_size": args.batch_size,
         "n_pairs": args.n_pairs,
         "ot_minibatch_size": args.ot_minibatch_size,
+        "interpolant_check_times": args.interpolant_check_times,
         "clone_samples_per_source": args.clone_samples_per_source,
         "clone_noise_draws": args.clone_noise_draws,
+        "clone_min_source_cells": args.clone_min_source_cells,
+        "clone_min_target_cells": args.clone_min_target_cells,
     }
     supported = inspect.signature(module.get_config).parameters
     kwargs = {
@@ -196,11 +239,19 @@ def _build_config(args: argparse.Namespace):
 def main(argv=None) -> int:
     args = parse_args(argv)
     cfg = _build_config(args)
+    larry_artifact_training.ensure_larry_artifacts(cfg)
     representation = larry.canonical_representation(
         getattr(cfg.problem, "larry_representation", larry.PCA50_REPRESENTATION)
     )
     representation_label = (
-        "SPRING2D" if representation == larry.SPRING2D_REPRESENTATION else "PCA50"
+        "SPRING2D"
+        if representation == larry.SPRING2D_REPRESENTATION
+        else f"PCA{int(cfg.problem.n_pcs)}"
+    )
+    representation_tag = (
+        "spring2d"
+        if representation == larry.SPRING2D_REPRESENTATION
+        else f"pca{int(cfg.problem.n_pcs)}"
     )
     ssfm_launcher.train(
         cfg,
@@ -209,7 +260,7 @@ def main(argv=None) -> int:
         data_backend=larry,
         evaluation_backend=larry_stochastic_eval,
         dataset_label=f"LARRY {representation_label}",
-        default_output_folder=f"outputs/larry_{representation}_stochastic",
+        default_output_folder=f"outputs/larry_{representation_tag}_stochastic",
         trajectory_tag="heldout_d2",
     )
     return 0

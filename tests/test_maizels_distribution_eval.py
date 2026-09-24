@@ -109,6 +109,13 @@ def test_final_eval_promotes_validation_and_test_emd_metrics(monkeypatch):
         "_compute_maizels_population_trajectory_metrics",
         lambda *args, **kwargs: {},
     )
+    monkeypatch.setattr(
+        logging_common,
+        "_compute_observed_marginal_emd_metrics",
+        lambda *args, **kwargs: {
+            "final_eval/D3_to_D8_rollout_evaluation_emd": 4.0
+        },
+    )
     monkeypatch.setattr(logging_common.wandb, "log", lambda payload: None)
     monkeypatch.setattr(logging_common.wandb, "run", None)
 
@@ -122,3 +129,55 @@ def test_final_eval_promotes_validation_and_test_emd_metrics(monkeypatch):
     assert metrics["final_eval/direct_mean_emd"] == 2.0
     assert metrics["final_eval/direct_mean_emd_hparam_val_times"] == 1.0
     assert metrics["final_eval/direct_mean_emd_test_times"] == 3.0
+    assert metrics["final_eval/D3_to_D8_rollout_evaluation_emd"] == 4.0
+
+
+def test_observed_eval_uses_nearest_population_and_separate_rollout(monkeypatch):
+    cfg = maizels_pca50.get_config(1, maizels_schedule="d3_d3p8_d8")
+    pools = {
+        "D3": _pool(0.0),
+        "D3.8": _pool(10.0),
+        "D8": _pool(20.0),
+    }
+    monkeypatch.setattr(
+        maizels,
+        "timepoint_pool_splits",
+        lambda cfg, dataset_location=None: pools,
+    )
+    seen = []
+
+    def fake_flowmap(apply_fn, params, xs, labels, **kwargs):
+        seen.append((float(np.mean(xs)), kwargs["n_steps"]))
+        return np.asarray(xs) + 1.0
+
+    monkeypatch.setattr(
+        logging_common,
+        "_flowmap_terminal_between",
+        fake_flowmap,
+    )
+    monkeypatch.setattr(
+        logging_common,
+        "_euler_terminal_between",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("flow-map training used Euler observed evaluation")
+        ),
+    )
+    monkeypatch.setattr(
+        logging_common,
+        "_mfm_exact_emd",
+        lambda prediction, target: float(np.mean(prediction)),
+    )
+
+    metrics = logging_common._compute_observed_marginal_emd_metrics(
+        cfg,
+        SimpleNamespace(apply_fn=lambda *args, **kwargs: None),
+        {},
+    )
+
+    assert seen == [(0.0, 50), (10.0, 50), (1.0, 50)]
+    assert metrics["final_eval/observed_D3_to_D3p8_flowmap_emd"] == 1.0
+    assert metrics["final_eval/observed_D3p8_to_D8_flowmap_emd"] == 11.0
+    assert metrics["final_eval/observed_flowmap_mean_emd"] == 6.0
+    assert metrics["final_eval/D3_to_D8_rollout_flowmap_emd"] == 2.0
+    assert metrics["final_eval/D3_to_D8_rollout_evaluation_emd"] == 2.0
+    assert "final_eval/source_to_final_rollout_evaluation_emd" not in metrics

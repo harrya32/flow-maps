@@ -42,6 +42,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--heldout-day", "--heldout_day", choices=("3", "4"), default="4"
     )
+    parser.add_argument(
+        "--cite-multi-time-mode",
+        "--cite_multi_time_mode",
+        choices=("equal_time", "real_time"),
+        default=None,
+        help=(
+            "Equally space D2,D3,D4,D7 or use normalized elapsed "
+            "experimental days (default: equal_time)."
+        ),
+    )
     parser.add_argument("--dataset-location", "--dataset_location", default="")
     parser.add_argument("--output-folder", "--output_folder", default="")
     parser.add_argument("--classifier-path", "--classifier_path", default=None)
@@ -113,6 +123,7 @@ def _build_config(args: argparse.Namespace):
         "output_folder": args.output_folder,
         "dataset_name": args.dataset_name,
         "heldout_day": args.heldout_day,
+        "cite_multi_time_mode": args.cite_multi_time_mode,
         "classifier_path": args.classifier_path,
         "full_data_classifier_path": args.full_data_classifier_path,
         "learning_rate": args.learning_rate,

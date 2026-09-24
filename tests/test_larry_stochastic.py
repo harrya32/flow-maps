@@ -27,7 +27,7 @@ def available_larry_classifiers(monkeypatch):
     )
 
 
-def test_config_exposes_all_seven_larry_spring_ssfm_variants():
+def test_config_exposes_all_nine_larry_spring_ssfm_variants():
     expected = (
         ("none", False, False),
         ("endpoint", False, False),
@@ -36,6 +36,8 @@ def test_config_exposes_all_seven_larry_spring_ssfm_variants():
         ("ot_endpoint", True, True),
         ("ot_plain", False, True),
         ("ot_endpoint", True, True),
+        ("ot_endpoint_interpolant", False, True),
+        ("ot_endpoint_interpolant", True, True),
     )
     for slurm_id, (pair_mode, constrained, minibatch_ot) in enumerate(expected):
         cfg = larry_spring2d_stochastic.get_config(
@@ -48,7 +50,9 @@ def test_config_exposes_all_seven_larry_spring_ssfm_variants():
         assert cfg.problem.d == 2
         assert cfg.problem.maizels_pair_mode == pair_mode
         assert cfg.problem.pair_mode == pair_mode
-        assert cfg.problem.n_interpolant_check_times == 0
+        assert cfg.problem.n_interpolant_check_times == (
+            50 if pair_mode == "ot_endpoint_interpolant" else 0
+        )
         assert bool(cfg.constraints.enabled) is constrained
         assert larry.uses_minibatch_ot(cfg) is minibatch_ot
         assert cfg.problem.ot_minibatch_size == 32
@@ -58,6 +62,8 @@ def test_config_exposes_all_seven_larry_spring_ssfm_variants():
         assert cfg.evaluation.clone_target_times == ["D4", "D6"]
         assert cfg.evaluation.clone_samples_per_source == 32
         assert cfg.evaluation.clone_n_noise_draws == 3
+        assert cfg.evaluation.clone_min_source_cells == 1
+        assert cfg.evaluation.clone_min_target_cells == 10
         expected_path_mode = (
             "stochastic_rollout_endpoint_nll"
             if slurm_id == 6
@@ -102,7 +108,7 @@ def test_pca50_stochastic_config_only_changes_larry_representation():
         "celltype_classifier_larry_hvg2000_pca50_all_days.pt"
     )
     assert pca.logging.output_name.startswith("larry_pca50_holdout_d4_")
-    assert pca.evaluation.evaluate_instantaneous_and_ema
+    assert not pca.evaluation.evaluate_instantaneous_and_ema
 
     assert pca.problem.maizels_pair_mode == spring.problem.maizels_pair_mode
     assert pca.optimization.to_dict() == spring.optimization.to_dict()
@@ -110,10 +116,45 @@ def test_pca50_stochastic_config_only_changes_larry_representation():
     assert pca.constraints.to_dict() == spring.constraints.to_dict()
 
 
+def test_pca50_stochastic_config_supports_clone_labelled_subset(tmp_path):
+    cfg = larry_pca50_stochastic.get_config(
+        4,
+        dataset_location=str(tmp_path),
+        total_steps=20,
+        batch_size=8,
+        n_pairs=24,
+        larry_clone_labelled_only=True,
+    )
+
+    assert cfg.problem.larry_clone_labelled_only
+    assert Path(cfg.problem.dataset_location).name == (
+        "stateFate_inVitro_clone_labelled_hvg2000_pca50.h5ad"
+    )
+    assert "clone_labelled" in cfg.logging.output_name
+
+
+def test_pca_stochastic_config_supports_arbitrary_dimension(tmp_path):
+    cfg = larry_pca50_stochastic.get_config(
+        4,
+        dataset_location=str(tmp_path),
+        total_steps=20,
+        batch_size=8,
+        n_pairs=24,
+        larry_n_pcs=20,
+    )
+
+    assert cfg.problem.n_pcs == 20
+    assert cfg.problem.d == 20
+    assert tuple(cfg.network.input_dims) == (20,)
+    assert cfg.network.output_dim == 20
+    assert "pca20" in cfg.logging.output_name
+
+
 def test_final_evaluation_separates_instantaneous_and_ema_metrics(tmp_path):
     cfg = larry_spring2d_stochastic.get_config(
         0, total_steps=20, batch_size=8, n_pairs=24
     )
+    cfg.evaluation.evaluate_instantaneous_and_ema = True
     calls = []
 
     class FakeEvaluationBackend:
@@ -165,6 +206,10 @@ def test_launcher_applies_clone_and_runtime_overrides():
             "7",
             "--clone_noise_draws",
             "2",
+            "--clone_min_source_cells",
+            "3",
+            "--clone_min_target_cells",
+            "5",
             "--clone_target_times",
             "D4",
             "--clone_eval_batch_size",
@@ -179,11 +224,39 @@ def test_launcher_applies_clone_and_runtime_overrides():
     assert cfg.problem.ot_minibatch_size == 4
     assert cfg.evaluation.clone_samples_per_source == 7
     assert cfg.evaluation.clone_n_noise_draws == 2
+    assert cfg.evaluation.clone_min_source_cells == 3
+    assert cfg.evaluation.clone_min_target_cells == 5
     assert cfg.evaluation.clone_target_times == ["D4"]
     assert cfg.evaluation.clone_batch_size == 64
     assert cfg.evaluation.flowmap_n_steps == 9
     assert cfg.evaluation.lineage_n_steps == 9
     assert cfg.evaluation.clone_flowmap_n_steps == 9
+
+
+def test_launcher_propagates_clone_labelled_training_setting(tmp_path):
+    args = larry_stochastic_launcher.parse_args(
+        [
+            "--cfg_path",
+            "configs.larry_pca50_stochastic",
+            "--slurm_id",
+            "0",
+            "--dataset_location",
+            str(tmp_path),
+            "--larry_clone_labelled_only",
+            "--larry_n_pcs",
+            "20",
+            "--total_steps",
+            "20",
+            "--batch_size",
+            "8",
+            "--n_pairs",
+            "24",
+        ]
+    )
+    cfg = larry_stochastic_launcher._build_config(args)
+
+    assert cfg.problem.larry_clone_labelled_only
+    assert cfg.problem.n_pcs == 20
 
 
 def test_multiseed_runner_builds_selected_larry_setting_commands(tmp_path):
@@ -205,13 +278,20 @@ def test_multiseed_runner_builds_selected_larry_setting_commands(tmp_path):
             "9",
             "--clone_noise_draws",
             "2",
+            "--clone_min_source_cells",
+            "3",
+            "--clone_min_target_cells",
+            "5",
             "--clone_target_times",
             "D4,D6",
+            "--larry_clone_labelled_only",
+            "--larry_n_pcs",
+            "20",
             "--python",
             "/env/python",
         ]
     )
-    assert run_larry_stochastic_multiseed.parse_slurm_ids("0,4", 7) == (0, 4)
+    assert run_larry_stochastic_multiseed.parse_slurm_ids("0,4", 9) == (0, 4)
 
     baseline = run_larry_stochastic_multiseed.build_command(
         args,
@@ -219,6 +299,7 @@ def test_multiseed_runner_builds_selected_larry_setting_commands(tmp_path):
         seed=2,
         constrained=False,
         minibatch_ot=False,
+        interpolant_filter=False,
         output_folder=tmp_path / "baseline",
         metrics_path=tmp_path / "baseline.json",
     )
@@ -228,6 +309,7 @@ def test_multiseed_runner_builds_selected_larry_setting_commands(tmp_path):
         seed=7,
         constrained=True,
         minibatch_ot=True,
+        interpolant_filter=False,
         output_folder=tmp_path / "constrained",
         metrics_path=tmp_path / "constrained.json",
     )
@@ -240,13 +322,61 @@ def test_multiseed_runner_builds_selected_larry_setting_commands(tmp_path):
     assert "--entropy_weight" not in baseline
     assert "--ot_minibatch_size" not in baseline
     assert baseline[baseline.index("--clone_samples_per_source") + 1] == "9"
+    assert baseline[baseline.index("--clone_min_source_cells") + 1] == "3"
+    assert baseline[baseline.index("--clone_min_target_cells") + 1] == "5"
     assert baseline[baseline.index("--clone_target_times") + 1] == "D4,D6"
+    assert "--larry_clone_labelled_only" in baseline
+    assert baseline[baseline.index("--larry_n_pcs") + 1] == "20"
 
     assert constrained_ot[constrained_ot.index("--slurm_id") + 1] == "4"
     assert constrained_ot[constrained_ot.index("--seed") + 1] == "7"
     assert constrained_ot[constrained_ot.index("--constraint_weight") + 1] == "6.0"
     assert constrained_ot[constrained_ot.index("--entropy_weight") + 1] == "0.02"
     assert constrained_ot[constrained_ot.index("--ot_minibatch_size") + 1] == "12"
+
+
+def test_interpolant_filter_override_is_scoped_to_matched_ablation(tmp_path):
+    args = run_larry_stochastic_multiseed.parse_args(
+        [
+            "--interpolant_check_times",
+            "12",
+            "--ot_minibatch_size",
+            "8",
+            "--python",
+            "/env/python",
+        ]
+    )
+    filtered = run_larry_stochastic_multiseed.build_command(
+        args,
+        slurm_id=7,
+        seed=0,
+        constrained=False,
+        minibatch_ot=True,
+        interpolant_filter=True,
+        output_folder=tmp_path / "filtered",
+        metrics_path=tmp_path / "filtered.json",
+    )
+    endpoint_only = run_larry_stochastic_multiseed.build_command(
+        args,
+        slurm_id=3,
+        seed=0,
+        constrained=False,
+        minibatch_ot=True,
+        interpolant_filter=False,
+        output_folder=tmp_path / "endpoint",
+        metrics_path=tmp_path / "endpoint.json",
+    )
+
+    assert filtered[filtered.index("--interpolant_check_times") + 1] == "12"
+    assert "--interpolant_check_times" not in endpoint_only
+    assert (
+        larry_spring2d_stochastic.get_config(
+            7, interpolant_check_times=12
+        ).problem.n_interpolant_check_times
+        == 12
+    )
+    with pytest.raises(ValueError, match="relevant only"):
+        larry_spring2d_stochastic.get_config(3, interpolant_check_times=12)
 
 
 def test_shared_launcher_uses_larry_minibatch_ot_backend(monkeypatch):
@@ -389,6 +519,7 @@ def test_clone_wasserstein_repeats_each_source_and_uses_original_cell_weights(
         n_pairs=20,
         clone_samples_per_source=3,
         clone_noise_draws=2,
+        clone_min_target_cells=1,
     )
     cfg.evaluation.clone_target_times = ["D4"]
     data = {
@@ -456,6 +587,7 @@ def test_local_only_clone_eval_uses_euler_maruyama_batches(monkeypatch):
         n_pairs=20,
         clone_samples_per_source=2,
         clone_noise_draws=1,
+        clone_min_target_cells=1,
     )
     cfg.evaluation.clone_target_times = ["D4"]
     data = {

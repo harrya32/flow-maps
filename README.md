@@ -133,6 +133,7 @@ python py/launchers/learn.py \
     --slurm_id 3 \
     --dataset_name cite \
     --heldout_day 4 \
+    --cite_multi_time_mode equal_time \
     --output_folder /path/to/outputs
 
 # Direct strong stochastic flow-map counterpart (also accepts "multi").
@@ -140,6 +141,7 @@ python py/launchers/cite_multi_stochastic.py \
     --slurm_id 4 \
     --dataset_name cite \
     --heldout_day 4 \
+    --cite_multi_time_mode equal_time \
     --dataset_location ~/Desktop/flow-maps-data \
     --output_folder outputs/cite_multi_stochastic
 
@@ -211,6 +213,34 @@ checkpoint pairs, validation reports, and loss curves under
 pair filtering and differentiable lineage constraints; the all-days model is
 used only for evaluation.
 
+To train the PCA50 experiment using only cells with clone assignments, add
+`--larry_clone_labelled_only` to either the deterministic or stochastic LARRY
+launcher. On its first use, the launcher fits a separate PCA on clone-labelled
+D2, D4, and D6 cells, then trains separate D2/D6 and all-days classifiers on
+that representation before starting the flow model. Later jobs reuse the
+clone-specific H5AD and `.npz` classifier caches. For example:
+
+```bash
+python py/launchers/larry_stochastic.py \
+    --cfg_path configs.larry_pca50_stochastic \
+    --slurm_id 4 \
+    --dataset_location ~/Desktop/flow-maps-data \
+    --larry_n_pcs 20 \
+    --larry_clone_labelled_only \
+    --output_folder outputs/larry_pca20_clone_labelled_stochastic
+```
+
+The corresponding deterministic command uses `py/launchers/learn.py` and
+`configs.larry_pca50`. Set `--larry_n_pcs N` on either launcher to use another
+PCA dimension; for non-default dimensions, the matching H5AD and both
+classifiers are likewise created on first use and then cached. This can be
+combined with `--larry_clone_labelled_only`. The clone-only 50-PC caches are named
+`stateFate_inVitro_clone_labelled_hvg2000_pca50.h5ad` and
+`celltype_classifier_larry_clone_labelled_hvg2000_pca50_*.{pt,npz}`. Set
+`LARRY_ARTIFACT_PYTHON` if the flow-training Python cannot import the Scanpy
+and PyTorch preprocessing dependencies. The published SPRING coordinates are
+not refitted, so these options are intentionally limited to PCA experiments.
+
 The LARRY config exposes six Slurm IDs: 0 is the independent flow-map baseline;
 1 adds lineage filtering; 2 additionally adds the differentiable lineage
 constraint; 3 uses plain minibatch OT; 4 adds lineage filtering to minibatch
@@ -240,25 +270,29 @@ evaluation protocol as `configs.larry_pca50`, with representation-specific
 classifiers and output names.
 
 `configs.larry_spring2d_stochastic` and
-`py/launchers/larry_stochastic.py` expose the seven SSFM variants used by the
+`py/launchers/larry_stochastic.py` expose nine SSFM variants used by the
 other lineage experiments: standard, endpoint-prior, endpoint-prior
 constrained, prior-filtered minibatch OT, its directly constrained version,
-plain minibatch OT, and rollout-constrained prior-filtered minibatch OT. Final
-population and classifier metrics use 50-step composed stochastic maps for
-IDs 0--5 and 50-step Euler--Maruyama rollouts for local-only ID 6.
-For every clone represented at D2 and a requested target day, the stochastic
-clone evaluator draws an equal number of independent futures from each D2
-cell, using the same sampler selected above, and compares their pooled
-empirical distribution with all observed target cousins using exact W1, then
-averages over independent Monte Carlo repeats. D4 and D6 are evaluated by
-default; D4 remains the held-out
+plain minibatch OT, rollout-constrained prior-filtered minibatch OT, and a
+matched pair of straight-line-filtered minibatch-OT ablations (IDs 7 and 8).
+Final population and classifier metrics use 50-step composed stochastic maps
+for IDs 0--5 and 7--8, and 50-step Euler--Maruyama rollouts for local-only ID
+6. For every clone meeting the configured D2 and target-day support
+thresholds, the stochastic clone evaluator draws an equal number of
+independent futures from each D2 cell, using the same sampler selected above,
+and compares their pooled empirical distribution with all observed target
+cousins using exact W1, then averages over independent Monte Carlo repeats.
+D4 and D6 are evaluated by default; D4 remains the held-out
 interpolation test, whereas D6 is an endpoint diagnostic. The defaults are 32
-samples per source cell and three repeats, configurable with
-`--clone_samples_per_source` and `--clone_noise_draws`.
+samples per source cell, three repeats, at least one D2 source cell, and at
+least ten target cells. These are configurable with
+`--clone_samples_per_source`, `--clone_noise_draws`,
+`--clone_min_source_cells`, and `--clone_min_target_cells`.
 
-The same stochastic catalogue is available in the 50-dimensional HVG-PCA
-space through `configs.larry_pca50_stochastic`. It selects the PCA50 H5AD and
-PCA50 classifier checkpoints automatically; all remaining model, coupling,
+The same stochastic catalogue is available in the HVG-PCA space through
+`configs.larry_pca50_stochastic`, using 50 PCs by default. Pass
+`--larry_n_pcs N` to select another dimension; its H5AD and classifier
+checkpoints are prepared automatically. All remaining model, coupling,
 constraint, training, and evaluation defaults are identical to SPRING2D:
 
 ```bash
@@ -280,7 +314,7 @@ The multiseed runner accepts the same configuration via
 `--cfg-path configs.larry_pca50_stochastic`; set `--output-dir` to a PCA50
 directory to keep its summaries separate from the SPRING2D runs.
 
-Run any selection of the seven LARRY stochastic settings over several seeds:
+Run any selection of the nine LARRY stochastic settings over several seeds:
 
 ```bash
 python scripts/run_larry_stochastic_multiseed.py \
@@ -294,8 +328,14 @@ time. Per-run metrics are written to
 `outputs/larry_spring2d_stochastic_multiseed/results.csv`; `summary.csv`
 contains across-seed means and standard deviations for population EMD,
 classifier lineage diagnostics, and all D4/D6 clone-conditioned Wasserstein
-metrics. Use `--slurm-ids all` for all seven settings and `--dry-run` to inspect
+metrics. Use `--slurm-ids all` for all nine settings and `--dry-run` to inspect
 the complete command matrix without starting training.
+
+LARRY stochastic IDs 7 and 8 are matched straight-line-filter ablations:
+both use `ot_endpoint_interpolant` with 50 classifier checks per candidate
+segment, while ID 8 additionally applies the differentiable lineage loss.
+Use `--clone_min_source_cells` and `--clone_min_target_cells` to set the two
+minimum clone-support thresholds recorded in the multiseed comparison.
 
 For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
 `--heldout_day` is `3` or `4`. Its IDs mirror the Maizels experiment: 0 is
@@ -313,6 +353,15 @@ training and validation losses is saved beside every checkpoint pair. The
 script's automatic device selection uses CUDA when available and CPU otherwise;
 MPS remains available explicitly but is not selected automatically because its
 BatchNorm running statistics can become unstable in this workload.
+
+CITE/Multi deterministic and stochastic runs accept
+`--cite_multi_time_mode equal_time|real_time`. The default `equal_time` clock
+maps D2, D3, D4, D7 to `(0, 1/3, 2/3, 1)`; `real_time` uses elapsed days and
+maps them to `(0, 1/5, 2/5, 1)`. The selected global clock is used consistently
+for training, held-out-day EMD/MMD, composed flow-map sampling, and classifier
+trajectory metrics. The four-day grid is fixed before omitting D3 or D4, so
+the three retained marginals are not re-spaced. The mode is also included in
+run names.
 
 The separate `configs.cite_multi_stochastic` configuration and
 `py/launchers/cite_multi_stochastic.py` launcher provide seven direct SSFM
@@ -339,6 +388,7 @@ python scripts/run_cite_multi_stochastic_multiseed.py \
     --seeds 0,1,2,3,4 \
     --datasets cite,multi \
     --heldout-days 3,4 \
+    --cite-multi-time-mode real_time \
     --dataset-location ~/Desktop/flow-maps-data
 ```
 
@@ -387,6 +437,13 @@ the CITE/Multi-specific lineage graph. They report the shared
 `final_eval/full_data_classifier/euler_invalid_trajectory_pct` metric from the
 best validation-loss checkpoint, alongside `test_EMD`/`mfm/test_EMD` and
 `final_eval/euler_mean_rbf_mmd2`.
+
+An SF2M baseline is available in the same PyTorch evaluation stack via
+`metric-flow-matching/configs/single_cell/{100dims,50dims}/sf2m_*.yaml`.
+It uses TorchCFM's `SchrodingerBridgeConditionalFlowMatcher`, trains both the
+velocity and score fields, and evaluates 50-step Euler--Maruyama paths on the
+same Maizels/CITE/Multi splits, EMD, RBF MMD2, and classifier-lineage metrics.
+See `metric-flow-matching/README.md` for commands and metric names.
 
 Run a resumable Maizels hyperparameter grid with:
 
@@ -479,12 +536,14 @@ Run all seven CITE/Multi methods over a seed grid with:
 
 ```bash
 SEEDS="1 2 3" DATASETS="cite multi" HELDOUT_DAYS="3 4" \
+  TIME_MODES="equal_time real_time" \
   ./cite_multi_pca100_sweep.sh
 ```
 
-The defaults shown above produce 60 runs. Any grid axis can be restricted, for
-example `DATASETS=cite HELDOUT_DAYS=4 SLURM_IDS="0 1"`. Set `DRY_RUN=1` to
-print and validate the commands without launching training.
+The command shown above sweeps both clocks. The script defaults to
+`TIME_MODES=equal_time` for backward compatibility. Any grid axis can be
+restricted, for example `DATASETS=cite HELDOUT_DAYS=4 SLURM_IDS="0 1"`. Set
+`DRY_RUN=1` to print and validate the commands without launching training.
 
 The algorithm can be selected via `slurm_id`, which can also be used to run all experiments simultaneously with a slurm job array:
 
@@ -522,6 +581,7 @@ python py/launchers/eval_maizels_heldout.py \
     --slurm_id 3 \
     --dataset_name cite \
     --heldout_day 4 \
+    --cite_multi_time_mode equal_time \
     --checkpoint /path/to/checkpoint.pkl \
     --out_dir /path/to/outputs/cite_holdout_day4
 ```

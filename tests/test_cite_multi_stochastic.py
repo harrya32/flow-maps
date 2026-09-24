@@ -39,6 +39,7 @@ def test_config_exposes_all_seven_ssfm_variants_for_both_datasets():
             assert cfg.problem.d == 100
             assert cfg.evaluation.max_source_points == 0
             assert cfg.evaluation.max_target_points == 0
+            assert cfg.evaluation.observed_marginal_emd_enabled
             assert cfg.evaluation.flowmap_n_steps == 100
             assert cfg.optimization.early_stopping.check_freq == 100
             assert cfg.optimization.early_stopping.patience == 10
@@ -80,6 +81,8 @@ def test_launcher_builds_requested_dataset_and_runtime_overrides():
             "multi",
             "--heldout_day",
             "3",
+            "--cite_multi_time_mode",
+            "real_time",
             "--visual_frequency",
             "250",
             "--eval_noise_draws",
@@ -91,6 +94,8 @@ def test_launcher_builds_requested_dataset_and_runtime_overrides():
     cfg = cite_multi_stochastic_launcher._build_config(args)
     assert cfg.problem.dataset_name == "multi"
     assert cfg.problem.heldout_timepoint == "3"
+    assert cfg.problem.cite_multi_time_mode == "real_time"
+    assert cfg.problem.timepoint_values == pytest.approx([0.0, 0.2, 0.4, 1.0])
     assert cfg.problem.maizels_pair_mode == "ot_endpoint"
     assert cfg.constraints.enabled
     assert cfg.logging.visual_freq == 250
@@ -117,6 +122,8 @@ def test_multiseed_runner_parses_axes_and_forwards_relevant_options(tmp_path):
             "0.03",
             "--lineage-eval-max-points",
             "64",
+            "--cite-multi-time-mode",
+            "real_time",
         ]
     )
     common = {
@@ -136,6 +143,10 @@ def test_multiseed_runner_parses_axes_and_forwards_relevant_options(tmp_path):
     )
     assert unconstrained[unconstrained.index("--dataset_name") + 1] == "multi"
     assert unconstrained[unconstrained.index("--heldout_day") + 1] == "3"
+    assert (
+        unconstrained[unconstrained.index("--cite_multi_time_mode") + 1]
+        == "real_time"
+    )
     assert "--constraint_weight" not in unconstrained
     assert "--entropy_weight" not in unconstrained
     assert constrained[constrained.index("--constraint_weight") + 1] == "12.0"
@@ -283,6 +294,37 @@ def test_local_only_distribution_eval_uses_only_euler_maruyama(monkeypatch):
     assert "mfm/test_EMD_direct_ssfm" not in metrics
     assert "mfm/test_EMD_flowmap" not in metrics
     assert [values.shape[0] for values in plot_data["4"]] == [5, 3]
+
+
+def test_final_evaluation_adds_observed_and_rollout_metrics(monkeypatch, tmp_path):
+    cfg = cite_multi_stochastic.get_config(
+        0, heldout_day="4", total_steps=10, batch_size=8, n_pairs=20
+    )
+    cfg.evaluation.save_plot = False
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval,
+        "distribution_metrics",
+        lambda *args, **kwargs: ({"final_eval/heldout": 1.0}, {}),
+    )
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval.shared_eval,
+        "observed_distribution_metrics",
+        lambda *args, **kwargs: {
+            "final_eval/day2_to_day7_rollout_evaluation_emd": 2.0
+        },
+    )
+    monkeypatch.setattr(
+        cite_multi_stochastic_eval,
+        "lineage_metrics",
+        lambda *args, **kwargs: {},
+    )
+
+    metrics = cite_multi_stochastic_eval.final_evaluation(
+        object(), {}, cfg, tmp_path
+    )
+
+    assert metrics["final_eval/heldout"] == 1.0
+    assert metrics["final_eval/day2_to_day7_rollout_evaluation_emd"] == 2.0
 
 
 def test_lineage_eval_uses_heldout_day2_cells_and_both_classifiers(

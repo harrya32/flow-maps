@@ -2055,8 +2055,8 @@ def compute_mfm_distribution_metrics(
     source = _mfm_population_subset(source_all, max_points, rng)
     actual = _mfm_population_subset(actual_all, max_points, rng)
 
-    start_time = cite_multi.normalized_time(source_timepoint)
-    end_time = cite_multi.normalized_time(heldout_timepoint)
+    start_time = cite_multi.normalized_time(source_timepoint, cfg)
+    end_time = cite_multi.normalized_time(heldout_timepoint, cfg)
     euler_steps = int(getattr(mfm_cfg, "euler_steps", 100))
     params = dist_utils.safe_unreplicate(cfg, train_state.params)
     source_jax = jnp.asarray(source, dtype=jnp.float32)
@@ -2632,6 +2632,214 @@ def _log_maizels_distribution_eval(
 
     if metrics:
         wandb.log(metrics)
+    return metrics
+
+
+def _lineage_observed_time_tag(timepoint: str) -> str:
+    """Return a readable metric tag for an observed lineage timepoint."""
+    tag = _maizels_time_tag(timepoint)
+    return tag if str(timepoint).upper().startswith("D") else f"day{tag}"
+
+
+def _compute_observed_marginal_emd_metrics(
+    cfg: config_dict.ConfigDict,
+    train_state: state_utils.EMATrainState,
+    params_for_evaluation: Dict,
+) -> Dict[str, float]:
+    """Evaluate observed intervals and the complete source-to-target rollout.
+
+    Each observed interval starts from its real left-endpoint population.  The
+    separate rollout starts from the original source population once and then
+    carries the prediction through every retained interval.  Flow-matching-only
+    models use their Euler sampler; all other deterministic variants use the
+    composed learned flow map.
+    """
+    if getattr(cfg.problem, "target", None) not in {
+        "maizels_pca50",
+        "cite_multi_pca100",
+    }:
+        return {}
+    maizels_cfg = getattr(cfg.logging, "maizels", None)
+    if maizels_cfg is None or not bool(
+        getattr(maizels_cfg, "observed_distribution_eval_enabled", True)
+    ):
+        return {}
+
+    backend = _lineage_backend(cfg)
+    retained = tuple(str(value) for value in backend.retained_timepoints(cfg))
+    if len(retained) < 2:
+        return {}
+    dataset_location = getattr(cfg.problem, "dataset_location", None)
+    pools = backend.timepoint_pool_splits(
+        cfg,
+        dataset_location=dataset_location,
+    )
+    sampler = "euler" if is_diagonal_only_training(cfg) else "flowmap"
+
+    if getattr(cfg.problem, "target", None) == "cite_multi_pca100":
+        mfm_cfg = getattr(cfg.logging, "mfm", None)
+        max_source_points = int(getattr(mfm_cfg, "max_points", 0))
+        max_target_points = max_source_points
+        seed = int(
+            getattr(
+                mfm_cfg,
+                "seed",
+                int(getattr(cfg.training, "seed", 0)) + 2901,
+            )
+        )
+        n_steps = int(
+            getattr(
+                mfm_cfg,
+                "euler_steps" if sampler == "euler" else "flowmap_steps",
+                100,
+            )
+        )
+        source_pool_name = "all"
+    else:
+        max_target_points = int(
+            getattr(maizels_cfg, "distribution_eval_points_per_time", 512)
+        )
+        max_source_points = int(
+            getattr(
+                maizels_cfg,
+                "distribution_eval_source_max_points",
+                max_target_points,
+            )
+        )
+        seed = int(
+            getattr(
+                maizels_cfg,
+                "distribution_eval_seed",
+                int(getattr(cfg.training, "seed", 0)) + 1701,
+            )
+        )
+        source_pool_name = _maizels_distribution_eval_split(
+            cfg,
+            maizels_cfg,
+            max_target_points,
+            dataset_location,
+        )
+        n_steps = int(
+            getattr(
+                maizels_cfg,
+                (
+                    "distribution_eval_euler_n_steps"
+                    if sampler == "euler"
+                    else "distribution_eval_flowmap_n_steps"
+                ),
+                getattr(maizels_cfg, "euler_n_steps", 25),
+            )
+        )
+    if n_steps <= 0:
+        raise ValueError("Observed-marginal evaluation requires positive steps.")
+
+    rng = np.random.default_rng(seed)
+
+    def source_population(timepoint: str) -> np.ndarray:
+        pool = pools[timepoint]
+        if source_pool_name == "all":
+            population = pool["x"]
+        else:
+            population = pool[f"{source_pool_name}_x"]
+        indices = _population_indices_without_replacement(
+            population.shape[0], max_source_points, rng
+        )
+        return np.asarray(population[indices], dtype=np.float32)
+
+    def target_population(timepoint: str) -> np.ndarray:
+        population = pools[timepoint]["x"]
+        indices = _population_indices_without_replacement(
+            population.shape[0], max_target_points, rng
+        )
+        return np.asarray(population[indices], dtype=np.float32)
+
+    sources = {
+        timepoint: source_population(timepoint) for timepoint in retained[:-1]
+    }
+    targets = {
+        timepoint: target_population(timepoint) for timepoint in retained[1:]
+    }
+
+    def pushforward(x: np.ndarray, source_time: str, target_time: str) -> np.ndarray:
+        start = float(backend.normalized_time(source_time, cfg))
+        end = float(backend.normalized_time(target_time, cfg))
+        x_jax = jnp.asarray(x, dtype=jnp.float32)
+        if sampler == "euler":
+            return _euler_terminal_between(
+                train_state.apply_fn,
+                params_for_evaluation,
+                x_jax,
+                None,
+                start_time=start,
+                end_time=end,
+                n_steps=n_steps,
+            )
+        return _flowmap_terminal_between(
+            train_state.apply_fn,
+            params_for_evaluation,
+            x_jax,
+            None,
+            start_time=start,
+            end_time=end,
+            n_steps=n_steps,
+        )
+
+    metrics: Dict[str, float] = {}
+    observed_emd = []
+    rollout = sources[retained[0]]
+    final_interval_emd = None
+    for interval_index, (source_time, target_time) in enumerate(
+        zip(retained[:-1], retained[1:])
+    ):
+        prediction = pushforward(sources[source_time], source_time, target_time)
+        emd = _mfm_exact_emd(prediction, targets[target_time])
+        final_interval_emd = emd
+        transition_tag = (
+            f"{_lineage_observed_time_tag(source_time)}_to_"
+            f"{_lineage_observed_time_tag(target_time)}"
+        )
+        metrics[
+            f"final_eval/observed_{transition_tag}_{sampler}_emd"
+        ] = emd
+        metrics[
+            f"final_eval/observed_{transition_tag}_evaluation_emd"
+        ] = emd
+        observed_emd.append(emd)
+
+        if interval_index == 0:
+            rollout = prediction
+        else:
+            rollout = pushforward(rollout, source_time, target_time)
+        print(
+            "Observed empirical EMD evaluation: "
+            f"{source_time}->{target_time}, sampler={sampler}, "
+            f"steps={n_steps}, source_n={prediction.shape[0]}, "
+            f"target_n={targets[target_time].shape[0]}, EMD={emd:.8g}"
+        )
+
+    metrics[f"final_eval/observed_{sampler}_mean_emd"] = float(
+        np.mean(observed_emd)
+    )
+    metrics["final_eval/observed_evaluation_mean_emd"] = metrics[
+        f"final_eval/observed_{sampler}_mean_emd"
+    ]
+    rollout_emd = (
+        float(final_interval_emd)
+        if len(retained) == 2
+        else _mfm_exact_emd(rollout, targets[retained[-1]])
+    )
+    rollout_tag = (
+        f"{_lineage_observed_time_tag(retained[0])}_to_"
+        f"{_lineage_observed_time_tag(retained[-1])}"
+    )
+    metrics[f"final_eval/{rollout_tag}_rollout_{sampler}_emd"] = rollout_emd
+    metrics[f"final_eval/{rollout_tag}_rollout_evaluation_emd"] = rollout_emd
+    print(
+        "Source-to-final empirical EMD evaluation: "
+        f"{retained[0]}->{retained[-1]}, sampler={sampler}, "
+        f"source_n={rollout.shape[0]}, target_n={targets[retained[-1]].shape[0]}, "
+        f"EMD={rollout_emd:.8g}"
+    )
     return metrics
 
 
@@ -3253,7 +3461,11 @@ def _log_larry_clone_wasserstein_eval(
     ):
         return {}
 
-    data = larry.all_timepoint_data(getattr(cfg.problem, "dataset_location", None))
+    data = larry.all_timepoint_data(
+        getattr(cfg.problem, "dataset_location", None),
+        representation=getattr(cfg.problem, "larry_representation", None),
+        n_pcs=int(getattr(cfg.problem, "n_pcs", larry.DEFAULT_N_PCS)),
+    )
     source_time = larry.format_timepoint(
         getattr(eval_cfg, "clone_source_time", "D2")
     )
@@ -3388,6 +3600,11 @@ def log_maizels_final_evaluation(
         params_for_evaluation,
         force=True,
     )
+    observed_distribution_metrics = _compute_observed_marginal_emd_metrics(
+        cfg,
+        train_state,
+        params_for_evaluation,
+    )
     trajectory_metrics = _compute_maizels_population_trajectory_metrics(
         cfg,
         train_state,
@@ -3403,6 +3620,7 @@ def log_maizels_final_evaluation(
     )
 
     final_metrics = {"final_eval/best_step": int(best_step)}
+    final_metrics.update(observed_distribution_metrics)
     if best_metric is not None and np.isfinite(best_metric):
         final_metrics["final_eval/best_validation_loss"] = float(best_metric)
 
@@ -4526,6 +4744,11 @@ def _maizels_validation_batch(cfg: config_dict.ConfigDict) -> Dict[str, jnp.ndar
         str(getattr(cfg.problem, "target_time", "D8")),
         tuple(str(value) for value in getattr(cfg.problem, "retained_timepoints", [])),
         str(getattr(cfg.problem, "maizels_time_mode", "real_time")),
+        str(getattr(cfg.problem, "cite_multi_time_mode", "")),
+        tuple(
+            float(value)
+            for value in getattr(cfg.problem, "timepoint_values", [])
+        ),
         pair_mode,
         n_val,
         seed,

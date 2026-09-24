@@ -36,6 +36,7 @@ import common.dist_utils as dist_utils
 import common.fid_utils as fid_utils
 import common.interpolant as interpolant
 import common.logging as logging
+import common.larry_artifact_training as larry_artifact_training
 import common.loss_args as loss_args
 import common.losses as losses
 import common.schiebinger_classifier_training as schiebinger_classifier_training
@@ -262,6 +263,15 @@ def parse_command_line_arguments():
         help="Internal day omitted by leave-one-timepoint-out configs.",
     )
     parser.add_argument(
+        "--cite_multi_time_mode",
+        choices=("equal_time", "real_time"),
+        default=None,
+        help=(
+            "CITE/Multi model clock: equally space D2,D3,D4,D7 or use "
+            "normalized elapsed experimental days."
+        ),
+    )
+    parser.add_argument(
         "--classifier_path",
         type=str,
         default=None,
@@ -272,6 +282,25 @@ def parse_command_line_arguments():
         type=str,
         default=None,
         help="Optional all-data classifier override for evaluation diagnostics.",
+    )
+    parser.add_argument(
+        "--larry_clone_labelled_only",
+        "--larry-clone-labelled-only",
+        action="store_true",
+        help=(
+            "For LARRY PCA experiments, fit/use a separately cached PCA and "
+            "both classifiers containing only clone-labelled cells."
+        ),
+    )
+    parser.add_argument(
+        "--larry_n_pcs",
+        "--larry-n-pcs",
+        type=int,
+        default=None,
+        help=(
+            "Number of LARRY principal components. Non-default PCA caches and "
+            "matching classifiers are prepared automatically when absent."
+        ),
     )
     parser.add_argument(
         "--early_stopping_patience",
@@ -378,8 +407,11 @@ def setup_config_dict(args=None):
     optional = {
         "dataset_name": args.dataset_name,
         "heldout_day": args.heldout_day,
+        "cite_multi_time_mode": args.cite_multi_time_mode,
         "classifier_path": args.classifier_path,
         "full_data_classifier_path": args.full_data_classifier_path,
+        "larry_clone_labelled_only": args.larry_clone_labelled_only,
+        "larry_n_pcs": args.larry_n_pcs,
         "early_stopping_patience": args.early_stopping_patience,
         "maizels_ot_coupling": args.maizels_ot_coupling,
         "ot_minibatch_size": args.ot_minibatch_size,
@@ -475,6 +507,7 @@ if __name__ == "__main__":
     print("Entering main. Setting up config dict and PRNG key.")
     args = parse_command_line_arguments()
     cfg = setup_config_dict(args)
+    larry_artifact_training.ensure_larry_artifacts(cfg)
     schiebinger_classifier_training.ensure_schiebinger_classifiers(cfg)
 
     # Populate JAX device information for single-node multi-GPU training

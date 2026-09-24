@@ -1,0 +1,39 @@
+{
+  "version": "curved_v5_smoke",
+  "dataset": {
+    "seed": 210921,
+    "start_time": 0.0,
+    "end_time": 2.0,
+    "snapshot_step": 0.2,
+    "training_times": [0.0, 1.0, 2.0],
+    "oracle_particles": 512,
+    "cells_per_time": 384,
+    "steps_per_unit": 100,
+    "coordinate_scale": 0.2,
+    "mixture_weights": [0.5, 0.3, 0.2],
+    "progress_mean": {"constant": 1.0, "linear": 3.0, "quadratic": 1.0},
+    "ramps": {
+      "a": [0.32, 0.65], "b": [0.65, 1.0], "c": [1.0, 1.38],
+      "d": [1.38, 1.76], "e": [1.76, 2.0], "f": [1.38, 1.74],
+      "g": [1.74, 2.0], "h": [1.0, 1.5], "j": [1.5, 2.0]
+    },
+    "phenotype_coefficients": {
+      "lower": {"a": -1.5, "b": -0.35, "h": -0.85, "j": 0.65},
+      "upper_down": {"a": 1.6, "b": 0.35, "c": 0.85, "f": -2.15, "g": 0.45},
+      "upper_up": {"a": 1.6, "b": 0.35, "c": 0.85, "d": 2.4, "e": -0.6}
+    },
+    "std_knots": [0.0, 0.32, 0.5, 1.0, 1.38, 1.55, 2.0],
+    "std_values": [[0.29, 0.29], [0.20, 0.24], [0.16, 0.20], [1.0, 0.22], [0.22, 0.24], [0.24, 0.26], [0.37, 0.45]],
+    "labels": {"first_x_boundary": 2.65, "second_x_boundary": 7.9, "lower_y_boundary": 0.0, "children_y_boundary": 2.8},
+    "true_diffusion": {"kind": "ground_truth", "progress_diffusion": 0.05, "diffusion_floor": 0.008, "first_diffusion_peak": 0.28, "second_diffusion_peak": 0.24, "first_branch_time": 0.29, "second_branch_time": 1.3, "first_diffusion_width": 0.12, "second_diffusion_width": 0.13}
+  },
+  "classifier": {"train_fraction": 0.8, "max_steps": 20, "patience": 3, "eval_every": 2, "learning_rate": 0.01},
+  "learning_split": {"train_cells_per_time": 64, "validation_cells_per_time": 32},
+  "priors": {"ground_truth_ot": {"kind": "ground_truth"}, "sigma_0p2_ot": {"kind": "constant", "sigma": 0.2}},
+  "network": {"width": 16, "depth": 1, "time_frequencies": 2},
+  "sf2m": {"base_steps": 2, "continuation_steps": 1, "batch_size": 16, "learning_rate": 0.001, "continuation_learning_rate": 0.00005, "eval_every": 1, "continuation_eval_every": 1, "validation_batch_size": 64, "maximum_base_increase": 0.05, "gradient_clip": 5.0, "weight_decay": 0.00001},
+  "strong_map": {"base_steps": 2, "continuation_steps": 1, "batch_size": 16, "composition_batch_size": 16, "rollout_batch_size": 8, "field_learning_rate": 0.001, "finite_learning_rate": 0.0005, "continuation_learning_rate": 0.00005, "eval_every": 1, "continuation_eval_every": 1, "validation_bridge_batch_size": 64, "validation_composition_batch_size": 32, "validation_fate_batch_size": 32, "noise_bins": 2, "anchor_step": 0.00390625, "ema_decay": 0.99, "horizons": [0.125, 0.25], "consistency_weight": 1.0, "fate_weight": 0.25, "fate_map_steps": 2, "fate_start_range": [1.0, 1.45], "fate_minimum_horizon": 0.5, "fate_end_time": 2.0, "maximum_base_increase": 0.05, "maximum_consistency_increase": 0.2, "consistency_guard_floor": 0.002, "gradient_clip": 5.0, "weight_decay": 0.00001},
+  "real_clift": {"steps": 2, "batch_size": 16, "validation_batch_size": 16, "local_fraction": 0.75, "local_step_fraction": 0.02, "time_eps_fraction": 0.005, "max_horizon_fraction": 0.98, "log_uniform_horizon": true, "horizon_curriculum_fraction": 0.5, "horizon_curriculum_power": 1.0, "constraint_batch_size": 4, "constraint_weight": 1.35, "local_loss_horizon_power": 2.0, "semigroup_loss_horizon_power": 1.0, "learning_rate": 0.001, "minimum_learning_rate": 0.0, "warmup_steps": 1, "eval_every": 1, "ema_decay": 0.999, "noise_bins": 2, "anchor_step": 0.0, "gradient_clip": 10.0, "weight_decay": 0.0001, "adam_beta1": 0.9, "adam_beta2": 0.99},
+  "evaluation": {"seed": 921901, "start_times": [0.55], "states_per_time": 2, "candidate_rollouts": 4, "reference_rollouts": 8, "reference_sw2_rollouts": 4, "sw2_directions": 4, "reference_steps_per_unit": 20, "conditional_map_steps_per_unit": 8, "conditional_sde_steps_per_unit": {"ground_truth_ot": 8, "sigma_0p2_ot": 8}, "conditional_candidate_seeds": [922401], "population_samples": 16, "population_replicates": 1, "marginal_candidate_seeds": [922501], "marginal_sde_steps_per_unit": 8, "marginal_map_steps_per_unit": 8, "save_paths": true},
+  "seeds": [21]
+}

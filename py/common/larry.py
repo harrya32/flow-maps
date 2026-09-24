@@ -50,11 +50,16 @@ DEFAULT_CLASSIFIER_DIR = Path(
 def pca_dataset_filename(
     n_pcs: int = DEFAULT_N_PCS,
     n_hvgs: int = DEFAULT_N_HVGS,
+    *,
+    clone_labelled_only: bool = False,
 ) -> str:
     """Return the canonical processed-data filename."""
     if int(n_pcs) <= 0 or int(n_hvgs) <= 0:
         raise ValueError("PCA dimensions and HVG counts must be positive.")
-    return f"stateFate_inVitro_hvg{int(n_hvgs)}_pca{int(n_pcs)}.h5ad"
+    subset = "_clone_labelled" if clone_labelled_only else ""
+    return (
+        f"stateFate_inVitro{subset}_hvg{int(n_hvgs)}_pca{int(n_pcs)}.h5ad"
+    )
 
 
 def spring_dataset_filename() -> str:
@@ -91,11 +96,21 @@ def representation_dataset_filename(
     *,
     n_pcs: int = DEFAULT_N_PCS,
     n_hvgs: int = DEFAULT_N_HVGS,
+    clone_labelled_only: bool = False,
 ) -> str:
     representation = canonical_representation(value)
     if representation == SPRING2D_REPRESENTATION:
+        if clone_labelled_only:
+            raise ValueError(
+                "clone_labelled_only requires the PCA representation; the "
+                "SPRING layout is not refitted."
+            )
         return spring_dataset_filename()
-    return pca_dataset_filename(n_pcs, n_hvgs)
+    return pca_dataset_filename(
+        n_pcs,
+        n_hvgs,
+        clone_labelled_only=clone_labelled_only,
+    )
 
 
 def is_larry_target(target: str | None) -> bool:
@@ -151,6 +166,7 @@ def classifier_checkpoint_path(
     n_pcs: int = DEFAULT_N_PCS,
     n_hvgs: int = DEFAULT_N_HVGS,
     representation: str = PCA50_REPRESENTATION,
+    clone_labelled_only: bool = False,
 ) -> Path:
     """Return a canonical LARRY classifier checkpoint path."""
     if all_days == (training_timepoints is not None):
@@ -163,9 +179,17 @@ def classifier_checkpoint_path(
     )
     representation = canonical_representation(representation)
     if representation == SPRING2D_REPRESENTATION:
+        if clone_labelled_only:
+            raise ValueError(
+                "clone_labelled_only classifiers require the PCA representation."
+            )
         stem = f"celltype_classifier_larry_spring2d_{variant}"
     else:
-        stem = f"celltype_classifier_larry_hvg{int(n_hvgs)}_pca{int(n_pcs)}_{variant}"
+        subset = "_clone_labelled" if clone_labelled_only else ""
+        stem = (
+            f"celltype_classifier_larry{subset}_hvg{int(n_hvgs)}_"
+            f"pca{int(n_pcs)}_{variant}"
+        )
     return root / f"{stem}.pt"
 
 
@@ -178,8 +202,15 @@ def resolve_dataset_path(
     n_pcs: int = DEFAULT_N_PCS,
     n_hvgs: int = DEFAULT_N_HVGS,
     representation: str = PCA50_REPRESENTATION,
+    clone_labelled_only: bool = False,
 ) -> Path:
     """Resolve a processed H5AD directory or explicit H5AD path."""
+    representation = canonical_representation(representation)
+    if clone_labelled_only and representation != PCA50_REPRESENTATION:
+        raise ValueError(
+            "clone_labelled_only requires the PCA representation; the SPRING "
+            "layout is not refitted."
+        )
     location = (
         DEFAULT_DATA_DIR
         if dataset_location in (None, "")
@@ -193,6 +224,7 @@ def resolve_dataset_path(
             representation,
             n_pcs=n_pcs,
             n_hvgs=n_hvgs,
+            clone_labelled_only=clone_labelled_only,
         )
     ).resolve()
 
@@ -268,6 +300,7 @@ def load_dataset(
     dataset_path: str | Path,
     *,
     representation: str | None = None,
+    n_pcs: int | None = None,
 ) -> Dict[str, np.ndarray]:
     """Load one LARRY representation, annotations, barcodes, and clone ids."""
     path = Path(dataset_path).expanduser().resolve()
@@ -300,13 +333,21 @@ def load_dataset(
         else:
             selected_representation = canonical_representation(representation)
         selected_key = representation_key(selected_representation)
-        selected_dim = representation_dim(selected_representation)
-        cache_key = f"{path}::{selected_representation}"
+        if selected_representation == PCA50_REPRESENTATION:
+            requested_dim = None if n_pcs is None else int(n_pcs)
+            if requested_dim is not None and requested_dim <= 0:
+                raise ValueError("n_pcs must be positive.")
+        else:
+            requested_dim = representation_dim(selected_representation)
+        dimension_key = "auto" if requested_dim is None else str(requested_dim)
+        cache_key = f"{path}::{selected_representation}::{dimension_key}"
         if cache_key in _DATA_CACHE:
             return _DATA_CACHE[cache_key]
         if selected_key not in adata.obsm:
             raise KeyError(f"{path.name}: missing obsm[{selected_key!r}]")
         x = np.asarray(adata.obsm[selected_key], dtype=np.float32)
+        actual_dim = x.shape[1] if x.ndim == 2 else -1
+        selected_dim = actual_dim if requested_dim is None else requested_dim
         raw_times = _obs_values(adata, "day_label", "Time point")
         timepoints = np.asarray(
             [format_timepoint(value) for value in raw_times], dtype=object
@@ -389,6 +430,7 @@ def all_timepoint_data(
     dataset_location: str | Path | None = None,
     *,
     representation: str | None = None,
+    n_pcs: int | None = None,
 ) -> Dict[str, np.ndarray]:
     selected = (
         PCA50_REPRESENTATION
@@ -398,9 +440,11 @@ def all_timepoint_data(
     return load_dataset(
         resolve_dataset_path(
             dataset_location,
+            n_pcs=DEFAULT_N_PCS if n_pcs is None else int(n_pcs),
             representation=selected or PCA50_REPRESENTATION,
         ),
         representation=representation,
+        n_pcs=n_pcs,
     )
 
 
@@ -416,19 +460,33 @@ def timepoint_pool_splits(cfg, dataset_location=None):
     representation = canonical_representation(
         getattr(cfg.problem, "larry_representation", PCA50_REPRESENTATION)
     )
-    data = load_dataset(
-        resolve_dataset_path(
-            (
-                dataset_location
-                if dataset_location not in (None, "")
-                else getattr(cfg.problem, "dataset_location", None)
-            ),
-            n_pcs=int(getattr(cfg.problem, "n_pcs", DEFAULT_N_PCS)),
-            n_hvgs=int(getattr(cfg.problem, "n_hvgs", DEFAULT_N_HVGS)),
-            representation=representation,
-        ),
-        representation=representation,
+    clone_labelled_only = bool(
+        getattr(cfg.problem, "larry_clone_labelled_only", False)
     )
+    resolved_path = resolve_dataset_path(
+        (
+            dataset_location
+            if dataset_location not in (None, "")
+            else getattr(cfg.problem, "dataset_location", None)
+        ),
+        n_pcs=int(getattr(cfg.problem, "n_pcs", DEFAULT_N_PCS)),
+        n_hvgs=int(getattr(cfg.problem, "n_hvgs", DEFAULT_N_HVGS)),
+        representation=representation,
+        clone_labelled_only=clone_labelled_only,
+    )
+    data = load_dataset(
+        resolved_path,
+        representation=representation,
+        n_pcs=int(getattr(cfg.problem, "n_pcs", DEFAULT_N_PCS)),
+    )
+    if clone_labelled_only and bool(np.any(data["clone_ids"] < 0)):
+        n_unlabelled = int(np.count_nonzero(data["clone_ids"] < 0))
+        raise ValueError(
+            f"{resolved_path.name} contains {n_unlabelled:,} cells without clone "
+            "assignments. The clone-labelled-only setting requires the PCA cache "
+            "created with scripts/create_larry_hvg_pca.py "
+            "--clone-labelled-only."
+        )
     retained = set(retained_timepoints(cfg))
     training_seed = int(getattr(getattr(cfg, "training", None), "seed", 0))
     split_seed = int(getattr(cfg.problem, "maizels_holdout_seed", training_seed + 701))

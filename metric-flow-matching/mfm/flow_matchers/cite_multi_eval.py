@@ -1,4 +1,4 @@
-"""Classifier-based CITE/Multi trajectory diagnostics for MFM."""
+"""Classifier-based CITE/Multi trajectory diagnostics for MFM and SF2M."""
 
 from __future__ import annotations
 
@@ -19,7 +19,10 @@ if str(PY_ROOT) not in sys.path:
     sys.path.insert(0, str(PY_ROOT))
 
 from common import cite_multi, maizels  # noqa: E402
-from mfm.flow_matchers.maizels_eval import euler_rollout  # noqa: E402
+from mfm.flow_matchers.maizels_eval import (  # noqa: E402
+    evaluation_rollout,
+    evaluation_sampler_name,
+)
 
 
 def default_all_days_classifier_path(dataset_name: str) -> Path:
@@ -172,7 +175,7 @@ def classifier_metric_values(
 
 
 class CiteMultiEvaluationCallback(pl.Callback):
-    """Evaluate MFM paths with CITE/Multi's all-days cell-type classifier."""
+    """Evaluate model paths with CITE/Multi's all-days cell-type classifier."""
 
     def __init__(self, args, datamodule):
         super().__init__()
@@ -214,16 +217,22 @@ class CiteMultiEvaluationCallback(pl.Callback):
         flow_net = pl_module.flow_net
         was_training = flow_net.training
         flow_net.eval()
+        score_net = getattr(pl_module, "score_net", None)
+        score_was_training = score_net.training if score_net is not None else False
+        if score_net is not None:
+            score_net.eval()
+        sampler = evaluation_sampler_name(pl_module)
         try:
             with torch.no_grad():
-                _, paths = euler_rollout(
-                    flow_net,
+                _, paths = evaluation_rollout(
+                    pl_module,
                     torch.as_tensor(
                         source_x, dtype=torch.float32, device=pl_module.device
                     ),
                     end_time=1.0,
                     n_steps=int(self.args.cite_multi_eval_check_times),
                     start_time=0.0,
+                    seed=seed + 1000,
                 )
             paths_np = paths[:, 1:, :].detach().cpu().numpy().astype(np.float32)
             validity = score_paths_with_all_days_classifier(
@@ -242,9 +251,20 @@ class CiteMultiEvaluationCallback(pl.Callback):
         finally:
             if was_training:
                 flow_net.train()
+            if score_was_training:
+                score_net.train()
 
         valid = np.asarray(validity["valid"], dtype=bool)
         metrics = classifier_metric_values(validity, source_x.shape[0])
+        if sampler != "euler":
+            valid_pct = 100.0 * float(np.mean(valid))
+            invalid_pct = 100.0 * float(np.mean(~valid))
+            metrics.update(
+                {
+                    f"cite_multi/full_data_classifier/model_{sampler}_valid_trajectory_pct": valid_pct,
+                    f"cite_multi/full_data_classifier/model_{sampler}_invalid_trajectory_pct": invalid_pct,
+                }
+            )
         if final_best:
             valid_pct = metrics[
                 "cite_multi/full_data_classifier/model_euler_valid_trajectory_pct"
@@ -258,6 +278,10 @@ class CiteMultiEvaluationCallback(pl.Callback):
                     "final_eval/euler_invalid_trajectory_pct": invalid_pct,
                     "final_eval/full_data_classifier/euler_valid_trajectory_pct": valid_pct,
                     "final_eval/full_data_classifier/euler_invalid_trajectory_pct": invalid_pct,
+                    f"final_eval/{sampler}_valid_trajectory_pct": valid_pct,
+                    f"final_eval/{sampler}_invalid_trajectory_pct": invalid_pct,
+                    f"final_eval/full_data_classifier/{sampler}_valid_trajectory_pct": valid_pct,
+                    f"final_eval/full_data_classifier/{sampler}_invalid_trajectory_pct": invalid_pct,
                     "final_eval/best_step": step,
                 }
             )
@@ -317,7 +341,7 @@ class CiteMultiEvaluationCallback(pl.Callback):
         )
         ax.set_xlabel("PC1")
         ax.set_ylabel("PC2")
-        ax.set_title("Held-out MFM Euler paths (green valid, red invalid)")
+        ax.set_title("Held-out model paths (green valid, red invalid)")
         ax.grid(alpha=0.15)
         ax.legend()
         return fig

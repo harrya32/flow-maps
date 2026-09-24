@@ -58,6 +58,7 @@ def get_config(
     output_folder: str = "",
     dataset_name: str | None = None,
     heldout_day: str | int | None = None,
+    cite_multi_time_mode: str | None = None,
     classifier_path: Optional[str] = None,
     full_data_classifier_path: Optional[str] = None,
     learning_rate: Optional[float] = None,
@@ -82,6 +83,7 @@ def get_config(
         output_folder=output_folder,
         dataset_name=dataset_name,
         heldout_day=heldout_day,
+        cite_multi_time_mode=cite_multi_time_mode,
         classifier_path=classifier_path,
         full_data_classifier_path=full_data_classifier_path,
     )
@@ -182,6 +184,7 @@ def get_config(
 
     cfg.evaluation = ml_collections.ConfigDict()
     cfg.evaluation.n_noise_draws = 3
+    cfg.evaluation.observed_marginal_emd_enabled = True
     # Zero means the full source and held-out populations, matching the
     # deterministic CITE/Multi EMD protocol.
     cfg.evaluation.max_source_points = 0
@@ -212,7 +215,8 @@ def get_config(
     cfg.logging.save_freq = 5_000
     cfg.logging.wandb_name = (
         f"{cfg.problem.dataset_name}_pca100_holdout_day"
-        f"{cfg.problem.heldout_timepoint}_{variant_name}"
+        f"{cfg.problem.heldout_timepoint}_{cfg.problem.cite_multi_time_mode}_"
+        f"{variant_name}"
     )
     cfg.logging.output_name = cfg.logging.wandb_name
     cfg.logging.comparison_mode = variant_name

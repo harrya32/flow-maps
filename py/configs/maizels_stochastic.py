@@ -201,6 +201,7 @@ def get_config(
 
     cfg.evaluation = ml_collections.ConfigDict()
     cfg.evaluation.n_noise_draws = 3
+    cfg.evaluation.observed_marginal_emd_enabled = True
     # Match the deterministic Maizels distribution evaluation: zero means use
     # every cell in both the interval source and the actual held-out day.
     cfg.evaluation.max_source_points = 0

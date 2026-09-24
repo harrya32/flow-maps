@@ -1,0 +1,12 @@
+,Baso,Ccr7_DC,Eos,Erythroid,Lymphoid,Mast,Meg,Monocyte,Neutrophil,Undifferentiated,pDC
+Baso,483,0,0,0,0,54,1,2,0,11,0
+Ccr7_DC,0,0,0,0,0,0,0,1,0,5,0
+Eos,8,0,0,0,0,1,0,2,0,6,0
+Erythroid,0,0,0,0,0,0,0,0,2,35,0
+Lymphoid,0,0,0,0,0,0,0,0,1,19,0
+Mast,31,0,0,0,0,93,2,1,0,14,0
+Meg,3,0,0,0,0,2,11,1,0,87,0
+Monocyte,0,0,0,0,0,0,0,790,3,24,0
+Neutrophil,0,0,0,0,0,0,0,10,778,68,0
+Undifferentiated,29,0,0,0,0,12,11,81,120,2124,0
+pDC,0,0,0,0,0,0,0,0,0,5,0

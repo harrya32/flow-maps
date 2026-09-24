@@ -1,0 +1,35 @@
+# SF2M on retained CITE-seq PCA100 marginals, evaluated on omitted D3 or D4.
+data_type: "scrna"
+data_name: "cite"
+accelerator: "gpu"
+dim: 100
+t_exclude: [1, 2]
+whiten: false
+cite_multi_time_mode: "equal_time"
+
+hidden_dims_flow: [1024, 1024, 1024]
+activation_flow: "selu"
+flow_optimizer: "adamw"
+flow_lr: 0.001
+flow_weight_decay: 0.00001
+batch_size: 128
+patience: 10
+
+mfm: false
+sf2m: true
+sf2m_sigma: 0.2
+sf2m_ot_method: "exact"
+sf2m_score_weight: 1.0
+sf2m_time_eps: 0.001
+# SF2M performs its minibatch OT coupling inside TorchCFM.
+optimal_transport_method: "None"
+
+max_steps: 10000
+val_check_interval: 100
+seeds: [0, 1, 2, 3, 4]
+
+cite_multi_eval_enabled: true
+cite_multi_eval_check_times: 50
+cite_multi_eval_every_n_steps: 500
+cite_multi_eval_source_max_points: 0
+wandb_project: "self-distill-flow-maps"

@@ -454,6 +454,9 @@ def get_config(
     )
     config.logging.maizels.trajectory_eval_seed = 2698
     config.logging.maizels.distribution_eval_enabled = True
+    # Final evaluation also scores every retained observed interval from its
+    # nearest real left endpoint, plus one uninterrupted source-to-final rollout.
+    config.logging.maizels.observed_distribution_eval_enabled = True
     # Match the CITE/Multi population evaluation: push every source cell forward
     # exactly once. A source cap of 0 means the complete selected population.
     config.logging.maizels.distribution_eval_source_pool = "all" #auto

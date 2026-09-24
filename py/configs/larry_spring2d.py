@@ -24,6 +24,8 @@ def get_config(
     entropy_weight: float | None = None,
     seed: int | None = None,
     ot_minibatch_size: int | None = None,
+    larry_clone_labelled_only: bool = False,
+    larry_n_pcs: int | None = None,
 ):
     return larry_pca50.get_config(
         slurm_id,
@@ -39,4 +41,6 @@ def get_config(
         seed=seed,
         ot_minibatch_size=ot_minibatch_size,
         larry_representation=larry.SPRING2D_REPRESENTATION,
+        larry_clone_labelled_only=larry_clone_labelled_only,
+        larry_n_pcs=larry_n_pcs,
     )

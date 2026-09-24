@@ -62,6 +62,7 @@ CITE is:
 ```bash
 python -m mfm.train.main \
   --config_path configs/single_cell/100dims/ot-mfm_cite.yaml \
+  --cite_multi_time_mode equal_time \
   --working_dir /path/to/output
 ```
 
@@ -84,6 +85,12 @@ written as `final_eval/euler_mean_emd`, `final_eval/euler_mean_rbf_mmd2`, and
 `final_eval/full_data_classifier/euler_invalid_trajectory_pct`. Set
 `--cite_multi_eval_classifier_path` to override the classifier. A source cap of
 zero uses every held-out day-2 cell exactly once.
+
+Use `--cite_multi_time_mode equal_time|real_time` to select the global clock.
+The default `equal_time` maps D2, D3, D4, D7 to `(0, 1/3, 2/3, 1)`, while
+`real_time` normalizes elapsed days to `(0, 1/5, 2/5, 1)`. The same clock is
+used for geopath training, flow matching, and held-out-day evaluation. The
+grid is fixed before D3 or D4 is omitted; retained marginals are not re-spaced.
 
 ### Maizels PCA50 experiments
 
@@ -161,6 +168,43 @@ On Apple Silicon, the metric/geopath phase automatically uses CPU because the
 higher-order `torch.func.jvp` backward used by the time-conditioned geopath is
 not supported by PyTorch MPS. The subsequent velocity-field phase still uses
 the configured GPU/MPS accelerator.
+
+### SF2M baseline
+
+TorchCFM 1.0.5 supplies `SchrodingerBridgeConditionalFlowMatcher`, which is the
+conditional bridge used by SF2M. The baseline here trains both required fields:
+the probability-flow velocity and the score. Training uses TorchCFM's internal
+minibatch coupling exactly once, with the default `exact` approximation from
+the package. Set `sf2m_ot_method: sinkhorn` to use the theoretically entropic
+coupling instead. `sf2m_sigma` is a constant diffusion on the global biological
+clock; its bridge variance and velocity are rescaled correctly for unequal
+retained intervals.
+
+```bash
+# CITE-seq; replace cite with multi for Multiome.
+python -m mfm.train.main \
+  --config_path configs/single_cell/100dims/sf2m_cite.yaml \
+  --working_dir ../outputs/sf2m_cite_pca100
+
+# Maizels with observed D3, D3.8, and D8 marginals.
+python -m mfm.train.main \
+  --config_path configs/single_cell/50dims/sf2m_maizels_3marginal.yaml \
+  --working_dir ../outputs/sf2m_maizels_pca50 \
+  --maizels_dataset_path /path/to/celltype_classification_pca50_dataset.csv.gz
+```
+
+Use `sf2m_maizels.yaml` for the endpoint-only D3-to-D8 protocol. CITE and Multi
+retain the same omitted-day splits and all-days classifiers as MFM. Maizels
+retains its corresponding held-out and classifier evaluations. Maizels and
+classifier-path evaluation use 50-step Euler--Maruyama rollouts; CITE/Multi
+held-out-day EMD/MMD keeps MFM's 100-step distribution protocol. Runs log
+sampler-specific keys such as
+`final_eval/euler_maruyama_mean_emd`,
+`final_eval/euler_maruyama_mean_rbf_mmd2`, and
+`final_eval/euler_maruyama_invalid_trajectory_pct`. The existing
+`final_eval/euler_*` keys are also populated as cross-method compatibility
+aliases. Training and validation additionally log separate
+`SF2M/*_velocity_loss` and `SF2M/*_score_loss` values.
 
 
 

@@ -1,9 +1,9 @@
 """CITE/Multi four-day trajectory data and lineage-aware pair construction.
 
 Training retains three of days 2, 3, 4, and 7 and constructs an equal number
-of pairs for each adjacent retained interval.  Each pair label has columns
+of pairs for each adjacent retained interval. Each pair label has columns
 ``[source_type_id, target_type_id, t_start, t_end]`` so the shared flow-map
-network is trained on the correct sub-interval of the global time axis.
+network is trained on the configured equal- or real-time global clock.
 """
 
 from __future__ import annotations
@@ -28,10 +28,20 @@ DEFAULT_DATA_DIR = Path(
     )
 ).expanduser()
 TIMEPOINTS = ("2", "3", "4", "7")
-NORMALIZED_TIMES = {
+TIME_MODES = ("equal_time", "real_time")
+DEFAULT_TIME_MODE = "equal_time"
+EQUAL_TIME_NORMALIZED_TIMES = {
     timepoint: index / float(len(TIMEPOINTS) - 1)
     for index, timepoint in enumerate(TIMEPOINTS)
 }
+_FIRST_DAY = float(TIMEPOINTS[0])
+_LAST_DAY = float(TIMEPOINTS[-1])
+REAL_TIME_NORMALIZED_TIMES = {
+    timepoint: (float(timepoint) - _FIRST_DAY) / (_LAST_DAY - _FIRST_DAY)
+    for timepoint in TIMEPOINTS
+}
+# Backward-compatible name for callers that have not yet selected a clock.
+NORMALIZED_TIMES = EQUAL_TIME_NORMALIZED_TIMES
 # Match the exported classifiers' class order so hard path checks and the
 # differentiable canonical-to-classifier lookup use identical ids.
 CLASS_NAMES = ("BP", "EryP", "HSC", "MasP", "MkP", "MoP", "NeuP")
@@ -91,11 +101,65 @@ def parse_timepoint(value: str) -> float:
     return maizels.parse_timepoint(value)
 
 
-def normalized_time(timepoint: str) -> float:
+def canonical_time_mode(time_mode: str | None) -> str:
+    """Validate and canonicalize the CITE/Multi model-time convention."""
+    mode = str(time_mode or DEFAULT_TIME_MODE).strip().lower()
+    aliases = {"equal": "equal_time", "real": "real_time"}
+    mode = aliases.get(mode, mode)
+    if mode not in TIME_MODES:
+        raise ValueError(
+            f"CITE/Multi time mode must be one of {TIME_MODES}, got {time_mode!r}."
+        )
+    return mode
+
+
+def time_mode_from_config(cfg=None) -> str:
+    """Return the configured clock, defaulting to the historical equal clock."""
+    if cfg is None:
+        return DEFAULT_TIME_MODE
+    problem = getattr(cfg, "problem", None)
+    return canonical_time_mode(
+        getattr(problem, "cite_multi_time_mode", DEFAULT_TIME_MODE)
+    )
+
+
+def normalized_time_map(time_mode: str | None = None) -> Dict[str, float]:
+    """Return model times for all four experimental days."""
+    mode = canonical_time_mode(time_mode)
+    if mode == "real_time":
+        return dict(REAL_TIME_NORMALIZED_TIMES)
+    return dict(EQUAL_TIME_NORMALIZED_TIMES)
+
+
+def normalized_time(
+    timepoint: str,
+    cfg=None,
+    *,
+    time_mode: str | None = None,
+) -> float:
+    """Map an experimental day to model time under the selected clock."""
     key = str(timepoint)
-    if key not in NORMALIZED_TIMES:
+    if key not in TIMEPOINTS:
         raise KeyError(f"Unknown CITE/Multi timepoint {timepoint!r}.")
-    return float(NORMALIZED_TIMES[key])
+    if cfg is not None and time_mode is not None:
+        raise ValueError("Pass either cfg or time_mode, not both.")
+    if cfg is not None:
+        order = getattr(cfg.problem, "timepoint_order", None)
+        values = getattr(cfg.problem, "timepoint_values", None)
+        if order is not None and values is not None:
+            mapping = {
+                str(name): float(value)
+                for name, value in zip(list(order), list(values))
+            }
+            if key not in mapping:
+                raise KeyError(f"Unknown configured CITE/Multi timepoint {key!r}.")
+            return mapping[key]
+    mode = (
+        time_mode_from_config(cfg)
+        if cfg is not None
+        else canonical_time_mode(time_mode)
+    )
+    return float(normalized_time_map(mode)[key])
 
 
 def load_dataset(dataset_path: str | Path) -> Dict[str, np.ndarray]:
@@ -320,12 +384,12 @@ def _cell_type_ids(
 
 
 def _add_time_bounds(
-    paired: Dict[str, np.ndarray], source_time: str, target_time: str
+    cfg, paired: Dict[str, np.ndarray], source_time: str, target_time: str
 ) -> Dict[str, np.ndarray]:
     n_pairs = paired["x0"].shape[0]
     bounds = np.tile(
         np.asarray(
-            [normalized_time(source_time), normalized_time(target_time)],
+            [normalized_time(source_time, cfg), normalized_time(target_time, cfg)],
             dtype=np.float32,
         ),
         (n_pairs, 1),
@@ -362,13 +426,13 @@ def _make_interval_pairs(
         class_names=CLASS_NAMES,
         transition_edges=TRANSITION_EDGES,
     )
-    paired = _add_time_bounds(paired, source_time, target_time)
+    paired = _add_time_bounds(cfg, paired, source_time, target_time)
     stats.update(
         {
             "source_time": str(source_time),
             "target_time": str(target_time),
-            "t_start": normalized_time(source_time),
-            "t_end": normalized_time(target_time),
+            "t_start": normalized_time(source_time, cfg),
+            "t_end": normalized_time(target_time, cfg),
             "sampled_pairs": int(paired["x0"].shape[0]),
         }
     )
@@ -971,13 +1035,13 @@ def _make_minibatch_ot_interval_pairs(
         pair_mode=pair_mode,
         sample_with_replacement=sample_with_replacement,
     )
-    paired = _add_time_bounds(paired, source_time, target_time)
+    paired = _add_time_bounds(cfg, paired, source_time, target_time)
     stats.update(
         {
             "source_time": str(source_time),
             "target_time": str(target_time),
-            "t_start": normalized_time(source_time),
-            "t_end": normalized_time(target_time),
+            "t_start": normalized_time(source_time, cfg),
+            "t_end": normalized_time(target_time, cfg),
         }
     )
     return paired, stats
@@ -1034,8 +1098,8 @@ def make_minibatch_ot_training_pools(
         interval = {
             "source_time": source_time,
             "target_time": target_time,
-            "t_start": normalized_time(source_time),
-            "t_end": normalized_time(target_time),
+            "t_start": normalized_time(source_time, cfg),
+            "t_end": normalized_time(target_time, cfg),
             "nominal_pairs": int(count),
         }
         intervals.append(interval)
