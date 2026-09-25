@@ -18,8 +18,11 @@ from mfm.flow_matchers.flow_net_train import (  # noqa: E402
 )
 from mfm.flow_matchers import flow_net_train  # noqa: E402
 from mfm.flow_matchers.maizels_eval import (  # noqa: E402
+    canonical_hparam_val_timepoints,
     evaluation_rollout,
     evaluation_sampler_name,
+    omitted_day_emd_aggregate_metrics,
+    write_final_metrics_json,
 )
 from mfm.flow_matchers.models.sf2m import (  # noqa: E402
     IntervalSchrodingerBridgeFlowMatcher,
@@ -166,6 +169,56 @@ def test_sf2m_euler_maruyama_rollout_is_seeded():
     assert torch.equal(final, batch_major[:, -1])
 
 
+def test_maizels_hparam_validation_emd_matches_shared_protocol():
+    validation_days = canonical_hparam_val_timepoints(
+        ["D6", "3.4", "D3.4"],
+        ["D3", "D3.8", "D8"],
+    )
+    assert validation_days == ("D3.4", "D6")
+
+    metrics = omitted_day_emd_aggregate_metrics(
+        "euler_maruyama",
+        ["D3.2", "D3.4", "D3.6", "D4", "D5", "D6", "D7"],
+        [1.0, 2.0, 3.0, 4.0, 5.0, 8.0, 6.0],
+        validation_days,
+    )
+
+    assert metrics[
+        "distribution_eval/euler_maruyama_mean_emd_hparam_val_times"
+    ] == pytest.approx(5.0)
+    assert metrics[
+        "distribution_eval/euler_maruyama_mean_emd_test_times"
+    ] == pytest.approx(3.8)
+
+
+def test_maizels_hparam_validation_days_must_be_held_out():
+    with pytest.raises(ValueError, match="must be held out"):
+        canonical_hparam_val_timepoints(
+            ["D3.4", "D6"],
+            ["D3", "D3.4", "D8"],
+        )
+
+
+def test_final_maizels_metrics_can_be_exported_without_wandb(tmp_path):
+    path = tmp_path / "nested" / "final_metrics.json"
+    write_final_metrics_json(
+        path,
+        {
+            "final_eval/euler_mean_emd_hparam_val_times": torch.tensor(1.25),
+            "final_eval/best_checkpoint_path": "model.ckpt",
+            "plots/not_serializable": object(),
+        },
+    )
+
+    import json
+
+    payload = json.loads(path.read_text())
+    assert payload == {
+        "final_eval/best_checkpoint_path": "model.ckpt",
+        "final_eval/euler_mean_emd_hparam_val_times": 1.25,
+    }
+
+
 def test_sf2m_test_step_logs_shared_and_sampler_specific_metrics(monkeypatch):
     monkeypatch.setattr(
         flow_net_train, "wasserstein_distance", lambda *args, **kwargs: 1.25
@@ -218,5 +271,7 @@ def test_sf2m_configs_use_internal_ot_once(relative_path):
     assert config["sf2m"] is True
     assert config["mfm"] is False
     assert str(config["optimal_transport_method"]).lower() == "none"
-    assert config["max_steps"] == 10_000
+    assert config["max_steps"] > 0
     assert config["val_check_interval"] == 100
+    if "maizels" in relative_path:
+        assert config["maizels_hparam_val_times"] == ["D3.4", "D6"]

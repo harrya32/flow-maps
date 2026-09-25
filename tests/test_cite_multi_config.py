@@ -38,6 +38,23 @@ def test_invalid_time_mode_is_rejected():
         cite_multi_pca100.get_config(0, cite_multi_time_mode="calendar")
 
 
+def test_plain_ot_flow_matching_variant_accepts_seed_and_learning_rate():
+    cfg = cite_multi_pca100.get_config(
+        9,
+        dataset_name="cite",
+        heldout_day="4",
+        learning_rate=1e-3,
+        seed=3,
+    )
+
+    assert cfg.logging.comparison_mode == "ot_flow_matching"
+    assert cfg.problem.maizels_pair_mode == "ot_plain"
+    assert cfg.optimization.diag_fraction == 1.0
+    assert cfg.optimization.learning_rate == pytest.approx(1e-3)
+    assert cfg.training.seed == 3
+    assert "seed3_lr0p001" in cfg.logging.output_name
+
+
 def test_observed_eval_uses_euler_for_cite_flow_matching(monkeypatch):
     cfg = cite_multi_pca100.get_config(0, heldout_day="4")
     pools = {

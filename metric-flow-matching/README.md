@@ -175,10 +175,32 @@ TorchCFM 1.0.5 supplies `SchrodingerBridgeConditionalFlowMatcher`, which is the
 conditional bridge used by SF2M. The baseline here trains both required fields:
 the probability-flow velocity and the score. Training uses TorchCFM's internal
 minibatch coupling exactly once, with the default `exact` approximation from
-the package. Set `sf2m_ot_method: sinkhorn` to use the theoretically entropic
-coupling instead. `sf2m_sigma` is a constant diffusion on the global biological
-clock; its bridge variance and velocity are rescaled correctly for unequal
-retained intervals.
+the package and squared Euclidean ground cost. `sf2m_sigma` is a constant
+diffusion on the global biological clock; its bridge variance and velocity are
+rescaled correctly for unequal retained intervals.
+
+The paper's geometric alternative is available with
+`sf2m_ot_cost: geodesic` and `sf2m_ot_method: sinkhorn`. It implements Eq. 12,
+
+```text
+c_geo(x0, x1) = sqrt(-log H_t(x0, x1)),
+```
+
+so the squared cost passed to Sinkhorn is `-log H_t`. The heat kernel is
+approximated from a k-nearest-neighbour graph over the retained **training**
+cells using the low-frequency spectrum of a density-corrected graph Laplacian.
+Omitted evaluation days and validation cells are not used to construct the
+geometry. As in the paper, the entropic regularization is `2 * sigma^2` for
+each local Brownian bridge; only endpoint coupling changes, while the Gaussian
+bridge itself remains the same.
+
+The paper does not prescribe numerical graph settings, so the supplied configs
+make them explicit: `sf2m_geodesic_knn: 5`,
+`sf2m_geodesic_heat_time: 1.0`, and
+`sf2m_geodesic_eigenvectors: 256`. The default
+`sf2m_geodesic_graph_max_points: 0` uses every retained training cell; set a
+positive cap only if graph construction is too expensive. The spectrum is
+cached under `<working_dir>/.sf2m_geodesic_cache` and reused on later runs.
 
 ```bash
 # CITE-seq; replace cite with multi for Multiome.
@@ -193,6 +215,23 @@ python -m mfm.train.main \
   --maizels_dataset_path /path/to/celltype_classification_pca50_dataset.csv.gz
 ```
 
+For the geometric variant, use the otherwise matching configs:
+
+```bash
+python -m mfm.train.main \
+  --config_path configs/single_cell/100dims/sf2m_geodesic_cite.yaml \
+  --working_dir ../outputs/sf2m_geodesic_cite_pca100
+
+python -m mfm.train.main \
+  --config_path configs/single_cell/100dims/sf2m_geodesic_multi.yaml \
+  --working_dir ../outputs/sf2m_geodesic_multi_pca100
+
+python -m mfm.train.main \
+  --config_path configs/single_cell/50dims/sf2m_geodesic_maizels_3marginal.yaml \
+  --working_dir ../outputs/sf2m_geodesic_maizels_pca50 \
+  --maizels_dataset_path /path/to/celltype_classification_pca50_dataset.csv.gz
+```
+
 Use `sf2m_maizels.yaml` for the endpoint-only D3-to-D8 protocol. CITE and Multi
 retain the same omitted-day splits and all-days classifiers as MFM. Maizels
 retains its corresponding held-out and classifier evaluations. Maizels and
@@ -203,10 +242,69 @@ sampler-specific keys such as
 `final_eval/euler_maruyama_mean_rbf_mmd2`, and
 `final_eval/euler_maruyama_invalid_trajectory_pct`. The existing
 `final_eval/euler_*` keys are also populated as cross-method compatibility
-aliases. Training and validation additionally log separate
+aliases. For Maizels, `D3.4` and `D6` are reserved for hyperparameter
+validation, matching the other Maizels methods. Their mean EMD is logged as
+`distribution_eval/euler_maruyama_mean_emd_hparam_val_times` during training
+and `final_eval/euler_maruyama_mean_emd_hparam_val_times` for the best
+checkpoint; the remaining omitted days are aggregated under the corresponding
+`*_mean_emd_test_times` keys. Training and validation additionally log separate
 `SF2M/*_velocity_loss` and `SF2M/*_score_loss` values.
 
+### Maizels hyperparameter sweeps
 
+Two resumable grid runners select hyperparameters using the same held-out
+Maizels days as the flow-map experiments: D3.4 and D6 by default. Each grid
+setting is repeated over the requested seeds, evaluated from Lightning's best
+validation-loss checkpoint, and ranked by mean exact EMD across those two
+days. Per-run metrics are stored in `results.csv`; across-seed means, standard
+deviations, and objective ranks are stored in `summary.csv`. Run these commands
+from the top-level `flow-maps` directory in the MFM environment.
+
+The SF2M sweep fixes the diffusion scale at `0.2` and the flow learning rate at
+the CITE/Multi default of `1e-3`. It varies only the score-loss weight by
+default (3 settings before seeds). Alternative values can still be requested
+explicitly with `--sf2m-sigmas` and `--flow-learning-rates`:
+
+```bash
+python scripts/sweep_maizels_sf2m_hparams.py \
+  --dataset-path /path/to/celltype_classification_pca50_dataset.csv.gz \
+  --classifier-path /path/to/celltype_classifier_pca50_d3_d3p8_d8.pt \
+  --seeds 0,1 \
+  --wandb-mode disabled
+```
+
+To tune the Geodesic Sinkhorn version, add:
+
+```bash
+--config-path metric-flow-matching/configs/single_cell/50dims/sf2m_geodesic_maizels_3marginal.yaml
+```
+
+Its graph spectrum is shared across runs under the sweep output directory.
+
+The MFM sweep fixes the flow learning rate at the CITE/Multi default of `1e-3`
+and varies the RBF metric's adaptive `rho` and bandwidth multiplier `kappa` by
+default (9 settings before seeds):
+
+```bash
+python scripts/sweep_maizels_mfm_hparams.py \
+  --dataset-path /path/to/celltype_classification_pca50_dataset.csv.gz \
+  --classifier-path /path/to/celltype_classifier_pca50_d3_d3p8_d8.pt \
+  --seeds 0,1 \
+  --wandb-mode disabled
+```
+
+The MFM runner also exposes grids for geopath learning rate, metric learning
+rate, both weight decays, metric exponent, and RBF centre count. For example,
+add `--geopath-learning-rates 0.00003,0.0001,0.0003` or
+`--metric-learning-rates 0.003,0.01,0.03`. Select native OT-MFM by passing the
+`ot-mfm_maizels_3marginal.yaml` config. Both runners accept `--dry-run`,
+`--rerun-completed`, and runtime overrides such as `--max-steps`,
+`--batch-size`, `--n-pairs`, and `--patience`.
+
+Every subprocess receives a generated single-seed YAML, leaving the source
+configuration unchanged. Final best-checkpoint metrics are also exported to
+each run's `final_metrics.json`, so sweep collection does not depend on the
+W&B API.
 
 ## Citation
 

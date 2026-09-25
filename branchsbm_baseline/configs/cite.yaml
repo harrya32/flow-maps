@@ -1,0 +1,63 @@
+# Faithful BranchSBM endpoint baseline on CITE-seq PCA100.
+data_type: "scrna"
+data_name: "cite"
+accelerator: "gpu"
+dim: 100
+t_exclude: [1, 2]
+whiten: false
+cite_multi_time_mode: "equal_time"
+
+hidden_dims_geopath: [1024, 1024, 1024]
+hidden_dims_flow: [1024, 1024, 1024]
+hidden_dims_growth: [1024, 1024, 1024]
+activation_geopath: "selu"
+activation_flow: "selu"
+activation_growth: "tanh"
+time_geopath: true
+
+mfm: false
+branchsbm: true
+manifold: true
+metric_clusters: 2
+velocity_metric: "rbf"
+n_centers: 300
+kappa: 2.0
+rho: -2.75
+alpha_metric: 1.0
+metric_epochs: 100
+metric_patience: 25
+metric_lr: 0.01
+branchsbm_metric_max_points_per_cluster: 0
+
+optimal_transport_method: "exact"
+sigma: 0.1
+batch_size: 128
+split_ratios: [0.9, 0.1]
+epochs: 100
+max_steps: -1
+check_val_every_n_epoch: 10
+patience_geopath: 50
+patience: 25
+geopath_optimizer: "adam"
+geopath_lr: 0.0001
+geopath_weight_decay: 0.00001
+flow_optimizer: "adamw"
+flow_lr: 0.001
+flow_weight_decay: 0.00001
+growth_optimizer: "adamw"
+growth_lr: 0.001
+growth_weight_decay: 0.00001
+lambda_energy: 1.0
+lambda_mass: 100.0
+lambda_match: 1000.0
+lambda_recons: 1.0
+
+seeds: [0, 1, 2, 3, 4]
+cite_multi_eval_enabled: true
+cite_multi_eval_check_times: 50
+cite_multi_eval_every_n_steps: 500
+cite_multi_eval_source_max_points: 0
+branchsbm_eval_euler_steps: 100
+branchsbm_eval_batch_size: 1024
+branchsbm_eval_points_per_time: 0
+wandb_project: "self-distill-flow-maps"

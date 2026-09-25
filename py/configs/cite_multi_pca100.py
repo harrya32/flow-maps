@@ -66,6 +66,8 @@ def get_config(
     cite_multi_time_mode: str | None = None,
     classifier_path: str | None = None,
     full_data_classifier_path: str | None = None,
+    learning_rate: float | None = None,
+    seed: int | None = None,
 ) -> ml_collections.ConfigDict:
     """Return a Maizels-equivalent config for a CITE or Multi leave-one-day-out run."""
     dataset_name = cite_multi.canonical_dataset_name(
@@ -84,8 +86,24 @@ def get_config(
         else os.getenv("CITE_MULTI_TIME_MODE", cite_multi.DEFAULT_TIME_MODE)
     )
 
-    cfg = _maizels_config(slurm_id, dataset_location, output_folder)
-    variant_name = str(cfg.logging.comparison_mode)
+    # CITE/Multi ID 9 adds the missing plain minibatch-OT flow-matching
+    # baseline. It otherwise uses the same local-only objective as ID 0.
+    plain_ot_flow_matching = int(slurm_id) == 9
+    base_slurm_id = 0 if plain_ot_flow_matching else int(slurm_id)
+    cfg = _maizels_config(
+        base_slurm_id,
+        dataset_location,
+        output_folder,
+        learning_rate=learning_rate,
+        seed=seed,
+    )
+    variant_name = (
+        "ot_flow_matching"
+        if plain_ot_flow_matching
+        else str(cfg.logging.comparison_mode)
+    )
+    if plain_ot_flow_matching:
+        cfg.problem.maizels_pair_mode = "ot_plain"
     resolved_dataset = cite_multi.resolve_dataset_path(
         dataset_location,
         dataset_name,
@@ -153,6 +171,15 @@ def get_config(
     )
     cfg.logging.output_name = cfg.logging.wandb_name
     cfg.logging.comparison_mode = variant_name
+    override_tags = []
+    if seed is not None:
+        override_tags.append(f"seed{int(seed)}")
+    if learning_rate is not None:
+        override_tags.append(f"lr{float(learning_rate):g}")
+    if override_tags:
+        suffix = "_".join(override_tags).replace(".", "p").replace("-", "m")
+        cfg.logging.wandb_name = f"{cfg.logging.wandb_name}_{suffix}"
+        cfg.logging.output_name = cfg.logging.wandb_name
     cfg.logging.maizels.distribution_eval_timepoints = [heldout_day]
     cfg.logging.maizels.distribution_eval_max_timepoints = 1
     # Keep the generic exact-EMD/MMD diagnostic bounded here. The MFM-compatible

@@ -15,6 +15,7 @@ SLURM_IDS="${SLURM_IDS:-0 1 2 3 4 5 6 7 8}"
 DATASETS="${DATASETS:-cite multi}"
 HELDOUT_DAYS="${HELDOUT_DAYS:-3 4}"
 TIME_MODES="${TIME_MODES:-equal_time}"
+LEARNING_RATE="${LEARNING_RATE:-}"
 DRY_RUN="${DRY_RUN:-0}"
 
 MODE_NAMES=(
@@ -27,6 +28,7 @@ MODE_NAMES=(
   "bio_prior_ot_constrained_flow_map"
   "ot_flow_map"
   "bio_prior_ot_constrained_flow_matching"
+  "ot_flow_matching"
 )
 
 read -r -a seed_values <<< "${SEEDS}"
@@ -50,11 +52,16 @@ for seed in "${seed_values[@]}"; do
 done
 
 for slurm_id in "${slurm_id_values[@]}"; do
-  if [[ ! "${slurm_id}" =~ ^[0-8]$ ]]; then
-    echo "Invalid SLURM_ID: ${slurm_id}; expected one of 0 1 2 3 4 5 6 7 8." >&2
+  if [[ ! "${slurm_id}" =~ ^[0-9]$ ]]; then
+    echo "Invalid SLURM_ID: ${slurm_id}; expected one of 0 1 2 3 4 5 6 7 8 9." >&2
     exit 2
   fi
 done
+
+if [[ -n "${LEARNING_RATE}" ]] && ! [[ "${LEARNING_RATE}" =~ ^[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]; then
+  echo "Invalid LEARNING_RATE: ${LEARNING_RATE}; expected a positive number." >&2
+  exit 2
+fi
 
 for dataset in "${dataset_values[@]}"; do
   if [[ "${dataset}" != "cite" && "${dataset}" != "multi" ]]; then
@@ -85,6 +92,7 @@ echo "  slurm ids: ${slurm_id_values[*]}"
 echo "  datasets: ${dataset_values[*]}"
 echo "  held-out days: ${heldout_day_values[*]}"
 echo "  time modes: ${time_mode_values[*]}"
+echo "  learning rate: ${LEARNING_RATE:-config default}"
 echo "  output: ${OUTPUT_ROOT}"
 
 cd "${REPO_ROOT}"
@@ -109,6 +117,9 @@ for dataset in "${dataset_values[@]}"; do
             --dataset_location "${DATASET_LOCATION}"
             --output_folder "${OUTPUT_ROOT}"
           )
+          if [[ -n "${LEARNING_RATE}" ]]; then
+            command+=(--learning_rate "${LEARNING_RATE}")
+          fi
 
           echo "==> ${run_name}"
           if [[ "${DRY_RUN}" == "1" ]]; then

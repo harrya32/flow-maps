@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +20,106 @@ if str(PY_ROOT) not in sys.path:
     sys.path.insert(0, str(PY_ROOT))
 
 from common import maizels, wasserstein  # noqa: E402
+
+
+DEFAULT_HPARAM_VAL_TIMEPOINTS = ("D3.4", "D6")
+
+
+def write_final_metrics_json(path, metrics) -> None:
+    """Atomically export scalar best-checkpoint metrics for local sweeps."""
+    path = str(path or "").strip()
+    if not path:
+        return
+    output_path = Path(path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    for key, value in metrics.items():
+        if torch.is_tensor(value):
+            value = value.detach().cpu().item()
+        elif isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            payload[str(key)] = value
+    temporary = output_path.with_suffix(output_path.suffix + ".tmp")
+    with temporary.open("w") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, output_path)
+
+
+def canonical_hparam_val_timepoints(values, retained_timepoints) -> tuple[str, ...]:
+    """Canonicalize the omitted Maizels days reserved for model selection."""
+    if values is None:
+        values = DEFAULT_HPARAM_VAL_TIMEPOINTS
+    if isinstance(values, str):
+        values = [values]
+
+    requested = []
+    for value in values:
+        text = str(value).strip()
+        if text.lower() in ("", "none"):
+            continue
+        requested.extend(item.strip() for item in text.split(",") if item.strip())
+
+    timepoint_by_day = {
+        maizels.parse_timepoint(timepoint): timepoint
+        for timepoint in maizels.TIMEPOINTS
+    }
+    canonical = []
+    for value in requested:
+        try:
+            timepoint = timepoint_by_day[
+                maizels.parse_timepoint(
+                    value if str(value).upper().startswith("D") else f"D{value}"
+                )
+            ]
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                f"Unknown Maizels hyperparameter-validation day {value!r}; "
+                f"choose from {list(maizels.TIMEPOINTS)}."
+            ) from exc
+        if timepoint not in canonical:
+            canonical.append(timepoint)
+
+    retained = set(str(value) for value in retained_timepoints)
+    unavailable = [value for value in canonical if value in retained]
+    if unavailable:
+        raise ValueError(
+            "Maizels hyperparameter-validation days must be held out by the "
+            f"selected schedule; observed values: {unavailable}."
+        )
+    return tuple(
+        timepoint for timepoint in maizels.TIMEPOINTS if timepoint in canonical
+    )
+
+
+def omitted_day_emd_aggregate_metrics(
+    sampler: str,
+    timepoints,
+    emd_values,
+    hparam_val_timepoints,
+) -> dict[str, float]:
+    """Aggregate omitted-day EMDs into validation and untouched-test means."""
+    if len(timepoints) != len(emd_values):
+        raise ValueError("Maizels timepoint and EMD lists must have equal length.")
+
+    hparam_val_timepoints = set(str(value) for value in hparam_val_timepoints)
+    validation = []
+    test = []
+    for timepoint, emd in zip(timepoints, emd_values):
+        target = validation if str(timepoint) in hparam_val_timepoints else test
+        target.append(float(emd))
+
+    metrics = {}
+    if validation:
+        metrics[f"distribution_eval/{sampler}_mean_emd_hparam_val_times"] = float(
+            np.mean(validation)
+        )
+    if test:
+        metrics[f"distribution_eval/{sampler}_mean_emd_test_times"] = float(
+            np.mean(test)
+        )
+    return metrics
 
 
 def _sqdist(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -154,6 +256,10 @@ class MaizelsEvaluationCallback(pl.Callback):
         self.args = args
         self.datamodule = datamodule
         self.every_n_steps = int(args.maizels_eval_every_n_steps)
+        self.hparam_val_timepoints = canonical_hparam_val_timepoints(
+            getattr(args, "maizels_hparam_val_times", None),
+            datamodule.retained_timepoints,
+        )
         self.last_evaluated_step = -1
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -244,6 +350,7 @@ class MaizelsEvaluationCallback(pl.Callback):
         )
 
         metrics = {}
+        evaluated_timepoints = []
         mmd_values, emd_values = [], []
         plot_rows = []
         with torch.no_grad():
@@ -275,6 +382,7 @@ class MaizelsEvaluationCallback(pl.Callback):
                 tag = str(timepoint).replace(".", "p").replace("/", "_")
                 metrics[f"distribution_eval/{tag}_{sampler}_rbf_mmd2"] = mmd2
                 metrics[f"distribution_eval/{tag}_{sampler}_emd"] = emd
+                evaluated_timepoints.append(timepoint)
                 mmd_values.append(mmd2)
                 emd_values.append(emd)
                 plot_rows.append((timepoint, actual, prediction))
@@ -337,6 +445,22 @@ class MaizelsEvaluationCallback(pl.Callback):
             np.mean(mmd_values)
         )
         metrics[f"distribution_eval/{sampler}_emd_mean"] = float(np.mean(emd_values))
+        metrics.update(
+            omitted_day_emd_aggregate_metrics(
+                sampler,
+                evaluated_timepoints,
+                emd_values,
+                self.hparam_val_timepoints,
+            )
+        )
+        if sampler != "euler":
+            for suffix in (
+                "mean_emd_hparam_val_times",
+                "mean_emd_test_times",
+            ):
+                sampler_key = f"distribution_eval/{sampler}_{suffix}"
+                if sampler_key in metrics:
+                    metrics[f"distribution_eval/euler_{suffix}"] = metrics[sampler_key]
         metrics[f"validation_distribution/{sampler}_emd_mean"] = float(
             np.mean(validation_emd)
         )
@@ -412,20 +536,32 @@ class MaizelsEvaluationCallback(pl.Callback):
             )
         )
         wandb.log(metrics)
-        if final_best and wandb.run is not None and hasattr(wandb.run, "summary"):
-            for key, value in final_metrics.items():
-                wandb.run.summary[key] = value
+        if final_best:
             best_path = getattr(
                 getattr(trainer, "checkpoint_callback", None),
                 "best_model_path",
                 "",
             )
             if best_path:
-                wandb.run.summary["final_eval/best_checkpoint_path"] = best_path
+                final_metrics["final_eval/best_checkpoint_path"] = best_path
+            write_final_metrics_json(
+                getattr(self.args, "final_metrics_path", ""),
+                final_metrics,
+            )
+            if wandb.run is not None and hasattr(wandb.run, "summary"):
+                for key, value in final_metrics.items():
+                    wandb.run.summary[key] = value
         if final_best:
+            hparam_val_message = ""
+            hparam_val_key = "final_eval/euler_mean_emd_hparam_val_times"
+            if hparam_val_key in final_metrics:
+                hparam_val_message = (
+                    "hparam_val_mean_EMD=" f"{final_metrics[hparam_val_key]:.8g}, "
+                )
             print(
                 "Final best-model Maizels evaluation: "
                 f"test_mean_EMD={final_metrics['final_eval/euler_mean_emd']:.8g}, "
+                f"{hparam_val_message}"
                 "invalid_trajectory_pct="
                 f"{final_metrics['final_eval/euler_invalid_trajectory_pct']:.8g}"
             )

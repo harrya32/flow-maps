@@ -32,6 +32,15 @@ def parse_args():
         help="Working directory",
     )
     parser.add_argument(
+        "--final_metrics_path",
+        type=str,
+        default="",
+        help=(
+            "Optional JSON path for final best-checkpoint Maizels metrics. "
+            "This requires a single seed per invocation."
+        ),
+    )
+    parser.add_argument(
         "--resume_flow_model_ckpt",
         type=str,
         default=None,
@@ -161,6 +170,15 @@ def datasets_parser(parser):
     parser.add_argument("--maizels_eval_points_per_time", type=int, default=1024)
     parser.add_argument("--maizels_eval_euler_steps", type=int, default=50)
     parser.add_argument("--maizels_eval_every_n_steps", type=int, default=500)
+    parser.add_argument(
+        "--maizels_hparam_val_times",
+        nargs="+",
+        default=["D3.4", "D6"],
+        help=(
+            "Held-out Maizels days whose exact EMD is averaged for "
+            "hyperparameter validation. Comma-separated values are also accepted."
+        ),
+    )
     parser.add_argument(
         "--cite_multi_eval_enabled",
         action=argparse.BooleanOptionalAction,
@@ -482,6 +500,54 @@ def flow_network_parser(parser):
         choices=["exact", "sinkhorn"],
         help="TorchCFM minibatch coupling used internally by SF2M.",
     )
+    parser.add_argument(
+        "--sf2m_ot_cost",
+        type=str,
+        default="euclidean",
+        choices=["euclidean", "geodesic"],
+        help=(
+            "SF2M coupling ground cost. 'geodesic' implements the paper's "
+            "kNN heat-kernel Geodesic Sinkhorn cost."
+        ),
+    )
+    parser.add_argument(
+        "--sf2m_geodesic_knn",
+        type=int,
+        default=5,
+        help="Number of neighbours in the training-cell geometry graph.",
+    )
+    parser.add_argument(
+        "--sf2m_geodesic_heat_time",
+        type=float,
+        default=1.0,
+        help="Diffusion time t in the paper's heat kernel H_t.",
+    )
+    parser.add_argument(
+        "--sf2m_geodesic_eigenvectors",
+        type=int,
+        default=256,
+        help="Low-frequency graph-Laplacian eigenvectors used to approximate H_t.",
+    )
+    parser.add_argument(
+        "--sf2m_geodesic_graph_max_points",
+        type=int,
+        default=0,
+        help="Maximum training cells in the geometry graph; 0 uses all cells.",
+    )
+    parser.add_argument(
+        "--sf2m_geodesic_cache_dir",
+        type=str,
+        default="",
+        help=(
+            "Cached graph spectrum directory; blank uses "
+            "<working_dir>/.sf2m_geodesic_cache."
+        ),
+    )
+    parser.add_argument("--sf2m_geodesic_heat_epsilon", type=float, default=1e-12)
+    parser.add_argument(
+        "--sf2m_geodesic_sinkhorn_max_iter", type=int, default=5000
+    )
+    parser.add_argument("--sf2m_geodesic_sinkhorn_tol", type=float, default=1e-7)
     parser.add_argument(
         "--sf2m_score_weight",
         type=float,

@@ -21,7 +21,11 @@ def get_config(
     cite_multi_time_mode: str | None = None,
     classifier_path: str | None = None,
     full_data_classifier_path: str | None = None,
+    learning_rate: float | None = None,
 ):
+    seed = int(os.getenv("CITE_MULTI_SEED", "0"))
+    if seed < 0:
+        raise ValueError("CITE_MULTI_SEED must be non-negative.")
     cfg = _base_get_config(
         slurm_id,
         dataset_location,
@@ -31,14 +35,7 @@ def get_config(
         cite_multi_time_mode=cite_multi_time_mode,
         classifier_path=classifier_path,
         full_data_classifier_path=full_data_classifier_path,
+        learning_rate=learning_rate,
+        seed=seed,
     )
-    seed = int(os.getenv("CITE_MULTI_SEED", str(cfg.training.seed)))
-    if seed < 0:
-        raise ValueError("CITE_MULTI_SEED must be non-negative.")
-
-    cfg.training.seed = seed
-    cfg.logging.mfm.seed = seed + 2901
-    run_name = f"{cfg.logging.wandb_name}_seed{seed}"
-    cfg.logging.wandb_name = run_name
-    cfg.logging.output_name = run_name
     return cfg

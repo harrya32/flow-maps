@@ -1,4 +1,4 @@
-# Endpoint-only SF2M baseline on Maizels PCA50 (D3 -> D8).
+# Paper-style SF2M Geodesic Sinkhorn on D3, D3.8, and D8 Maizels PCA50.
 data_type: "maizels"
 data_name: "maizels"
 accelerator: "gpu"
@@ -6,7 +6,7 @@ dim: 50
 t_exclude: null
 whiten: false
 
-maizels_schedule: "d3_d8"
+maizels_schedule: "d3_d3p8_d8"
 maizels_time_mode: "real_time"
 maizels_pair_mode: "none"
 maizels_holdout_fraction: 0.1
@@ -22,12 +22,17 @@ patience: 10
 mfm: false
 sf2m: true
 sf2m_sigma: 0.2
-sf2m_ot_method: "exact"
+sf2m_ot_method: "sinkhorn"
+sf2m_ot_cost: "geodesic"
+sf2m_geodesic_knn: 5
+sf2m_geodesic_heat_time: 1.0
+sf2m_geodesic_eigenvectors: 256
+sf2m_geodesic_graph_max_points: 0
 sf2m_score_weight: 1.0
 sf2m_time_eps: 0.001
 optimal_transport_method: "None"
 
-max_steps: 10000
+max_steps: 50000
 val_check_interval: 100
 seeds: [0, 1, 2, 3, 4]
 

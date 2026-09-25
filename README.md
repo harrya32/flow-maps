@@ -342,6 +342,7 @@ For `configs.cite_multi_pca100`, `--dataset_name` is `cite` or `multi` and
 vanilla flow matching, 1 vanilla flow map, 2 prior-filtered flow matching, 3
 prior-filtered flow map, 4 prior-filtered constrained flow map, 5 masked-OT
 prior-filtered flow map, and 6 its differentiably constrained counterpart.
+For the deterministic seed sweep, ID 9 adds plain minibatch-OT flow matching.
 The classifier script makes a stratified 90/10 train/validation split, selects
 the lowest-validation-loss checkpoint, and writes three `.pt`/`.npz` pairs per
 dataset under `cite-classifiers/` and `multi-classifiers/`: `all_days`,
@@ -443,7 +444,43 @@ An SF2M baseline is available in the same PyTorch evaluation stack via
 It uses TorchCFM's `SchrodingerBridgeConditionalFlowMatcher`, trains both the
 velocity and score fields, and evaluates 50-step Euler--Maruyama paths on the
 same Maizels/CITE/Multi splits, EMD, RBF MMD2, and classifier-lineage metrics.
+The `sf2m_geodesic_*.yaml` variants use the paper's heat-kernel geometric
+ground cost with Geodesic Sinkhorn coupling.
 See `metric-flow-matching/README.md` for commands and metric names.
+
+The BranchSBM baseline is an adapter around the unmodified checkout at
+`~/Desktop/BranchSBM` (override it with `BRANCHSBM_DIR`). It uses one branch for
+every cell type present on the terminal day, including the smallest types. The
+model remains endpoint-based (D2-to-D7 for CITE/Multi and D3-to-D8 for
+Maizels); the retained middle training day is supplied to BranchSBM's learned
+two-cluster RBF metric and is not added as a new BranchSBM loss. Terminal pools
+are split before within-branch resampling, and their loss weights use the
+unresampled terminal-day proportions.
+For the repository's unweighted population and path metrics, the evaluator
+draws one branch per source cell from BranchSBM's learned non-negative branch
+masses using a fixed per-run seed; the chosen branch is then followed for the
+whole classifier trajectory.
+
+Run all three benchmark configurations sequentially from this repository:
+
+```bash
+./run_branchsbm_all.sh
+```
+
+The individual entry points are `run_branchsbm_maizels_3marginal.sh`,
+`run_branchsbm_cite.sh`, and `run_branchsbm_multi.sh`. They use five seeds by
+default; for a single seed, append `--seeds 0`. CITE and Multi each run both
+held-out-middle-day protocols. Outputs and checkpoints are written below
+`outputs/branchsbm_*`, while metrics are sent to the
+`self-distill-flow-maps` W&B project. Final evaluation reports exact EMD, RBF
+MMD2, and classifier-based lineage violation rate. Maizels additionally logs
+the separate mean validation EMD over D3.4 and D6. The published-style default
+is 100 epochs for each of BranchSBM's geopath, flow, growth, and joint stages,
+with validation every 10 epochs after the geopath stage. `--max_steps` and
+`--val_check_interval` can instead impose the same optimizer-step ceiling on
+each stage.
+Set `FLOWMAPS_PYTHON=/path/to/python` when the BranchSBM dependencies live in a
+non-active environment.
 
 Run a resumable Maizels hyperparameter grid with:
 
@@ -543,7 +580,8 @@ SEEDS="1 2 3" DATASETS="cite multi" HELDOUT_DAYS="3 4" \
 The command shown above sweeps both clocks. The script defaults to
 `TIME_MODES=equal_time` for backward compatibility. Any grid axis can be
 restricted, for example `DATASETS=cite HELDOUT_DAYS=4 SLURM_IDS="0 1"`. Set
-`DRY_RUN=1` to print and validate the commands without launching training.
+`LEARNING_RATE` to override the optimizer learning rate for all selected runs,
+or `DRY_RUN=1` to print and validate the commands without launching training.
 
 The algorithm can be selected via `slurm_id`, which can also be used to run all experiments simultaneously with a slurm job array:
 

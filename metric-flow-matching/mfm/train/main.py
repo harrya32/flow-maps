@@ -2,6 +2,7 @@ import argparse
 import copy
 import os
 
+import numpy as np
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
@@ -85,6 +86,32 @@ def torch_device_for_accelerator(accelerator: str) -> torch.device:
     return torch.device("cpu")
 
 
+def sf2m_geodesic_reference_populations(datamodule, skipped_time_points):
+    """Return retained training marginals without exposing omitted eval days."""
+    skipped = set(int(index) for index in skipped_time_points)
+    if datamodule.data_type == "maizels":
+        if hasattr(datamodule, "timepoint_splits"):
+            return [
+                np.asarray(
+                    datamodule.timepoint_splits[timepoint]["train_x"],
+                    dtype=np.float32,
+                )
+                for timepoint in datamodule.retained_timepoints
+            ]
+        return [
+            np.asarray(datamodule.splits["source_train_x"], dtype=np.float32),
+            np.asarray(datamodule.splits["target_train_x"], dtype=np.float32),
+        ]
+
+    if not hasattr(datamodule, "timepoint_splits"):
+        raise ValueError("Geodesic SF2M requires named cell-data timepoint splits.")
+    return [
+        np.asarray(pool["train_x"], dtype=np.float32)
+        for index, pool in enumerate(datamodule.timepoint_splits.values())
+        if index not in skipped
+    ]
+
+
 def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     set_seed(seed)
     if bool(args.sf2m):
@@ -101,6 +128,22 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
             )
         if float(args.sf2m_score_weight) < 0.0:
             raise ValueError("sf2m_score_weight must be non-negative.")
+        if args.sf2m_ot_cost == "geodesic":
+            if args.sf2m_ot_method != "sinkhorn":
+                raise ValueError(
+                    "Geodesic SF2M follows the paper's Geodesic Sinkhorn "
+                    "coupling; set sf2m_ot_method: sinkhorn."
+                )
+            if int(args.sf2m_geodesic_knn) < 2:
+                raise ValueError("sf2m_geodesic_knn must be at least 2.")
+            if float(args.sf2m_geodesic_heat_time) <= 0.0:
+                raise ValueError("sf2m_geodesic_heat_time must be positive.")
+            if int(args.sf2m_geodesic_eigenvectors) < 2:
+                raise ValueError("sf2m_geodesic_eigenvectors must be at least 2.")
+            if int(args.sf2m_geodesic_graph_max_points) < 0:
+                raise ValueError(
+                    "sf2m_geodesic_graph_max_points must be non-negative."
+                )
     if args.data_type == "lidar":
         assert args.dim == 3 and args.data_name == "lidar"
     elif args.data_type == "arch":
@@ -227,8 +270,14 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     )
     if args.data_type == "maizels":
         if args.sf2m:
-            mfm_variant = "sf2m"
-            default_run_name = f"maizels_pca50_sf2m_{args.maizels_schedule}_seed{seed}"
+            mfm_variant = (
+                "sf2m-geodesic"
+                if args.sf2m_ot_cost == "geodesic"
+                else "sf2m"
+            )
+            default_run_name = (
+                f"maizels_pca50_{mfm_variant}_{args.maizels_schedule}_seed{seed}"
+            )
         elif datamodule.uses_native_marginal_pairing:
             mfm_variant = "ot-mfm" if ot_sampler is not None else "i-mfm"
             default_run_name = (
@@ -241,9 +290,14 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         mfm_variant = None
         default_run_name = None
     if args.data_type == "scrna" and args.data_name in ("cite", "multi"):
-        mfm_variant = (
-            "sf2m" if args.sf2m else ("ot-mfm" if ot_sampler is not None else "i-mfm")
-        )
+        if args.sf2m:
+            mfm_variant = (
+                "sf2m-geodesic"
+                if args.sf2m_ot_cost == "geodesic"
+                else "sf2m"
+            )
+        else:
+            mfm_variant = "ot-mfm" if ot_sampler is not None else "i-mfm"
         heldout_day = (
             "none"
             if t_exclude is None
@@ -266,6 +320,12 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
         {
             "method": "sf2m" if args.sf2m else "mfm",
             "evaluation_sampler": ("euler_maruyama" if args.sf2m else "euler"),
+            "sf2m_ot_cost_effective": (
+                args.sf2m_ot_cost if args.sf2m else None
+            ),
+            "sf2m_ot_method_effective": (
+                args.sf2m_ot_method if args.sf2m else None
+            ),
         },
         allow_val_change=True,
     )
@@ -297,11 +357,45 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
 
     ### Metric Flow Matching Module
     if args.sf2m:
+        reference_populations = (
+            sf2m_geodesic_reference_populations(
+                datamodule,
+                skipped_time_points,
+            )
+            if args.sf2m_ot_cost == "geodesic"
+            else None
+        )
+        geodesic_cache_dir = args.sf2m_geodesic_cache_dir or os.path.join(
+            args.working_dir,
+            ".sf2m_geodesic_cache",
+        )
         flow_matcher_base = IntervalSchrodingerBridgeFlowMatcher(
             sigma=args.sf2m_sigma,
             ot_method=args.sf2m_ot_method,
+            ot_cost=args.sf2m_ot_cost,
             time_eps=args.sf2m_time_eps,
+            reference_populations=reference_populations,
+            geodesic_knn=args.sf2m_geodesic_knn,
+            geodesic_heat_time=args.sf2m_geodesic_heat_time,
+            geodesic_eigenvectors=args.sf2m_geodesic_eigenvectors,
+            geodesic_graph_max_points=args.sf2m_geodesic_graph_max_points,
+            geodesic_cache_dir=geodesic_cache_dir,
+            geodesic_heat_epsilon=args.sf2m_geodesic_heat_epsilon,
+            geodesic_sinkhorn_max_iter=(
+                args.sf2m_geodesic_sinkhorn_max_iter
+            ),
+            geodesic_sinkhorn_tol=args.sf2m_geodesic_sinkhorn_tol,
+            seed=seed,
         )
+        if flow_matcher_base.geometry_summary is not None:
+            wandb.config.update(
+                {"sf2m_geodesic_geometry": flow_matcher_base.geometry_summary},
+                allow_val_change=True,
+            )
+            print(
+                "Built SF2M Geodesic Sinkhorn geometry: "
+                f"{flow_matcher_base.geometry_summary}"
+            )
     else:
         flow_matcher_base = MetricFlowMatcher(
             geopath_net=geopath_net,
@@ -387,7 +481,10 @@ def main(args: argparse.Namespace, seed: int, t_exclude: int) -> None:
     ##### ALGO 1: Training of Geodesic Interpolants END #####
 
     ##### ALGO 2: (Metric) Flow Matching Beginning #####
-    if args.data_type in ["arch", "scrna", "sphere"]:
+    # SF2M has no geopath phase, so retain its original split. In particular,
+    # the geodesic graph must contain exactly the flow-training cells and no
+    # cells from the validation split.
+    if args.data_type in ["arch", "scrna", "sphere"] and not args.sf2m:
         datamodule = TemporalDataModule(
             args=args,
             skipped_datapoint=t_exclude,
@@ -462,6 +559,10 @@ if __name__ == "__main__":
         updated_args = merge_config(updated_args, config)
 
     updated_args.group_name = generate_group_string()
+    if updated_args.final_metrics_path and len(updated_args.seeds) != 1:
+        raise ValueError(
+            "--final_metrics_path requires exactly one seed per invocation."
+        )
     if updated_args.data_type == "maizels":
         updated_args.data_path = updated_args.maizels_dataset_path
     else:
