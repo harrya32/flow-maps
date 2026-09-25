@@ -505,6 +505,13 @@ def run_one(args: argparse.Namespace, *, seed: int, t_exclude: int | None) -> No
             skipped_time_points=[],
             args=branch_args,
         )
+        # BranchSBM's flow matcher is not an nn.Module, so its geopath nets are
+        # otherwise invisible to Lightning's device transfer at this stage.
+        # Register the already-trained nets on the flow-stage module while
+        # keeping them frozen, as intended by the staged BranchSBM procedure.
+        for parameter in flow_matcher.geopath_nets.parameters():
+            parameter.requires_grad_(False)
+        flow_model.geopath_nets = flow_matcher.geopath_nets
         _, checkpoint = _fit_stage(
             branch_args,
             phase="flow",
