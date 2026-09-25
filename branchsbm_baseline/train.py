@@ -50,6 +50,12 @@ from branchsbm_baseline.evaluation import (  # noqa: E402
 def _add_branchsbm_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config_path", type=str, default="")
     parser.add_argument(
+        "--working_dir",
+        type=str,
+        default="./",
+        help="Directory for checkpoints, logs, and other run outputs.",
+    )
+    parser.add_argument(
         "--branchsbm_dir",
         type=str,
         default=os.environ.get(
