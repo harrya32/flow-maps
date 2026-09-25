@@ -546,12 +546,6 @@ def run_one(args: argparse.Namespace, *, seed: int, t_exclude: int | None) -> No
         flow_nets = growth_model.flow_nets
         growth_nets = growth_model.growth_nets
 
-        # The preceding growth-only stage freezes the shared velocity objects.
-        # Restore their trainability before invoking BranchSBM's intended joint
-        # optimization stage; no loss or network implementation is changed.
-        for parameter in flow_nets.parameters():
-            parameter.requires_grad_(True)
-
         joint_model = components["BranchSBMJointTrain"](
             flow_nets=flow_nets,
             growth_nets=growth_nets,
