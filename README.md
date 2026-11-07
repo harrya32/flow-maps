@@ -461,6 +461,15 @@ and the existing held-out EMD, RBF MMD2, and trajectory violation W&B metrics.
 See [otpfm_baseline/README.md](otpfm_baseline/README.md) for individual runners,
 seed overrides, clock selection, and a one-batch smoke test.
 
+The Cell-MNN baseline reuses the local `cell-mnn` model, population sampler and
+loss for CITE/Multi PCA100 and Maizels PCA50. Run `bash run_cellmnn_all.sh` in
+`mfm_env` after installing `cellmnn_baseline/requirements.txt`. It uses the
+paper's corresponding CITE/Multi dimensionality presets, selects checkpoints
+using retained-day validation loss, and logs the shared held-out W1, RBF MMD2
+and trajectory violation metrics to W&B. See
+[cellmnn_baseline/README.md](cellmnn_baseline/README.md) for defaults, individual
+runners, endpoint/three-marginal Maizels schedules, and smoke tests.
+
 The BranchSBM baseline is an adapter around the unmodified checkout at
 `~/Desktop/BranchSBM` (override it with `BRANCHSBM_DIR`). It uses one branch for
 every cell type present on the terminal day, including the smallest types. The

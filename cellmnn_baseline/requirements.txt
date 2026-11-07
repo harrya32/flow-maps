@@ -1,0 +1,3 @@
+# Additional dependency beyond the existing mfm_env baseline environment.
+einops==0.8.1
+
