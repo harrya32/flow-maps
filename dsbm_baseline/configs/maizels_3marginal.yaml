@@ -1,0 +1,39 @@
+# Piecewise DSBM-IMF on the retained Maizels D3, D3.8, and D8 marginals.
+data_type: "maizels"
+data_name: "maizels"
+accelerator: "gpu"
+dim: 50
+t_exclude: null
+whiten: false
+
+maizels_schedule: "d3_d3p8_d8"
+maizels_time_mode: "real_time"
+maizels_pair_mode: "none"
+maizels_holdout_fraction: 0.1
+
+dsbm_first_coupling: "ind"
+dsbm_sigma: 0.2
+dsbm_num_steps: 20
+dsbm_time_eps: 0.001
+dsbm_learning_rate: 0.0001
+dsbm_hidden_dims: [256, 256]
+dsbm_activation: "silu"
+dsbm_outer_iterations: 40
+dsbm_inner_iterations: 1250
+dsbm_train_points_per_marginal: 10000
+dsbm_normalize: true
+dsbm_scale_sigma_by_interval: true
+
+batch_size: 128
+dsbm_validation_points: 1024
+dsbm_validation_every_forward: 1
+dsbm_eval_euler_steps: 50
+dsbm_eval_batch_size: 1024
+
+seeds: [0, 1, 2, 3, 4]
+maizels_eval_every_n_steps: 500
+maizels_eval_euler_steps: 50
+maizels_eval_points_per_time: 1024
+maizels_hparam_val_times: ["D3.4", "D6"]
+wandb_project: "self-distill-flow-maps"
+

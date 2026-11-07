@@ -448,6 +448,19 @@ The `sf2m_geodesic_*.yaml` variants use the paper's heat-kernel geometric
 ground cost with Geodesic Sinkhorn coupling.
 See `metric-flow-matching/README.md` for commands and metric names.
 
+The OTP-FM CITE/Multi baseline imports the local `OTP-FM` checkout and uses
+its CITE network and W2Inf defaults with independent coupling. Run
+`bash run_otpfm_all.sh` in `mfm_env` for both omitted-day folds of both datasets;
+the default seed is 42. Add `--ot_coupling` for precomputed OT tuples or
+`--potential w2` for W2Potential; both switches can be combined.
+The runner selects the matching CITE training preset: independent W2Inf uses
+80 epochs without scheduling, while OT-coupled W2Inf and W2Potential use
+200 epochs with cosine scheduling.
+It uses PCA100, the shared cell splits and classifiers,
+and the existing held-out EMD, RBF MMD2, and trajectory violation W&B metrics.
+See [otpfm_baseline/README.md](otpfm_baseline/README.md) for individual runners,
+seed overrides, clock selection, and a one-batch smoke test.
+
 The BranchSBM baseline is an adapter around the unmodified checkout at
 `~/Desktop/BranchSBM` (override it with `BRANCHSBM_DIR`). It uses one branch for
 every cell type present on the terminal day, including the smallest types. The
