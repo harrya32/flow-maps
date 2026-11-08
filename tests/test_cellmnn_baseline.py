@@ -283,7 +283,12 @@ class CellMNNTests(unittest.TestCase):
         expected = original.training_step(batch, 0)
         actual = adapted.loss_terms(batch)["loss"]
         torch.testing.assert_close(expected, actual, rtol=1e-5, atol=1e-6)
+        expected.backward()
         actual.backward()
+        for reference, candidate in zip(original.parameters(), adapted.parameters()):
+            torch.testing.assert_close(
+                reference.grad, candidate.grad, rtol=3e-4, atol=2e-5
+            )
         self.assertTrue(
             all(
                 torch.isfinite(p.grad).all()
@@ -291,6 +296,37 @@ class CellMNNTests(unittest.TestCase):
                 if p.grad is not None
             )
         )
+
+    @unittest.skipUnless(torch.backends.mps.is_available(), "MPS is unavailable")
+    def test_mps_loss_preserves_cpu_values_and_gradients(self):
+        kwargs = dict(
+            latent_dim=5,
+            lr=2e-4,
+            retained_times=[2.0, 3.0, 7.0],
+            gamma=0.1,
+            depth=2,
+            width=12,
+        )
+        reference = BenchmarkCellMNN(**kwargs)
+        candidate = BenchmarkCellMNN(**kwargs).to("mps")
+        candidate.load_state_dict(reference.state_dict())
+        arrays = [np.random.randn(20, 5).astype(np.float32) for _ in range(3)]
+        batch = next(iter(PopulationDataset(arrays, [2.0, 3.0, 7.0], 16, batches=1)))
+        expected = reference.loss_terms(batch)
+        actual = candidate.loss_terms(tuple(value.to("mps") for value in batch))
+        for name in expected:
+            self.assertEqual(actual[name].device.type, "mps")
+            torch.testing.assert_close(
+                expected[name], actual[name].cpu(), rtol=3e-4, atol=2e-5
+            )
+        expected["loss"].backward()
+        actual["loss"].backward()
+        for cpu_parameter, mps_parameter in zip(
+            reference.parameters(), candidate.parameters()
+        ):
+            torch.testing.assert_close(
+                cpu_parameter.grad, mps_parameter.grad.cpu(), rtol=5e-4, atol=3e-5
+            )
 
     def test_equal_clock_supervision_is_exact_and_retains_kinetic_grid(self):
         times = [2.0, 2.0 + 5.0 / 3.0, 7.0]

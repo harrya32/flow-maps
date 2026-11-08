@@ -311,6 +311,11 @@ class BenchmarkTrainer:
                 count += batch_n
                 for key, value in terms.items():
                     totals[key] = totals.get(key, 0.0) + batch_n * value.detach().item()
+                if self.device.type == "mps":
+                    # Evict unused buffers from the caller after Metal completes,
+                    # rather than letting allocation trigger eviction on its queue.
+                    torch.mps.synchronize()
+                    torch.mps.empty_cache()
         if count == 0:
             raise ValueError("Cell-MNN loader produced no batches.")
         return {key: value / count for key, value in totals.items()}
@@ -502,6 +507,12 @@ def run_experiment(args, config, heldout_day, seed):
         "time_map": data.time_map,
         "model_time_map": data.model_time_map,
         "device": str(device),
+        "population_loss_device": "cpu" if device.type == "mps" else str(device),
+        "determinant_device": "cpu" if device.type == "mps" else str(device),
+        "matrix_inverse_device": "cpu" if device.type == "mps" else str(device),
+        "mps_cache_policy": (
+            "release_after_each_batch" if device.type == "mps" else None
+        ),
         "upstream_repo": str(UPSTREAM_ROOT),
         "comparison_mode": method,
         "primary_sampler": "direct",

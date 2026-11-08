@@ -85,8 +85,14 @@ equivalent elementwise exponential and broadcasts the inverse basis matrix,
 avoiding a dense batch-by-time-by-PCA-by-PCA tensor. Tests compare both predictions
 and gradients against upstream. Kinetic regularization retains their 0.1-day
 quadrature; exact retained supervision times are added when needed for an equal
-clock. No upstream source files are edited. On MPS, unsupported PyTorch operations
-can use CPU fallback.
+clock. No upstream source files are edited. On MPS, the population MMD, matrix
+inverse and determinant run explicitly on CPU with gradients preserved through
+device copies. PyTorch 2.3's batched MPS inverse retains native GPU memory across
+calls, so CPU inversion also applies during sampling.
+Unused GPU buffers are also released after each training/validation batch, once
+Metal has finished. This works around PyTorch 2.3's allocator crash and prevents
+reserved memory accumulating across batches. The encoder and trajectory
+multiplications still run on MPS; the paper's loss and batch size are preserved.
 
 ## Evaluation and outputs
 

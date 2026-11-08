@@ -48,7 +48,10 @@ class BenchmarkCellMNN(CellMNN):
         # Exactly exp(diag(eigenvalues) * dt), without B*T dense D*D matrices.
         z_traj = z_t * torch.exp(eigenvalues * (decode_ts - t))
         z_dot = eigenvalues * z_traj
-        P_inv = torch.linalg.inv(P)
+        # PyTorch 2.3's batched MPS inverse retains native GPU workspace across
+        # calls even after empty_cache. CPU inversion preserves the same gradient.
+        inverse_device = torch.device("cpu") if P.device.type == "mps" else P.device
+        P_inv = torch.linalg.inv(P.to(inverse_device)).to(P.device)
         x_traj = torch.bmm(z_traj, P_inv[:, 0])
         x_dot = torch.bmm(z_dot, P_inv[:, 0])
         return (
@@ -67,8 +70,17 @@ class BenchmarkCellMNN(CellMNN):
             raise ValueError("Population loss requires exactly the retained days.")
         decode_ts = self.loss_times[None, :, None].expand(batch_n, -1, -1)
         predictions, _, _, P, velocity = self(x_t, t, decode_ts)
-        predictions = predictions[:, self.population_indices]
-        future = population_times.squeeze(-1) > t.squeeze(-1)
+        # Variable-size indexing/cdist graphs exhaust the PyTorch 2.3 MPS
+        # allocator across batches. Reuse the upstream loss on CPU for MPS;
+        # differentiable copies retain gradients into the MPS encoder/decoder.
+        loss_device = torch.device("cpu") if x_t.device.type == "mps" else x_t.device
+        predictions = predictions.to(loss_device).index_select(
+            1, self.population_indices.to(loss_device)
+        )
+        population = population.to(loss_device)
+        future = population_times.to(loss_device).squeeze(-1) > t.to(
+            loss_device
+        ).squeeze(-1)
         ranks = torch.cumsum(future.to(torch.int), dim=1)
         mmd = predictions.sum() * 0.0
         for day in range(n_days):
@@ -78,8 +90,12 @@ class BenchmarkCellMNN(CellMNN):
                     mmd = mmd + self.gamma ** (rank - 1) * self.loss_fn(
                         predictions[mask, day], population[mask, day]
                     )
-        kinetic = velocity[:, self.kinetic_indices].square().mean()
-        inverse = (1.0 / (torch.abs(torch.det(P)) + 1e-4)).mean()
+        mmd = mmd.to(x_t.device)
+        kinetic = velocity.index_select(1, self.kinetic_indices).square().mean()
+        # MPS does not implement det. Use an explicit autograd-preserving CPU
+        # operation rather than dispatching through its implicit fallback.
+        inverse = (1.0 / (torch.abs(torch.det(P.to(loss_device))) + 1e-4)).mean()
+        inverse = inverse.to(x_t.device)
         loss = mmd + self.lambda_kinetic * kinetic + inverse
         return {
             "loss": loss,
