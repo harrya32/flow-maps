@@ -1,3 +1,5 @@
-# Additional dependency beyond the existing mfm_env baseline environment.
+# Additional dependencies and packaging compatibility for the baseline environment.
 einops==0.8.1
+# Lightning 2.2 imports pkg_resources; match the tested mfm_env packaging version.
+setuptools==75.8.0
 

@@ -8,7 +8,9 @@ PCA100 and Maizels PCA50 with the shared benchmark cell holdouts and classifiers
 
 ## Run
 
-Use the existing PyTorch/MFM environment. Install the additional dependency once:
+Use the existing PyTorch/MFM environment. Install the additional dependencies once.
+The requirements pin `setuptools==75.8.0`, which supplies the legacy
+`pkg_resources` module imported by Lightning 2.2.
 
 ```bash
 conda activate mfm_env

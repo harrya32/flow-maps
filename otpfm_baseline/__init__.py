@@ -1,4 +1,4 @@
-"""OTP-FM adapters for the repository's CITE/Multi PCA100 benchmarks."""
+"""OTP-FM adapters for the shared single-cell benchmarks."""
 
 import os
 import sys

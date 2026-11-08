@@ -1,4 +1,4 @@
-"""Run upstream OTP-FM on the CITE/Multi PCA100 benchmarks."""
+"""Run upstream OTP-FM on CITE/Multi PCA100 and Maizels PCA50."""
 
 from __future__ import annotations
 
@@ -33,7 +33,9 @@ from .model import OTPFMSampler
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_name", choices=("cite", "multi"), default="cite")
+    parser.add_argument(
+        "--dataset_name", choices=("cite", "multi", "maizels"), default="cite"
+    )
     parser.add_argument(
         "--heldout_day", nargs="+", choices=("3", "4"), default=["3", "4"]
     )
@@ -41,7 +43,13 @@ def parse_args(argv=None):
         "--cite_multi_time_mode", choices=cite_multi.TIME_MODES, default="equal_time"
     )
     parser.add_argument(
-        "--dataset_location", default="", help="Benchmark data directory or H5AD path."
+        "--maizels_schedule", choices=("d3_d3p8_d8", "d3_d8"), default="d3_d3p8_d8"
+    )
+    parser.add_argument(
+        "--maizels_time_mode", choices=("real_time", "equal_time"), default="real_time"
+    )
+    parser.add_argument(
+        "--dataset_location", default="", help="Benchmark directory or H5AD/CSV path."
     )
     parser.add_argument("--working_dir", default=str(REPO_ROOT / "outputs" / "otpfm"))
     parser.add_argument(
@@ -160,7 +168,7 @@ def experiment_config(args):
     ):
         raise ValueError("Epochs, batch size, and learning rate must be positive.")
     # The only model-space change: use the benchmark representation and clock.
-    config["pca_dim"] = 100
+    config["pca_dim"] = 50 if args.dataset_name == "maizels" else 100
     # W2Inf has a linear force with a fixed assignment and permits a cached
     # direct solve. W2Potential changes its OT map as predicted positions move.
     config["solver_type"] = config.get("solver_type") or (
@@ -221,7 +229,9 @@ class BenchmarkTrainer(Trainer):
             self.model.lossfn = "mse"
             for batch in self.val_loader:
                 ret_batch = self._process_batch(batch).to(self.device)
-                loss = self.model.forward_with_loss(ret_batch, otp_alpha=1.0)
+                loss = self.model.forward_with_loss(
+                    ret_batch, otp_alpha=1.0, do_otp=bool(self.potentials)
+                )
                 total += float(loss) * len(ret_batch)
                 count += len(ret_batch)
         finally:
@@ -243,6 +253,9 @@ class BenchmarkTrainer(Trainer):
         return value, ret_batch
 
     def _evaluate(self, *, final=False):
+        maizels_kwargs = (
+            {"include_observed": final} if self.data.dataset_name == "maizels" else {}
+        )
         metrics, figure = evaluate(
             self.data,
             self.sampler,
@@ -254,6 +267,16 @@ class BenchmarkTrainer(Trainer):
                 else self.args.eval_max_points
             ),
             lineage_mode=os.getenv("MAIZELS_LINEAGE_TRANSITION_MODE", "descendant"),
+            **maizels_kwargs,
+        )
+        figures = (
+            figure
+            if isinstance(figure, dict)
+            else (
+                {}
+                if figure is None
+                else {"cite_multi_classifier_validity_paths": figure}
+            )
         )
         if not final:
             metrics = {
@@ -276,17 +299,24 @@ class BenchmarkTrainer(Trainer):
             wandb.run.summary["final_eval/best_checkpoint_path"] = str(
                 self.models_dir / "best.pt"
             )
-        if figure is not None:
-            metrics = {
-                **metrics,
-                "plots/cite_multi_classifier_validity_paths": wandb.Image(figure),
-            }
+        for name, plot in figures.items():
+            plot.savefig(
+                self.save_dir / f"{'final_' if final else ''}{name}.png", dpi=150
+            )
+        metrics = {
+            **metrics,
+            **{f"plots/{name}": wandb.Image(plot) for name, plot in figures.items()},
+        }
         wandb.log(metrics, step=self.global_step)
-        if figure is not None:
-            plt.close(figure)
+        for plot in figures.values():
+            plt.close(plot)
         self.logger.info(
-            "Held-out day %s: flowmap EMD %.6g; invalid trajectories %.4g%%",
-            self.data.heldout_day,
+            "%s: flowmap EMD %.6g; invalid trajectories %.4g%%",
+            (
+                "Maizels omitted days"
+                if self.data.dataset_name == "maizels"
+                else f"Held-out day {self.data.heldout_day}"
+            ),
             metrics["distribution_eval/flowmap_emd_mean"],
             metrics[
                 "maizels/full_data_classifier/model_flowmap_invalid_trajectory_pct"
@@ -312,13 +342,19 @@ def run_experiment(args, config, heldout_day, seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     device = resolve_device(args.device)
+    time_mode = (
+        args.maizels_time_mode
+        if args.dataset_name == "maizels"
+        else args.cite_multi_time_mode
+    )
     data = prepare_data(
         args.dataset_name,
         heldout_day,
-        args.cite_multi_time_mode,
+        time_mode,
         args.dataset_location,
         config,
         smoke_test=args.smoke_test,
+        maizels_schedule=args.maizels_schedule,
     )
     config["tks"] = [data.time_map[day] for day in data.retained[1:-1]]
     classifiers = classifier_paths(
@@ -326,15 +362,21 @@ def run_experiment(args, config, heldout_day, seed):
         heldout_day,
         classifier_path=args.classifier_path,
         full_data_classifier_path=args.full_data_classifier_path,
+        maizels_schedule=args.maizels_schedule,
     )
     potentials = create_potentials(config)
-    model = create_model(config, 100, potentials, str(device))
+    model = create_model(config, int(config["pca_dim"]), potentials, str(device))
     method = f"otpfm_{config['potential']}"
     if config["ot_coupling"]:
         method += f"_ot_{config['ot_method']}"
         if config["ot_method"] == "sinkhorn":
             method += f"_reg{config['ot_reg']}"
-    name = f"{args.dataset_name}_pca100_holdout_day{heldout_day}_{args.cite_multi_time_mode}_{method}_seed{seed}"
+    fold = (
+        args.maizels_schedule
+        if args.dataset_name == "maizels"
+        else f"holdout_day{heldout_day}"
+    )
+    name = f"{args.dataset_name}_pca{config['pca_dim']}_{fold}_{time_mode}_{method}_seed{seed}"
     if args.smoke_test:
         name += "_smoke"
     output = Path(args.working_dir).expanduser().resolve() / name
@@ -344,13 +386,25 @@ def run_experiment(args, config, heldout_day, seed):
         "dataset_name": args.dataset_name,
         "heldout_day": heldout_day,
         "cite_multi_time_mode": args.cite_multi_time_mode,
+        "maizels_schedule": (
+            args.maizels_schedule if args.dataset_name == "maizels" else None
+        ),
+        "time_mode": time_mode,
+        "maizels_time_mode": time_mode if args.dataset_name == "maizels" else None,
         "dataset_path": str(data.path),
         "retained_days": list(data.retained),
+        "tuple_time_indices": {day: data.day_indices[day] for day in data.retained},
         "time_map": data.time_map,
         "device": str(device),
         "comparison_mode": method,
         "coupling_type": "precomputed_ot" if config["ot_coupling"] else "independent",
-        "potential_class": type(next(iter(potentials.values()))).__name__,
+        "potential_class": (
+            type(next(iter(potentials.values()))).__name__ if potentials else None
+        ),
+        "n_intermediate_potentials": len(potentials),
+        "do_otp": bool(potentials),
+        "checkpoint_monitor": "val_loss",
+        "primary_sampler": "flowmap" if args.dataset_name == "maizels" else "euler",
         "upstream_repo": str(UPSTREAM_ROOT),
         "classifiers": {key: str(path) for key, path in classifiers.items()},
         "normalization_mean": (
@@ -364,18 +418,18 @@ def run_experiment(args, config, heldout_day, seed):
             day: len(data.timepoint_splits[day]["holdout_x"]) for day in data.retained
         },
         "tuple_train_cells_per_day": {
-            day: len(data.train_dataset.data_by_time[cite_multi.TIMEPOINTS.index(day)])
+            day: len(data.train_dataset.data_by_time[data.day_indices[day]])
             for day in data.retained
         },
         "tuple_validation_cells_per_day": {
-            day: len(data.val_dataset.data_by_time[cite_multi.TIMEPOINTS.index(day)])
+            day: len(data.val_dataset.data_by_time[data.day_indices[day]])
             for day in data.retained
         },
         "validation_metric": f"full_strength_{config['consistency_loss']}_mse_on_retained_day_validation_cells",
         "evaluation_weights": "ema" if float(config["ema_decay"]) > 0 else "model",
         "distribution_steps": 50,
         "trajectory_check_times": 50,
-        "mfm_steps": 100,
+        "mfm_steps": None if args.dataset_name == "maizels" else 100,
         "eval_max_points": (
             min(args.eval_max_points or 64, 64)
             if args.smoke_test
@@ -416,6 +470,7 @@ def run_experiment(args, config, heldout_day, seed):
             otp_alpha_mean_scale=float(config["otp_alpha_mean_scale"]),
             sampling_steps=int(config["sampling_steps"]),
             ema_eval=float(config["ema_decay"]) > 0,
+            do_otp=bool(potentials),
             traj_skips=args.eval_every_epochs or int(config["traj_skips"]),
             potentials=potentials,
             device=str(device),
@@ -433,7 +488,7 @@ def run_experiment(args, config, heldout_day, seed):
 def main(argv=None):
     args = parse_args(argv)
     config = experiment_config(args)
-    for heldout_day in args.heldout_day:
+    for heldout_day in [None] if args.dataset_name == "maizels" else args.heldout_day:
         for seed in args.seeds if args.seeds is not None else [int(config["seed"])]:
             run_experiment(args, config, heldout_day, seed)
 

@@ -1,8 +1,9 @@
-"""Match the constrained CITE/Multi population and lineage evaluation."""
+"""Shared CITE/Multi and Maizels population and lineage evaluation."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -17,8 +18,27 @@ from . import REPO_ROOT
 
 
 def classifier_paths(
-    dataset_name, heldout_day, *, classifier_path="", full_data_classifier_path=""
+    dataset_name,
+    heldout_day,
+    *,
+    classifier_path="",
+    full_data_classifier_path="",
+    maizels_schedule="d3_d3p8_d8",
 ):
+    if dataset_name == "maizels":
+        # The Cell-MNN evaluator delegates CITE back here. Import its reusable
+        # Maizels branch only after this module has finished loading.
+        from cellmnn_baseline.evaluation import classifier_paths as maizels_paths
+
+        return maizels_paths(
+            SimpleNamespace(
+                dataset_name="maizels",
+                maizels_schedule=maizels_schedule,
+                classifier_path=classifier_path,
+                full_data_classifier_path=full_data_classifier_path,
+            ),
+            None,
+        )
     root = REPO_ROOT / f"{dataset_name}-classifiers"
     paths = {
         "observed_days": (
@@ -63,8 +83,30 @@ def evaluate(
     classifier_batch_size=8192,
     lineage_mode="descendant",
     make_plot=True,
+    include_observed=False,
 ):
     """Return benchmark metric names and an optional PC1/PC2 validity figure."""
+    if getattr(data, "dataset_name", None) == "maizels":
+        from cellmnn_baseline.evaluation import evaluate as evaluate_maizels
+
+        return evaluate_maizels(
+            data,
+            model_sampler,
+            classifiers,
+            seed=seed,
+            max_points=max_points,
+            make_plot=make_plot,
+            include_observed=include_observed,
+            primary_sampler="flowmap",
+            metric_prefix="OTPFM",
+            model_label="OTP-FM",
+            lineage_mode=lineage_mode,
+            prob_threshold=prob_threshold,
+            margin_threshold=margin_threshold,
+            classifier_batch_size=classifier_batch_size,
+            flow_steps=flow_steps,
+            check_times=check_times,
+        )
     pools = data.timepoint_splits
     heldout = data.heldout_day
     rng = np.random.default_rng(int(seed) + 1701)

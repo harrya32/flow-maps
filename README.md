@@ -448,16 +448,19 @@ The `sf2m_geodesic_*.yaml` variants use the paper's heat-kernel geometric
 ground cost with Geodesic Sinkhorn coupling.
 See `metric-flow-matching/README.md` for commands and metric names.
 
-The OTP-FM CITE/Multi baseline imports the local `OTP-FM` checkout and uses
+The OTP-FM CITE/Multi and Maizels baseline imports the local `OTP-FM` checkout and uses
 its CITE network and W2Inf defaults with independent coupling. Run
-`bash run_otpfm_all.sh` in `mfm_env` for both omitted-day folds of both datasets;
+`bash run_otpfm_all.sh` in `mfm_env` for both CITE/Multi omitted-day folds and Maizels;
 the default seed is 42. Add `--ot_coupling` for precomputed OT tuples or
 `--potential w2` for W2Potential; both switches can be combined.
 The runner selects the matching CITE training preset: independent W2Inf uses
 80 epochs without scheduling, while OT-coupled W2Inf and W2Potential use
 200 epochs with cosine scheduling.
-It uses PCA100, the shared cell splits and classifiers,
+It uses CITE/Multi PCA100 and Maizels PCA50, the shared cell splits and classifiers,
 and the existing held-out EMD, RBF MMD2, and trajectory violation W&B metrics.
+Maizels defaults to retained D3/D3.8/D8 on the real-time clock; run
+`bash run_otpfm_maizels.sh` individually. Checkpoints are selected by
+retained-day validation loss.
 See [otpfm_baseline/README.md](otpfm_baseline/README.md) for individual runners,
 seed overrides, clock selection, and a one-batch smoke test.
 

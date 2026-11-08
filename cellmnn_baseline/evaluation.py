@@ -58,7 +58,7 @@ def _subset(x, cap, rng):
     return np.asarray(x, np.float32)[indices], indices
 
 
-def _path_figure(paths, source, target, valid):
+def _path_figure(paths, source, target, valid, *, model_label="Cell-MNN"):
     fig, ax = plt.subplots(figsize=(7, 6), constrained_layout=True)
     for index in range(min(128, len(paths))):
         ax.plot(
@@ -71,13 +71,15 @@ def _path_figure(paths, source, target, valid):
     ax.scatter(source[:, 0], source[:, 1], s=5, c="black", label="Held-out D3")
     ax.scatter(target[:, 0], target[:, 1], s=5, c="#1f77b4", label="Observed D8")
     ax.set(
-        xlabel="PC1", ylabel="PC2", title="Cell-MNN paths (green valid, red invalid)"
+        xlabel="PC1",
+        ylabel="PC2",
+        title=f"{model_label} paths (green valid, red invalid)",
     )
     ax.legend()
     return fig
 
 
-def observed_metrics(data, sampler, *, seed, max_points):
+def observed_metrics(data, sampler, *, seed, max_points, primary_sampler="direct"):
     """Existing final observed-interval and carried source-to-final EMDs."""
     rng = np.random.default_rng(
         int(seed) + (1701 if data.dataset_name == "maizels" else 2901)
@@ -108,7 +110,7 @@ def observed_metrics(data, sampler, *, seed, max_points):
             emd = wasserstein.exact_emd(prediction, targets[right])
             tag = f"{time_tag(left)}_to_{time_tag(right)}"
             metrics[f"final_eval/observed_{tag}_{mode}_emd"] = emd
-            if mode == "direct":
+            if mode == primary_sampler:
                 metrics[f"final_eval/observed_{tag}_evaluation_emd"] = emd
             emds.append(emd)
             rollout = (
@@ -128,10 +130,10 @@ def observed_metrics(data, sampler, *, seed, max_points):
             rollout, targets[retained[-1]]
         )
     metrics["final_eval/observed_evaluation_mean_emd"] = metrics[
-        "final_eval/observed_direct_mean_emd"
+        f"final_eval/observed_{primary_sampler}_mean_emd"
     ]
     metrics[f"final_eval/{tag}_rollout_evaluation_emd"] = metrics[
-        f"final_eval/{tag}_rollout_direct_emd"
+        f"final_eval/{tag}_rollout_{primary_sampler}_emd"
     ]
     return metrics
 
@@ -145,6 +147,15 @@ def evaluate(
     max_points=0,
     make_plot=True,
     include_observed=False,
+    primary_sampler="direct",
+    metric_prefix="cellmnn",
+    model_label="Cell-MNN",
+    lineage_mode="descendant",
+    prob_threshold=0.0,
+    margin_threshold=0.0,
+    classifier_batch_size=8192,
+    flow_steps=50,
+    check_times=50,
 ):
     if data.dataset_name != "maizels":
         metrics, figure = evaluate_cite_multi(
@@ -217,7 +228,7 @@ def evaluate(
                 start_time=data.time_map[left],
                 end_time=data.time_map[day],
                 sampler=mode,
-                n_steps=50,
+                n_steps=flow_steps,
             )
             emd, mmd = wasserstein.exact_emd(prediction, actual), rbf_mmd2(
                 prediction, actual, rng
@@ -249,7 +260,7 @@ def evaluate(
                 start_time=data.time_map[left],
                 end_time=data.time_map[right],
                 sampler=mode,
-                n_steps=50,
+                n_steps=flow_steps,
             )
             emd = wasserstein.exact_emd(prediction, target)
             val_emds.append(emd)
@@ -265,16 +276,18 @@ def evaluate(
         metrics[f"final_eval/validation_{mode}_relative_emd_mean"] = float(
             np.mean(relative)
         )
-        paths = sampler.sample(path_source, sampler=mode, n_steps=50, paths=True)
+        paths = sampler.sample(
+            path_source, sampler=mode, n_steps=check_times, paths=True
+        )
         for classifier_name, path in classifiers.items():
             validity = maizels.check_paths_with_classifier(
                 paths[:, 1:],
                 source_types,
                 classifier_path=path,
-                prob_threshold=0.0,
-                margin_threshold=0.0,
-                classifier_batch_size=8192,
-                lineage_transition_mode="descendant",
+                prob_threshold=prob_threshold,
+                margin_threshold=margin_threshold,
+                classifier_batch_size=classifier_batch_size,
+                lineage_transition_mode=lineage_mode,
             )
             valid = np.asarray(validity["valid"], dtype=bool)
             prefix = (
@@ -293,18 +306,30 @@ def evaluate(
             ):
                 metrics[f"{prefix}/model_{mode}_{kind}_trajectory_pct"] = percent
                 metrics[f"{final_prefix}/{mode}_{kind}_trajectory_pct"] = percent
-            if make_plot and mode == "direct" and classifier_name == "all_days":
+            if make_plot and mode == primary_sampler and classifier_name == "all_days":
                 figures["lineage_trajectories"] = _path_figure(
-                    paths, path_source, pools["D8"]["holdout_x"], valid
+                    paths,
+                    path_source,
+                    pools["D8"]["holdout_x"],
+                    valid,
+                    model_label=model_label,
                 )
-        if make_plot and mode == "direct":
+        if make_plot and mode == primary_sampler:
             figures["intermediate_distributions"] = (
                 MaizelsEvaluationCallback._distribution_figure(rows)
             )
-    metrics["cellmnn/test_EMD"] = metrics["final_eval/direct_mean_emd"]
-    metrics["test_EMD"] = metrics["cellmnn/test_EMD"]
+    metrics[f"{metric_prefix}/test_EMD"] = metrics[
+        f"final_eval/{primary_sampler}_mean_emd"
+    ]
+    metrics["test_EMD"] = metrics[f"{metric_prefix}/test_EMD"]
     if include_observed:
         metrics.update(
-            observed_metrics(data, sampler, seed=seed, max_points=max_points)
+            observed_metrics(
+                data,
+                sampler,
+                seed=seed,
+                max_points=max_points,
+                primary_sampler=primary_sampler,
+            )
         )
     return metrics, figures
