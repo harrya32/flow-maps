@@ -99,6 +99,78 @@ the potential option is inactive for this schedule. The available all-days
 classifier is used for both classifier metrics unless overridden, matching
 the other endpoint baseline runs.
 
+## Maizels hyperparameter sweep
+
+```bash
+# Preview all settings and commands.
+python scripts/sweep_maizels_otpfm_hparams.py --dataset-location "$PWD" --device cuda --dry-run
+
+# Run the default grid, resuming completed trials on subsequent invocations.
+python scripts/sweep_maizels_otpfm_hparams.py --dataset-location "$PWD" --device cuda
+
+# The same grid with precomputed OT coupling (200 epochs per run).
+python scripts/sweep_maizels_otpfm_hparams.py --dataset-location "$PWD" --device cuda --ot-coupling
+
+# A short two-kernel integration check, rather than the full search.
+python scripts/sweep_maizels_otpfm_hparams.py --dataset-location "$PWD" --device cuda \
+  --learning-rates 0.003 --strengths 300 --gaussian-widths 0.1 --seeds 0 \
+  --smoke-test --wandb-mode offline
+```
+
+The default grid is:
+
+| Parameter | Values |
+| --- | --- |
+| Learning rate | 0.0003, 0.001, 0.003 |
+| Potential strength | 30, 100, 300, 1000 |
+| Temporal kernel | delta, Gaussian |
+| Gaussian width | 0.05, 0.1, 0.2 |
+| Training seed | 0, 1 |
+
+Delta generates **12 settings** with its ignored width fixed to zero.
+Gaussian generates **36 settings**, including the three widths. This gives
+**48 settings × 2 seeds = 96 training runs**: 24 delta runs and 72 Gaussian
+runs. Widths are on the normalized clock; with real time, the Gaussian widths
+correspond to standard deviations of 0.25, 0.5 and 1 day.
+
+The default variant is independent coupling with W2Inf, using the same CITE
+architecture and 80-epoch preset as the standalone runner. `--ot-coupling`
+selects the OT-coupled W2Inf preset; `--potential w2` selects W2Potential.
+These variant flags change the preset, not the number of grid settings.
+`--epochs` and `--batch-size` override the corresponding defaults.
+
+Each trial selects its checkpoint by retained-day validation loss, then logs
+the usual distribution, trajectory and plotting metrics for that checkpoint.
+The sweep ranks complete settings by the mean across seeds of
+`final_eval/flowmap_mean_emd_hparam_val_times`: exact raw-PCA W1 averaged over
+D3.4 and D6, using 50-step composed maps. EMD at the other omitted days and
+trajectory violations are recorded as diagnostics. `--objective-sampler`
+can select Euler or direct sampling instead. The strength/kernel sweep
+requires the three-day schedule because the endpoint schedule has no potential.
+
+The sweep defaults to `--eval-every-epochs 0`, which evaluates only the best
+validation checkpoint at completion. Validation loss still runs every epoch.
+Comma-separated `--learning-rates`, `--strengths`, `--kernels`,
+`--gaussian-widths` and `--seeds` override the grid. A delta-only search does
+not expand the width axis. `--config-path` supplies JSON overrides for other
+settings; swept scalar values take precedence over upstream per-potential
+strength/width aliases.
+
+Outputs live in `outputs/maizels_otpfm_hparam_sweep/` by default:
+
+- `sweep_plan.json`: settings, seeds, run count and effective base configuration.
+- `results.csv`: per-seed objectives, final metrics, status and artifact paths.
+- `summary.csv`: mean/std across seeds and ranks for fully completed settings.
+- `best_setting.json` and `best_config.json`: the winning setting and reusable
+  training configuration; rerun with the same Maizels schedule and clock.
+- One directory per trial containing its derived JSON, checkpoints, metrics
+  and plots. W&B names include the setting and seed.
+
+Completed trials with a readable, finite objective are skipped on resume;
+failed or incomplete trials are retried. `--rerun-completed` forces reruns
+and `--fail-fast` stops at the first failed trial. `--dry-run` writes no files
+and launches no training.
+
 ## Upstream defaults and training
 
 The runner loads upstream `configs/citeseq/defaults.json` and the matching
@@ -153,8 +225,10 @@ the constrained runs; override with `--wandb_project`, `--wandb_entity`, or
 `WANDB_ENTITY`. `WANDB_MODE` is respected unless `--wandb_mode` is passed.
 The runner enables W&B's bundled core backend, avoiding the older Python
 backend's `ServerSettingsType` initialization failure with the current cloud API.
-Each run evaluates every 20 epochs (`--eval_every_epochs` overrides this)
-and evaluates its validation-selected checkpoint at completion.
+Standalone runs evaluate every 20 epochs (`--eval_every_epochs` overrides
+this) and evaluate their validation-selected checkpoint at completion.
+`--eval_every_epochs 0` suppresses all intermediate/last-epoch diagnostics
+and evaluates only the best checkpoint. Validation loss still runs every epoch.
 The existing CITE/Multi metric names are preserved:
 
 - `distribution_eval/{day}_{direct,flowmap,euler}_{emd,rbf_mmd2}` and
@@ -185,4 +259,5 @@ startup OT method, and solver, so the variants have separate output directories.
 ```bash
 python -m unittest discover -s tests -p 'test_otpfm_baseline.py'
 python -m unittest discover -s tests -p 'test_otpfm_maizels.py'
+python -m unittest discover -s tests -p 'test_otpfm_hparam_sweep.py'
 ```

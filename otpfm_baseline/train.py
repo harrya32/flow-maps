@@ -53,6 +53,9 @@ def parse_args(argv=None):
     )
     parser.add_argument("--working_dir", default=str(REPO_ROOT / "outputs" / "otpfm"))
     parser.add_argument(
+        "--run_name", help="Output folder and W&B name override, useful for sweeps."
+    )
+    parser.add_argument(
         "--config_path",
         type=Path,
         help="JSON overrides layered on the selected upstream CITE preset.",
@@ -85,7 +88,9 @@ def parse_args(argv=None):
     )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or mps.")
     parser.add_argument(
-        "--eval_every_epochs", type=int, help="Defaults to upstream traj_skips (20)."
+        "--eval_every_epochs",
+        type=int,
+        help="Defaults to upstream traj_skips (20); 0 evaluates only the best checkpoint.",
     )
     parser.add_argument(
         "--eval_max_points",
@@ -120,8 +125,12 @@ def parse_args(argv=None):
         parser.error(
             "Evaluation needs a non-negative population cap and a positive batch size."
         )
-    if args.eval_every_epochs is not None and args.eval_every_epochs <= 0:
-        parser.error("--eval_every_epochs must be positive.")
+    if args.eval_every_epochs is not None and args.eval_every_epochs < 0:
+        parser.error("--eval_every_epochs must be non-negative.")
+    if args.run_name and (
+        args.run_name in (".", "..") or "/" in args.run_name or "\\" in args.run_name
+    ):
+        parser.error("--run_name must be a single output-folder name.")
     return args
 
 
@@ -183,6 +192,17 @@ def experiment_config(args):
     return config
 
 
+def evaluation_interval(args, config):
+    interval = (
+        args.eval_every_epochs
+        if args.eval_every_epochs is not None
+        else int(config["traj_skips"])
+    )
+    if interval < 0:
+        raise ValueError("Evaluation intervals must be non-negative.")
+    return interval
+
+
 def resolve_device(requested):
     if requested == "auto":
         requested = (
@@ -200,6 +220,7 @@ class BenchmarkTrainer(Trainer):
         self.data = data
         self.config = config
         self.args = args
+        self.eval_every_epochs = evaluation_interval(args, config)
         self.classifiers = classifiers
         self.best_validation_loss = float("inf")
         self.best_step = 0
@@ -324,7 +345,8 @@ class BenchmarkTrainer(Trainer):
         )
 
     def on_epoch_end(self, epoch, batch=None):
-        self._evaluate()
+        if self.eval_every_epochs > 0:
+            self._evaluate()
 
     def on_train_end(self):
         # Upstream loading also restores counters/history. Keep the completed
@@ -379,11 +401,14 @@ def run_experiment(args, config, heldout_day, seed):
     name = f"{args.dataset_name}_pca{config['pca_dim']}_{fold}_{time_mode}_{method}_seed{seed}"
     if args.smoke_test:
         name += "_smoke"
+    name = args.run_name or name
+    eval_every_epochs = evaluation_interval(args, config)
     output = Path(args.working_dir).expanduser().resolve() / name
     output.mkdir(parents=True, exist_ok=True)
     metadata = {
         **config,
         "dataset_name": args.dataset_name,
+        "run_name": name,
         "heldout_day": heldout_day,
         "cite_multi_time_mode": args.cite_multi_time_mode,
         "maizels_schedule": (
@@ -427,6 +452,12 @@ def run_experiment(args, config, heldout_day, seed):
         },
         "validation_metric": f"full_strength_{config['consistency_loss']}_mse_on_retained_day_validation_cells",
         "evaluation_weights": "ema" if float(config["ema_decay"]) > 0 else "model",
+        "eval_every_epochs": eval_every_epochs,
+        "evaluation_schedule": (
+            "best_checkpoint_only"
+            if eval_every_epochs == 0
+            else "periodic_and_best_checkpoint"
+        ),
         "distribution_steps": 50,
         "trajectory_check_times": 50,
         "mfm_steps": None if args.dataset_name == "maizels" else 100,
@@ -471,7 +502,10 @@ def run_experiment(args, config, heldout_day, seed):
             sampling_steps=int(config["sampling_steps"]),
             ema_eval=float(config["ema_decay"]) > 0,
             do_otp=bool(potentials),
-            traj_skips=args.eval_every_epochs or int(config["traj_skips"]),
+            # The upstream loop uses modulo and always calls the last-epoch
+            # hook. Keep its interval positive, and suppress that hook's
+            # diagnostics above when only best-checkpoint evaluation is wanted.
+            traj_skips=eval_every_epochs or (int(config["epochs"]) + 1),
             potentials=potentials,
             device=str(device),
         )

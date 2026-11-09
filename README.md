@@ -463,6 +463,9 @@ Maizels defaults to retained D3/D3.8/D8 on the real-time clock; run
 retained-day validation loss.
 See [otpfm_baseline/README.md](otpfm_baseline/README.md) for individual runners,
 seed overrides, clock selection, and a one-batch smoke test.
+`scripts/sweep_maizels_otpfm_hparams.py` runs a resumable learning-rate,
+potential-strength and delta/Gaussian kernel grid, selecting settings by
+D3.4/D6 EMD from each validation-selected checkpoint.
 
 The Cell-MNN baseline reuses the local `cell-mnn` model, population sampler and
 loss for CITE/Multi PCA100 and Maizels PCA50. Run `bash run_cellmnn_all.sh` in
