@@ -17,7 +17,11 @@ import torch
 
 from cellmnn_baseline.data import PC1Scaler, PopulationDataset, prepare_data
 from cellmnn_baseline.evaluation import evaluate
-from cellmnn_baseline.model import BenchmarkCellMNN, CellMNNSampler
+from cellmnn_baseline.model import (
+    BenchmarkCellMNN,
+    CellMNNSampler,
+    invertibility_penalty,
+)
 from cellmnn_baseline.train import (
     BenchmarkTrainer,
     experiment_config,
@@ -289,6 +293,43 @@ class CellMNNTests(unittest.TestCase):
         model = model_for(data, config)
         terms = model.loss_terms(next(iter(data.train_loader)))
         self.assertTrue(all(torch.isfinite(value) for value in terms.values()))
+
+    def test_invertibility_penalty_matches_direct_values_and_gradients(self):
+        basis = torch.eye(5, dtype=torch.float64).repeat(3, 1, 1)
+        basis += 0.03 * torch.randn_like(basis)
+        basis[0, 0] *= -1
+        basis[1] *= 0.1
+        reference = basis.clone().requires_grad_()
+        candidate = basis.clone().requires_grad_()
+        expected = (1 / (torch.det(reference).abs() + 1e-4)).mean()
+        actual = invertibility_penalty(candidate)
+        torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+        expected.backward()
+        actual.backward()
+        torch.testing.assert_close(
+            candidate.grad, reference.grad, rtol=1e-10, atol=1e-10
+        )
+
+    def test_pca100_determinant_overflow_and_underflow_keep_gradients_finite(self):
+        devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+        for device in devices:
+            for scale in (2.5, 0.01):
+                with self.subTest(device=device, scale=scale):
+                    basis = (torch.eye(100, device=device) * scale).requires_grad_()
+                    direct_det = torch.det(basis)
+                    if scale == 2.5:
+                        self.assertTrue(torch.isinf(direct_det).item())
+                        direct_loss = 1 / (direct_det.abs() + 1e-4)
+                        self.assertTrue(torch.isfinite(direct_loss).item())
+                        direct_loss.backward()
+                        self.assertFalse(torch.isfinite(basis.grad).all().item())
+                    else:
+                        self.assertEqual(direct_det.item(), 0.0)
+                    basis.grad = None
+                    loss = invertibility_penalty(basis)
+                    self.assertTrue(torch.isfinite(loss).item())
+                    loss.backward()
+                    self.assertTrue(torch.isfinite(basis.grad).all().item())
 
     def test_complete_loss_matches_upstream_training_objective(self):
         arrays = [np.random.randn(20, 5).astype(np.float32) for _ in range(3)]

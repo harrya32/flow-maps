@@ -8,6 +8,13 @@ import torch
 from lib.model import CellMNN
 
 
+def invertibility_penalty(basis):
+    """Compute mean 1/(abs(det(basis)) + 1e-4) without determinant overflow."""
+    _, log_abs_det = torch.linalg.slogdet(basis)
+    log_eps = log_abs_det.new_tensor(np.log(1e-4))
+    return torch.exp(-torch.logaddexp(log_abs_det, log_eps)).mean()
+
+
 class BenchmarkCellMNN(CellMNN):
     def __init__(self, *, retained_times, kinetic_dt=0.1, **kwargs):
         super().__init__(
@@ -92,9 +99,10 @@ class BenchmarkCellMNN(CellMNN):
                     )
         mmd = mmd.to(x_t.device)
         kinetic = velocity.index_select(1, self.kinetic_indices).square().mean()
-        # MPS does not implement det. Use an explicit autograd-preserving CPU
-        # operation rather than dispatching through its implicit fallback.
-        inverse = (1.0 / (torch.abs(torch.det(P.to(loss_device))) + 1e-4)).mean()
+        # PCA100 determinants can overflow float32 even when P and its inverse
+        # are finite. Evaluate the same reciprocal penalty in log space.
+        # MPS uses an explicit CPU operation with gradients preserved.
+        inverse = invertibility_penalty(P.to(loss_device))
         inverse = inverse.to(x_t.device)
         loss = mmd + self.lambda_kinetic * kinetic + inverse
         return {
