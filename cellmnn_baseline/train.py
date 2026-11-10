@@ -40,6 +40,17 @@ HPARAMS = (
     "num_const_dims",
 )
 
+# Maizels-selected settings and our constrained flow map's hidden layout.
+BENCHMARK_DEFAULTS = {
+    "lr": 3e-4,
+    "batch_size": 1028,
+    "lambda_kinetic": 0.1,
+    "gamma": 0.1,
+    "width": 1024,
+    "depth": 3,
+    "mmd_sigma": 0.3,
+}
+
 
 def upstream_defaults():
     """Read their argparse defaults without importing/executing their runner."""
@@ -87,7 +98,7 @@ def parse_args(argv=None):
         "--preset",
         choices=("auto", "cite100", "cite50", "script"),
         default="auto",
-        help="auto uses the paper's 100D CITE/Multi preset, or 50D for Maizels.",
+        help="auto uses the tuned 100D CITE/Multi preset, or 50D for Maizels.",
     )
     parser.add_argument(
         "--config_path", type=Path, help="JSON hyperparameter overrides."
@@ -195,7 +206,7 @@ def experiment_config(args):
         "kinetic_dt": 0.1,
     }
     if preset != "script":
-        config.update(batch_size=1028, lr=5e-5 if preset == "cite100" else 1e-3)
+        config.update(BENCHMARK_DEFAULTS)
     unknown = set(overrides) - set(config)
     if unknown:
         raise ValueError(

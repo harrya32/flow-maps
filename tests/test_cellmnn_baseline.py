@@ -136,40 +136,65 @@ class CellMNNTests(unittest.TestCase):
         torch.manual_seed(14)
         np.random.seed(14)
 
-    def test_defaults_match_upstream_and_dimensionality_presets(self):
+    def test_tuned_defaults_apply_to_all_dimensionality_presets(self):
         defaults = upstream_defaults()
+        tuned = {
+            "lr": 3e-4,
+            "batch_size": 1028,
+            "lambda_kinetic": 0.1,
+            "gamma": 0.1,
+            "width": 1024,
+            "depth": 3,
+            "mmd_sigma": 0.3,
+        }
         for name in ("cite", "multi", "maizels"):
-            config = experiment_config(parse_args(["--dataset_name", name]))
-            self.assertEqual(config["lr"], 1e-3 if name == "maizels" else 5e-5)
-            self.assertEqual(config["batch_size"], 1028)
-            for key in defaults.keys() - {"lr", "batch_size"}:
-                self.assertEqual(config[key], defaults[key], key)
+            preset = "cite50" if name == "maizels" else "cite100"
+            for requested in ("auto", preset):
+                with self.subTest(dataset=name, preset=requested):
+                    config = experiment_config(parse_args([
+                        "--dataset_name", name, "--preset", requested,
+                    ]))
+                    self.assertEqual(config["preset"], preset)
+                    self.assertEqual(
+                        config["pca_dim"], 50 if name == "maizels" else 100
+                    )
+                    for key, value in tuned.items():
+                        self.assertEqual(config[key], value, key)
+                    for key in defaults.keys() - tuned.keys():
+                        self.assertEqual(config[key], defaults[key], key)
         script = experiment_config(parse_args(["--preset", "script"]))
-        self.assertEqual(script["lr"], 2e-4)
-        self.assertEqual(script["batch_size"], 200)
+        for key, value in defaults.items():
+            self.assertEqual(script[key], value, key)
 
     def test_cli_and_json_override_defaults(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "config.json"
-            path.write_text(json.dumps({"preset": "cite50", "epochs": 30, "lr": 0.002}))
-            config = experiment_config(
-                parse_args(
-                    [
-                        "--config_path",
-                        str(path),
-                        "--preset",
-                        "script",
-                        "--epochs",
-                        "7",
+            path.write_text(json.dumps({
+                "preset": "cite50", "epochs": 30, "lr": 0.002,
+                "width": 64, "depth": 2, "mmd_sigma": 2.0,
+                "lambda_kinetic": 0.2, "gamma": 0.7,
+            }))
+            for preset in ("auto", "script"):
+                with self.subTest(preset=preset):
+                    config = experiment_config(parse_args([
+                        "--config_path", str(path), "--preset", preset,
+                        "--epochs", "7", "--width", "12", "--gamma", "0.1",
                         "--no-normalize",
-                    ]
-                )
-            )
-        self.assertEqual(config["preset"], "script")
-        self.assertEqual(config["lr"], 0.002)
-        self.assertEqual(config["epochs"], 7)
-        self.assertEqual(config["batch_size"], 200)
-        self.assertFalse(config["normalize"])
+                    ]))
+                    self.assertEqual(
+                        config["preset"], "cite50" if preset == "auto" else "script"
+                    )
+                    self.assertEqual(config["lr"], 0.002)
+                    self.assertEqual(config["epochs"], 7)
+                    self.assertEqual(config["width"], 12)
+                    self.assertEqual(config["depth"], 2)
+                    self.assertEqual(config["mmd_sigma"], 2.0)
+                    self.assertEqual(config["lambda_kinetic"], 0.2)
+                    self.assertEqual(config["gamma"], 0.1)
+                    self.assertEqual(
+                        config["batch_size"], 1028 if preset == "auto" else 200
+                    )
+                    self.assertFalse(config["normalize"])
 
     def test_cite_folds_clocks_and_normalization_exclude_validation_and_omitted_cells(
         self,

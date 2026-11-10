@@ -37,24 +37,30 @@ Data paths use the existing local datasets; `--dataset_location` overrides them.
 
 ## Defaults
 
-The ordinary upstream runner's defaults are read directly from `train_mnn.py`.
-For our higher-dimensional representations, `--preset auto` adds the paper's
-Appendix G.1 settings:
+The benchmark defaults use the hyperparameters selected on Maizels and the
+larger encoder from the network-size comparison. `--preset auto` selects
+`cite100` for CITE/Multi or `cite50` for Maizels; both use these tuned settings.
+Other defaults are read directly from the upstream `train_mnn.py`.
 
 | Setting | CITE/Multi PCA100 (`cite100`) | Maizels PCA50 (`cite50`) |
 | --- | --- | --- |
-| MLP width / hidden depth | 96 / 4 | 96 / 4 |
+| MLP width / hidden depth | 1024 / 3 | 1024 / 3 |
 | Activation / final-layer initialization scale | LeakyReLU / 0.01 | LeakyReLU / 0.01 |
-| Learning rate | 0.00005 | 0.001 |
+| Learning rate | 0.0003 | 0.0003 |
 | Batch size | 1028 | 1028 |
 | Optimizer / weight decay | AdamW / 0.00001 | AdamW / 0.00001 |
-| Future discount / Laplacian MMD sigma | 0.1 / 1.0 | 0.1 / 1.0 |
+| Future discount / Laplacian MMD sigma | 0.1 / 0.3 | 0.1 / 0.3 |
 | Kinetic / invertibility weights | 0.1 / 1.0 | 0.1 / 1.0 |
 | Maximum epochs / time limit | 1000 / 240 minutes | 1000 / 240 minutes |
 | Validation interval / early-stopping patience | 10 epochs / 10 checks | 10 epochs / 10 checks |
 
+The encoder has three hidden layers of width 1024, matching the hidden layout
+of our Maizels constrained flow map: its `n_hidden=2` adds two layers after the
+first. `--width 96 --depth 4` selects the earlier Cell-MNN encoder.
+
 The batch size **1028** is the value printed in the paper. `--preset script`
-uses the ordinary runner's learning rate 0.0002 and batch size 200 instead.
+uses the ordinary upstream runner's defaults, including width 96, depth 4,
+learning rate 0.0002, batch size 200 and MMD sigma 1.0.
 CLI hyperparameter overrides take precedence over `--config_path` JSON overrides.
 For example, `--batch_size 200 --lr 0.0002` explicitly reduces the training batch
 and selects that learning rate. `--num_const_dims 1` enables their zero-eigenvalue
@@ -140,7 +146,7 @@ python scripts/sweep_maizels_cellmnn_hparams.py --dataset-location "$PWD" --devi
 
 # A single-setting integration check with the two default seeds.
 python scripts/sweep_maizels_cellmnn_hparams.py --dataset-location "$PWD" --device cuda \
-  --learning-rates 0.001 --kinetic-weights 0.1 --mmd-sigmas 1 \
+  --learning-rates 0.0003 --kinetic-weights 0.1 --mmd-sigmas 0.3 \
   --smoke-test --wandb-mode offline
 ```
 
@@ -155,10 +161,11 @@ The default grid has **27 settings × 2 seeds = 54 training runs**:
 
 `gamma` stays fixed at the base configuration's value, **0.1** by default.
 `--gamma` overrides that single value. The default retains D3, D3.8 and D8,
-uses real time, and inherits the Maizels `cite50` preset: batch size 1028,
-up to 1000 epochs, and a 240-minute training limit per trial. `--epochs`,
-`--time-limit`, `--batch-size`, `--patience`, `--check-val-every-n-epoch`,
-`--train-batches` and `--val-batches` override the training budget.
+uses real time, and inherits the Maizels `cite50` preset: width 1024, depth 3,
+batch size 1028, up to 1000 epochs, and a 240-minute training limit per trial.
+`--epochs`, `--time-limit`, `--batch-size`, `--patience`,
+`--check-val-every-n-epoch`, `--train-batches` and `--val-batches` override
+the training budget.
 `--config-path` accepts the runner's JSON overrides for other fixed settings;
 the three swept values take precedence over that JSON.
 

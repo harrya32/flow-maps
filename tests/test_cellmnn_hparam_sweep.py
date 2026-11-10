@@ -80,6 +80,14 @@ class CellMNNHparamSweepTests(unittest.TestCase):
             (defaults["preset"], defaults["pca_dim"], defaults["batch_size"]),
             ("cite50", 50, 1028),
         )
+        self.assertEqual((defaults["width"], defaults["depth"]), (1024, 3))
+        self.assertEqual(
+            (
+                defaults["lr"], defaults["lambda_kinetic"],
+                defaults["mmd_sigma"], defaults["gamma"],
+            ),
+            (3e-4, 0.1, 0.3, 0.1),
+        )
         self.assertEqual((defaults["epochs"], defaults["time_limit"]), (1000, 240))
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "base.json"

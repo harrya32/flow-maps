@@ -470,9 +470,11 @@ D3.4/D6 EMD from each validation-selected checkpoint.
 The Cell-MNN baseline reuses the local `cell-mnn` model, population sampler and
 loss for CITE/Multi PCA100 and Maizels PCA50. Run `bash run_cellmnn_all.sh` in
 `mfm_env` after installing `cellmnn_baseline/requirements.txt`. It uses the
-paper's corresponding CITE/Multi dimensionality presets, selects checkpoints
-using retained-day validation loss, and logs the shared held-out W1, RBF MMD2
-and trajectory violation metrics to W&B. See
+Maizels-selected defaults for all three datasets: a width-1024 MLP with three
+hidden layers, learning rate 0.0003, kinetic weight 0.1, MMD sigma 0.3 and
+future discount 0.1. Checkpoints are selected using retained-day validation
+loss, and direct sampling supplies the shared held-out W1, RBF MMD2 and
+trajectory violation metrics logged to W&B. See
 [cellmnn_baseline/README.md](cellmnn_baseline/README.md) for defaults, individual
 runners, endpoint/three-marginal Maizels schedules, and smoke tests.
 
