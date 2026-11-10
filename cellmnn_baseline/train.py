@@ -81,6 +81,9 @@ def parse_args(argv=None):
     )
     parser.add_argument("--working_dir", default=str(REPO_ROOT / "outputs" / "cellmnn"))
     parser.add_argument(
+        "--run_name", help="Output folder and W&B name override, useful for sweeps."
+    )
+    parser.add_argument(
         "--preset",
         choices=("auto", "cite100", "cite50", "script"),
         default="auto",
@@ -159,6 +162,10 @@ def parse_args(argv=None):
         help="One epoch and train/val batch; evaluate at most 64 cells.",
     )
     args = parser.parse_args(argv)
+    if args.run_name and (
+        args.run_name in (".", "..") or "/" in args.run_name or "\\" in args.run_name
+    ):
+        parser.error("--run_name must be a single output-folder name.")
     if (
         args.eval_every_epochs < 0
         or args.eval_max_points < 0
@@ -495,10 +502,12 @@ def run_experiment(args, config, heldout_day, seed):
     name = f"{args.dataset_name}_pca{config['pca_dim']}_{fold}_{data.time_mode}_{method}_seed{seed}"
     if args.smoke_test:
         name += "_smoke"
+    name = args.run_name or name
     output = Path(args.working_dir).expanduser().resolve() / name
     output.mkdir(parents=True, exist_ok=True)
     metadata = {
         **config,
+        "run_name": name,
         "dataset_name": args.dataset_name,
         "dataset_path": str(data.path),
         "heldout_day": heldout_day,
