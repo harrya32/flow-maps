@@ -79,8 +79,11 @@ def _path_figure(paths, source, target, valid, *, model_label="Cell-MNN"):
     return fig
 
 
-def observed_metrics(data, sampler, *, seed, max_points, primary_sampler="direct"):
-    """Existing final observed-interval and carried source-to-final EMDs."""
+def observed_metrics(
+    data, sampler, *, seed, max_points, primary_sampler="direct",
+    samplers=("direct",), include_rollouts=False,
+):
+    """Observed interval EMDs, with carried rollouts available to OTP-FM."""
     rng = np.random.default_rng(
         int(seed) + (1701 if data.dataset_name == "maizels" else 2901)
     )
@@ -97,7 +100,7 @@ def observed_metrics(data, sampler, *, seed, max_points, primary_sampler="direct
         tag = day.replace(".", "p")
         return tag if day.startswith("D") else f"day{tag}"
 
-    for mode in ("direct", "flowmap", "euler"):
+    for mode in samplers:
         emds, rollout = [], sources[retained[0]]
         for index, (left, right) in enumerate(zip(retained[:-1], retained[1:])):
             prediction = sampler.sample(
@@ -113,28 +116,31 @@ def observed_metrics(data, sampler, *, seed, max_points, primary_sampler="direct
             if mode == primary_sampler:
                 metrics[f"final_eval/observed_{tag}_evaluation_emd"] = emd
             emds.append(emd)
-            rollout = (
-                prediction
-                if index == 0
-                else sampler.sample(
-                    rollout,
-                    start_time=data.time_map[left],
-                    end_time=data.time_map[right],
-                    sampler=mode,
-                    n_steps=50,
+            if include_rollouts:
+                rollout = (
+                    prediction
+                    if index == 0
+                    else sampler.sample(
+                        rollout,
+                        start_time=data.time_map[left],
+                        end_time=data.time_map[right],
+                        sampler=mode,
+                        n_steps=50,
+                    )
                 )
-            )
         metrics[f"final_eval/observed_{mode}_mean_emd"] = float(np.mean(emds))
-        tag = f"{time_tag(retained[0])}_to_{time_tag(retained[-1])}"
-        metrics[f"final_eval/{tag}_rollout_{mode}_emd"] = wasserstein.exact_emd(
-            rollout, targets[retained[-1]]
-        )
+        if include_rollouts:
+            tag = f"{time_tag(retained[0])}_to_{time_tag(retained[-1])}"
+            metrics[f"final_eval/{tag}_rollout_{mode}_emd"] = wasserstein.exact_emd(
+                rollout, targets[retained[-1]]
+            )
     metrics["final_eval/observed_evaluation_mean_emd"] = metrics[
         f"final_eval/observed_{primary_sampler}_mean_emd"
     ]
-    metrics[f"final_eval/{tag}_rollout_evaluation_emd"] = metrics[
-        f"final_eval/{tag}_rollout_{primary_sampler}_emd"
-    ]
+    if include_rollouts:
+        metrics[f"final_eval/{tag}_rollout_evaluation_emd"] = metrics[
+            f"final_eval/{tag}_rollout_{primary_sampler}_emd"
+        ]
     return metrics
 
 
@@ -156,7 +162,11 @@ def evaluate(
     classifier_batch_size=8192,
     flow_steps=50,
     check_times=50,
+    samplers=("direct",),
+    include_rollouts=False,
 ):
+    # OTP-FM reuses the Maizels scorer with its own explicit sampler protocol.
+    # Cell-MNN always uses the native single-operator analytical prediction.
     if data.dataset_name != "maizels":
         metrics, figure = evaluate_cite_multi(
             data,
@@ -165,9 +175,10 @@ def evaluate(
             seed=seed,
             max_points=max_points,
             make_plot=make_plot,
+            samplers=samplers,
+            primary_sampler=primary_sampler,
         )
-        # Preserve MFM's Euler/local aliases and also report the paper's native
-        # analytical prediction from the actual preceding population.
+        # The paper's native prediction from the actual preceding population.
         previous = "2" if data.heldout_day == "3" else "3"
         rng = np.random.default_rng(int(seed) + 2901)
         source, _ = _subset(data.timepoint_splits[previous]["x"], max_points, rng)
@@ -185,7 +196,11 @@ def evaluate(
         metrics["test_EMD"] = metrics["cellmnn/test_EMD"]
         if include_observed:
             metrics.update(
-                observed_metrics(data, sampler, seed=seed, max_points=max_points)
+                observed_metrics(
+                    data, sampler, seed=seed, max_points=max_points,
+                    primary_sampler=primary_sampler, samplers=samplers,
+                    include_rollouts=include_rollouts,
+                )
             )
         return metrics, {} if figure is None else {"lineage_trajectories": figure}
 
@@ -220,7 +235,7 @@ def evaluate(
         "lineage_eval/violation_metrics_available": 1.0,
     }
     figures = {}
-    for mode in ("direct", "flowmap", "euler"):
+    for mode in samplers:
         emds, mmds, rows = [], [], []
         for day, left, source, actual in populations:
             prediction = sampler.sample(
@@ -330,6 +345,8 @@ def evaluate(
                 seed=seed,
                 max_points=max_points,
                 primary_sampler=primary_sampler,
+                samplers=samplers,
+                include_rollouts=include_rollouts,
             )
         )
     return metrics, figures

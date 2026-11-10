@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import cellmnn_baseline  # Configure upstream paths and writable caches first.
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -117,6 +118,13 @@ class RecordingSampler:
                 + np.linspace(0, end_time - start_time, n_steps + 1)[None, :, None]
             )
         return x + end_time - start_time
+
+
+class DirectOnlySampler(RecordingSampler):
+    def sample(self, source, **kwargs):
+        if kwargs.get("sampler", "direct") != "direct":
+            raise AssertionError("Cell-MNN evaluation requested a non-native sampler.")
+        return super().sample(source, **kwargs)
 
 
 class CellMNNTests(unittest.TestCase):
@@ -354,18 +362,22 @@ class CellMNNTests(unittest.TestCase):
         )
         source = np.array([[1, 2, 3], [3, 4, 5], [2, 5, 1]], np.float32)
         expected = source * np.exp(model.rates.numpy())
-        for mode in ("direct", "flowmap", "euler"):
+        with mock.patch.object(model, "forward", wraps=model.forward) as forward:
             paths = sampler.sample(
                 source,
                 start_time=0.2,
                 end_time=0.4,
                 n_steps=50,
-                sampler=mode,
+                sampler="direct",
                 paths=True,
             )
             self.assertEqual(paths.shape, (3, 51, 3))
             np.testing.assert_array_equal(paths[:, 0], source)
-            np.testing.assert_allclose(paths[:, -1], expected, rtol=1e-3, atol=1e-5)
+            np.testing.assert_allclose(paths[:, -1], expected, rtol=1e-6, atol=1e-5)
+            self.assertEqual(forward.call_count, 2)  # One operator per inference chunk.
+        for mode in ("flowmap", "euler"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "only direct"):
+                sampler.sample(source, sampler=mode)
         self.assertTrue(model.training)
         with self.assertRaises(ValueError):
             sampler.sample(source, start_time=0.4, end_time=0.2)
@@ -420,7 +432,7 @@ class CellMNNTests(unittest.TestCase):
         self,
     ):
         _, _, data = prepared("maizels")
-        sampler = RecordingSampler()
+        sampler = DirectOnlySampler()
         path_calls = []
 
         def check_paths(paths, source_types, **kwargs):
@@ -446,14 +458,13 @@ class CellMNNTests(unittest.TestCase):
                 include_observed=True,
             )
         self.assertFalse(figures)
-        self.assertEqual(path_calls, [(4, 50, 50)] * 6)
+        self.assertEqual(path_calls, [(4, 50, 50)] * 2)
         self.assertEqual(metrics["final_eval/direct_invalid_trajectory_pct"], 50.0)
         self.assertEqual(
             metrics["final_eval/full_data_classifier/direct_invalid_trajectory_pct"],
             50.0,
         )
-        self.assertIn("final_eval/observed_D3p8_to_D8_flowmap_emd", metrics)
-        self.assertIn("final_eval/D3_to_D8_rollout_direct_emd", metrics)
+        self.assertIn("final_eval/observed_D3p8_to_D8_direct_emd", metrics)
         self.assertIn("final_eval/direct_mean_emd_test_times", metrics)
         self.assertNotIn("distribution_eval/D3p8_direct_emd", metrics)
         self.assertTrue(
@@ -463,13 +474,17 @@ class CellMNNTests(unittest.TestCase):
             )
         )
         self.assertTrue(all(np.isfinite(value) for value in metrics.values()))
+        self.assertTrue(all(call[2] == "direct" for call in sampler.calls))
+        self.assertFalse(any(
+            "flowmap" in key or "euler" in key or "rollout" in key for key in metrics
+        ))
 
     def test_cite_reuses_benchmark_evaluation_and_native_local_prediction(self):
         _, _, data = prepared(heldout="4")
         sampler = RecordingSampler()
         with mock.patch(
             "cellmnn_baseline.evaluation.evaluate_cite_multi",
-            return_value=({"mfm/test_EMD": 2.0}, None),
+            return_value=({"final_eval/direct_mean_emd": 2.0}, None),
         ) as shared, mock.patch(
             "cellmnn_baseline.evaluation.wasserstein.exact_emd", return_value=1.0
         ):
@@ -483,14 +498,93 @@ class CellMNNTests(unittest.TestCase):
                 include_observed=True,
             )
         shared.assert_called_once_with(
-            data, sampler, {}, seed=42, max_points=4, make_plot=False
+            data, sampler, {}, seed=42, max_points=4, make_plot=False,
+            samplers=("direct",), primary_sampler="direct",
         )
         self.assertEqual(sampler.calls[0][0], data.time_map["3"])
         self.assertEqual(sampler.calls[0][1], data.time_map["4"])
         self.assertEqual(metrics["test_EMD"], 1.0)
-        self.assertEqual(metrics["mfm/test_EMD"], 2.0)
-        self.assertIn("final_eval/observed_day2_to_day3_flowmap_emd", metrics)
-        self.assertIn("final_eval/day2_to_day7_rollout_evaluation_emd", metrics)
+        self.assertEqual(metrics["final_eval/direct_mean_emd"], 2.0)
+        self.assertIn("final_eval/observed_day2_to_day3_direct_emd", metrics)
+        self.assertFalse(any(
+            "flowmap" in key or "euler" in key or "rollout" in key for key in metrics
+        ))
+
+    def test_cite_and_multi_evaluation_use_only_direct_predictions_and_paths(self):
+        for dataset in ("cite", "multi"):
+            with self.subTest(dataset=dataset):
+                _, _, data = prepared(dataset, heldout="4")
+                sampler = DirectOnlySampler()
+                with mock.patch(
+                    "cellmnn_baseline.evaluation.wasserstein.exact_emd", return_value=1.0
+                ), mock.patch(
+                    "otpfm_baseline.evaluation.score_paths_with_all_days_classifier",
+                    return_value={"valid": np.array([True, False, True, False])},
+                ):
+                    metrics, figures = evaluate(
+                        data, sampler,
+                        {"observed_days": Path("a"), "all_days": Path("b")},
+                        seed=42, max_points=4, include_observed=True,
+                    )
+                self.assertEqual(metrics["cellmnn/test_EMD"], 1.0)
+                self.assertEqual(metrics["test_EMD"], 1.0)
+                self.assertEqual(metrics["final_eval/direct_invalid_trajectory_pct"], 50.0)
+                self.assertTrue(all(call[2] == "direct" for call in sampler.calls))
+                self.assertFalse(any(
+                    "flowmap" in key or "euler" in key or "rollout" in key for key in metrics
+                ))
+                self.assertNotIn("mfm/test_EMD", metrics)
+                self.assertIn("lineage_trajectories", figures)
+                # Every prediction starts from a measured population, including
+                # observed intervals; no carried predictions are re-encoded.
+                for start, _, _, source, _ in sampler.calls:
+                    day = next(day for day in data.retained if data.time_map[day] == start)
+                    pool = data.timepoint_splits[day]["x"]
+                    self.assertTrue(all(np.any(np.all(pool == row, axis=1)) for row in source))
+                for figure in figures.values():
+                    plt.close(figure)
+
+    def test_nonfinite_direct_sampling_still_raises(self):
+        model = DiagonalModel()
+        model.rates.fill_(1000)
+        sampler = CellMNNSampler(model, None, time_origin=0, time_scale=1)
+        with self.assertRaisesRegex(FloatingPointError, "Non-finite Cell-MNN direct"):
+            sampler.sample(np.ones((2, 3), np.float32))
+
+    def test_periodic_and_final_evaluation_request_only_direct_sampling(self):
+        args, config, data = prepared(heldout="4")
+        config.update(epochs=2, check_val_every_n_epoch=1)
+        args.eval_every_epochs, args.eval_max_points = 1, 4
+        with tempfile.TemporaryDirectory() as temporary:
+            trainer = BenchmarkTrainer(
+                model_for(data, config), data, config, args,
+                {"observed_days": Path("a"), "all_days": Path("b")}, temporary,
+            )
+            trainer.validation_loss = mock.Mock(side_effect=[{"loss": 2.0}, {"loss": 1.0}])
+            samplers = []
+
+            def sampler_factory(*args, **kwargs):
+                sampler = DirectOnlySampler()
+                samplers.append(sampler)
+                return sampler
+
+            with mock.patch(
+                "cellmnn_baseline.train.CellMNNSampler", side_effect=sampler_factory
+            ), mock.patch(
+                "cellmnn_baseline.evaluation.wasserstein.exact_emd", return_value=1.0
+            ), mock.patch(
+                "otpfm_baseline.evaluation.score_paths_with_all_days_classifier",
+                return_value={"valid": np.ones(4, dtype=bool)},
+            ), mock.patch("cellmnn_baseline.train.wandb.log"):
+                result = trainer.train()
+            self.assertEqual(len(samplers), 3)  # Two periodic evaluations, then best weights.
+            self.assertTrue(all(call[2] == "direct" for s in samplers for call in s.calls))
+            self.assertEqual(result["final_eval/best_epoch"], 2)
+            self.assertEqual(result["cellmnn/test_EMD"], 1.0)
+            self.assertFalse(any(
+                "flowmap" in key or "euler" in key or "rollout" in key for key in result
+            ))
+            self.assertTrue((Path(temporary) / "final_metrics.json").is_file())
 
 
 if __name__ == "__main__":

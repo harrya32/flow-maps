@@ -84,8 +84,18 @@ def evaluate(
     lineage_mode="descendant",
     make_plot=True,
     include_observed=False,
+    samplers=("direct", "flowmap", "euler"),
+    primary_sampler="flowmap",
 ):
     """Return benchmark metric names and an optional PC1/PC2 validity figure."""
+    samplers = tuple(samplers)
+    if (
+        not samplers
+        or len(set(samplers)) != len(samplers)
+        or set(samplers) - {"direct", "flowmap", "euler"}
+        or primary_sampler not in samplers
+    ):
+        raise ValueError("Evaluation needs unique supported samplers including its primary sampler.")
     if getattr(data, "dataset_name", None) == "maizels":
         from cellmnn_baseline.evaluation import evaluate as evaluate_maizels
 
@@ -97,7 +107,7 @@ def evaluate(
             max_points=max_points,
             make_plot=make_plot,
             include_observed=include_observed,
-            primary_sampler="flowmap",
+            primary_sampler=primary_sampler,
             metric_prefix="OTPFM",
             model_label="OTP-FM",
             lineage_mode=lineage_mode,
@@ -106,6 +116,8 @@ def evaluate(
             classifier_batch_size=classifier_batch_size,
             flow_steps=flow_steps,
             check_times=check_times,
+            samplers=samplers,
+            include_rollouts=True,
         )
     pools = data.timepoint_splits
     heldout = data.heldout_day
@@ -114,7 +126,7 @@ def evaluate(
     target, _ = _subset(pools[heldout]["x"], max_points, rng)
     # Generic diagnostics: all D2 cells -> omitted day, 50 uniform steps.
     metrics = {}
-    for sampler in ("direct", "flowmap", "euler"):
+    for sampler in samplers:
         prediction = model_sampler.sample(
             source, end_time=data.time_map[heldout], n_steps=flow_steps, sampler=sampler
         )
@@ -132,23 +144,30 @@ def evaluate(
         )
 
     # MFM-compatible diagnostic: the real preceding population -> omitted day.
-    local_rng = np.random.default_rng(int(seed) + 2901)
-    previous = cite_multi.TIMEPOINTS[cite_multi.TIMEPOINTS.index(heldout) - 1]
-    local_source, _ = _subset(pools[previous]["x"], max_points, local_rng)
-    local_target, _ = _subset(pools[heldout]["x"], max_points, local_rng)
-    for sampler, key in (
-        ("euler", "mfm/test_EMD"),
-        ("flowmap", "mfm/test_EMD_flowmap"),
-    ):
-        prediction = model_sampler.sample(
-            local_source,
-            start_time=data.time_map[previous],
-            end_time=data.time_map[heldout],
-            n_steps=mfm_steps,
-            sampler=sampler,
-        )
-        metrics[key] = wasserstein.exact_emd(prediction, local_target)
-    metrics["test_EMD"] = metrics["mfm/test_EMD"]
+    if "euler" in samplers or "flowmap" in samplers:
+        local_rng = np.random.default_rng(int(seed) + 2901)
+        previous = cite_multi.TIMEPOINTS[cite_multi.TIMEPOINTS.index(heldout) - 1]
+        local_source, _ = _subset(pools[previous]["x"], max_points, local_rng)
+        local_target, _ = _subset(pools[heldout]["x"], max_points, local_rng)
+        for sampler, key in (
+            ("euler", "mfm/test_EMD"),
+            ("flowmap", "mfm/test_EMD_flowmap"),
+        ):
+            if sampler not in samplers:
+                continue
+            prediction = model_sampler.sample(
+                local_source,
+                start_time=data.time_map[previous],
+                end_time=data.time_map[heldout],
+                n_steps=mfm_steps,
+                sampler=sampler,
+            )
+            metrics[key] = wasserstein.exact_emd(prediction, local_target)
+    metrics["test_EMD"] = (
+        metrics["mfm/test_EMD"]
+        if "mfm/test_EMD" in metrics
+        else metrics[f"final_eval/{primary_sampler}_mean_emd"]
+    )
 
     # Lineage checks: held-out D2 cells over the complete D2 -> D7 trajectory.
     source_pool = pools["2"]
@@ -160,7 +179,7 @@ def evaluate(
     metrics["final_eval/source_count"] = len(path_source)
     metrics["lineage_eval/violation_metrics_available"] = 1.0
     figure = None
-    for sampler in ("direct", "flowmap", "euler"):
+    for sampler in samplers:
         paths = model_sampler.sample(
             path_source, n_steps=check_times, sampler=sampler, paths=True
         )
@@ -191,7 +210,7 @@ def evaluate(
             ):
                 metrics[f"{prefix}/model_{sampler}_{kind}_trajectory_pct"] = percentage
                 metrics[f"{final_prefix}/{sampler}_{kind}_trajectory_pct"] = percentage
-            if make_plot and sampler == "flowmap" and classifier_name == "all_days":
+            if make_plot and sampler == primary_sampler and classifier_name == "all_days":
                 figure = CiteMultiEvaluationCallback._trajectory_figure(
                     paths,
                     path_source,

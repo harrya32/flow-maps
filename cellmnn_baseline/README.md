@@ -104,18 +104,16 @@ their Laplacian kernel; the evaluation RBF MMD remains the suite's metric.
 
 - CITE/Multi reuse the OTP-FM evaluation: D2 to omitted day, plus local preceding
   day to omitted day. `cellmnn/test_EMD` and `test_EMD` report the native analytical
-  local prediction. `mfm/test_EMD` retains the 100-step local Euler diagnostic.
+  local prediction.
 - Maizels predicts each omitted day from its nearest retained left endpoint.
   Both the D3/D8 and D3/D3.8/D8 schedules are supported.
 - All experiments score held-out initial cells through the final day at 50 future
   points with observed-days and all-days classifiers, without replacement.
-- `direct` is the paper's analytical trajectory using one local operator.
-  `flowmap` composes analytical steps with a fresh operator at each step;
-  `euler` integrates the instantaneous velocity. All three retain the suite's
-  `distribution_eval/*` and `maizels/*invalid_trajectory_pct` metric names.
-- Final evaluation also reports observed-interval EMDs and carries predictions
-  through all retained intervals under the existing `final_eval/observed_*` and
-  `final_eval/*_rollout_*` names.
+- All Cell-MNN evaluation uses `direct`: the paper's analytical trajectory with
+  one local operator inferred at the initial cell/time. The same operator
+  supplies all 50 future lineage-check positions and the trajectory plot.
+- Final evaluation reports observed-interval EMDs from the actual measured
+  source population for each interval under `final_eval/observed_*`.
 
 W&B uses `self-distill-flow-maps`, with the existing entity default and core
 backend. Outputs go to `outputs/cellmnn_{cite,multi,maizels}_pca{100,100,50}/`:
@@ -168,8 +166,8 @@ Each trial selects `best.pt` by retained-day validation loss and restores it
 before final evaluation. The sweep ranks fully completed settings by mean
 across seeds of `final_eval/direct_mean_emd_hparam_val_times`: exact raw-PCA W1
 averaged over **D3.4 and D6**, using the native analytical **direct** sampler.
-The other omitted days, trajectory checks, and composed-map/Euler metrics are
-recorded as diagnostics. Validation losses are not compared across settings.
+The other omitted days and trajectory checks are recorded as diagnostics.
+Validation losses are not compared across settings.
 Evaluation defaults to final-only (`--eval-every-epochs 0`); validation and early
 stopping still run at the configured validation interval.
 

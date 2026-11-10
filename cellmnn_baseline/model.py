@@ -106,7 +106,7 @@ class BenchmarkCellMNN(CellMNN):
 
 
 class CellMNNSampler:
-    """Raw-PCA analytical, composed analytical, and instantaneous Euler paths."""
+    """Raw-PCA analytical paths using the initial cell's local operator."""
 
     def __init__(self, model, scaler, *, time_origin, time_scale, batch_size=1024):
         self.model = model
@@ -128,8 +128,8 @@ class CellMNNSampler:
         sampler="direct",
         paths=False,
     ):
-        if sampler not in ("direct", "flowmap", "euler"):
-            raise ValueError(f"Unknown Cell-MNN sampler: {sampler}.")
+        if sampler != "direct":
+            raise ValueError("Cell-MNN supports only direct analytical sampling.")
         if int(n_steps) <= 0 or not 0.0 <= start_time <= end_time <= 1.0:
             raise ValueError(
                 "Sampling requires positive steps and 0 <= start <= end <= 1."
@@ -143,7 +143,7 @@ class CellMNNSampler:
             raise ValueError(
                 "Sampling needs a non-empty population in the model PCA space."
             )
-        steps = 1 if sampler == "direct" and not paths else int(n_steps)
+        steps = int(n_steps) if paths else 1
         times = self.time_origin + self.time_scale * np.linspace(
             start_time, end_time, steps + 1
         )
@@ -154,43 +154,20 @@ class CellMNNSampler:
             for start in range(0, len(source), self.batch_size):
                 raw = source[start : start + self.batch_size]
                 x0 = torch.as_tensor(raw, device=self.device) / self.scale
-                if sampler == "direct":
-                    anchor = torch.full(
-                        (len(x0), 1, 1), float(times[0]), device=self.device
-                    )
-                    decode = torch.tensor(
-                        times[1:], dtype=torch.float32, device=self.device
-                    )
-                    decode = decode[None, :, None].expand(len(x0), -1, -1)
-                    predicted = self.model(x0[:, None], anchor, decode)[0] * self.scale
-                    prediction = predicted.cpu().numpy()
-                    result = (
-                        np.concatenate([raw[:, None], prediction], axis=1)
-                        if paths
-                        else prediction[:, -1]
-                    )
-                else:
-                    x, positions = x0, [raw]
-                    for left, right in zip(times[:-1], times[1:]):
-                        t = torch.full((len(x), 1, 1), float(left), device=self.device)
-                        target = (
-                            t
-                            if sampler == "euler"
-                            else torch.full_like(t, float(right))
-                        )
-                        decoded = self.model(x[:, None], t, target)
-                        x = (
-                            x + float(right - left) * decoded[4][:, 0]
-                            if sampler == "euler"
-                            else decoded[0][:, 0]
-                        )
-                        if paths:
-                            positions.append((x * self.scale).cpu().numpy())
-                    result = (
-                        np.stack(positions, axis=1)
-                        if paths
-                        else (x * self.scale).cpu().numpy()
-                    )
+                anchor = torch.full(
+                    (len(x0), 1, 1), float(times[0]), device=self.device
+                )
+                decode = torch.tensor(
+                    times[1:], dtype=torch.float32, device=self.device
+                )
+                decode = decode[None, :, None].expand(len(x0), -1, -1)
+                predicted = self.model(x0[:, None], anchor, decode)[0] * self.scale
+                prediction = predicted.cpu().numpy()
+                result = (
+                    np.concatenate([raw[:, None], prediction], axis=1)
+                    if paths
+                    else prediction[:, -1]
+                )
                 if not np.isfinite(result).all():
                     raise FloatingPointError(
                         f"Non-finite Cell-MNN {sampler} predictions."

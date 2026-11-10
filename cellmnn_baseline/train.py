@@ -525,6 +525,7 @@ def run_experiment(args, config, heldout_day, seed):
         "upstream_repo": str(UPSTREAM_ROOT),
         "comparison_mode": method,
         "primary_sampler": "direct",
+        "evaluation_samplers": ["direct"],
         "checkpoint_monitor": "val_loss",
         "validation_metric": "discounted_laplacian_mmd_plus_kinetic_plus_invertibility_on_retained_validation_cells",
         "normalization": "global_training_pc1_std" if data.scaler else "none",
@@ -540,9 +541,8 @@ def run_experiment(args, config, heldout_day, seed):
         "train_batches_per_epoch": len(data.train_dataset),
         "validation_batches": len(data.val_dataset),
         "classifiers": {key: str(path) for key, path in classifiers.items()},
-        "distribution_steps": 50,
+        "distribution_steps": 1,
         "trajectory_check_times": 50,
-        "mfm_steps": 100,
         "eval_max_points": (
             min(args.eval_max_points or 64, 64)
             if args.smoke_test
