@@ -167,7 +167,15 @@ def datasets_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    parser.add_argument("--maizels_eval_points_per_time", type=int, default=1024)
+    parser.add_argument(
+        "--maizels_eval_points_per_time",
+        type=int,
+        default=0,
+        help=(
+            "Maximum cells per source/target population for Maizels EMD/MMD. "
+            "Zero uses every cell, preserving unequal population sizes."
+        ),
+    )
     parser.add_argument("--maizels_eval_euler_steps", type=int, default=50)
     parser.add_argument("--maizels_eval_every_n_steps", type=int, default=500)
     parser.add_argument(

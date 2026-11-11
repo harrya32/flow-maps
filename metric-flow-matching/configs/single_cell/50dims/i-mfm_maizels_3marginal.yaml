@@ -33,6 +33,6 @@ max_steps: 10000
 val_check_interval: 500
 reference_loss_batches: 32
 maizels_eval_every_n_steps: 500
-maizels_eval_points_per_time: 1024
+maizels_eval_points_per_time: 0
 optimal_transport_method: "None"
 wandb_project: "self-distill-flow-maps"

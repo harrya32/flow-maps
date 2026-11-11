@@ -301,7 +301,10 @@ class MaizelsEvaluationCallback(pl.Callback):
 
     @staticmethod
     def _sample_rows(values, n, rng):
+        """Select from one population; zero keeps all its cells."""
         values = np.asarray(values, dtype=np.float32)
+        if n == 0 or n >= values.shape[0]:
+            return values
         size = min(n, values.shape[0])
         indices = rng.choice(values.shape[0], size=size, replace=False)
         return values[indices]
@@ -362,9 +365,8 @@ class MaizelsEvaluationCallback(pl.Callback):
                     cfg, timepoint
                 )
                 source_all = self._test_source_pool(interval_source)
-                n = min(eval_n, source_all.shape[0], actual_all.shape[0])
-                source = self._sample_rows(source_all, n, rng)
-                actual = self._sample_rows(actual_all, n, rng)
+                source = self._sample_rows(source_all, eval_n, rng)
+                actual = self._sample_rows(actual_all, eval_n, rng)
                 start_time = maizels.normalized_time(interval_source, cfg)
                 end_time = maizels.normalized_time(timepoint, cfg)
                 prediction, _ = evaluation_rollout(
@@ -395,9 +397,8 @@ class MaizelsEvaluationCallback(pl.Callback):
             ):
                 source_all = self._heldout_pool(interval_source)
                 target_all = self._heldout_pool(interval_target)
-                n = min(eval_n, source_all.shape[0], target_all.shape[0])
-                source = self._sample_rows(source_all, n, validation_rng)
-                target = self._sample_rows(target_all, n, validation_rng)
+                source = self._sample_rows(source_all, eval_n, validation_rng)
+                target = self._sample_rows(target_all, eval_n, validation_rng)
                 prediction, _ = evaluation_rollout(
                     pl_module,
                     torch.as_tensor(source, dtype=torch.float32, device=device),

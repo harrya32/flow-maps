@@ -1,4 +1,4 @@
-"""Evaluate deterministic Maizels flow-map checkpoints at observed marginals.
+"""Evaluate deterministic Maizels checkpoints at every marginal and test time.
 
 The primary ``interval`` protocol mirrors the held-out distribution evaluation:
 each learned interval starts from the real population at its left endpoint.  The
@@ -9,16 +9,14 @@ through every retained interval, without resetting them at D3.8.
 from __future__ import annotations
 
 import argparse
-import csv
 import importlib
 import inspect
 import json
 import math
 import os
 import sys
-from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 py_dir = os.path.join(script_dir, "..")
@@ -31,8 +29,8 @@ import numpy as np
 
 import common.flow_map as flow_map
 import common.maizels as maizels
+import common.maizels_checkpoint_eval as checkpoint_eval
 import common.state_utils as state_utils
-import common.wasserstein as wasserstein
 
 
 def _checkpoint_spec(value: str) -> Tuple[str, int, Path]:
@@ -95,7 +93,7 @@ def _restore(checkpoint: Path, cfg, example: np.ndarray, ema_fac: float | None):
     return net, state.ema_params.get(ema_fac, state.params)
 
 
-def _composed_pushforward(
+def _pushforward(
     net,
     params,
     source: np.ndarray,
@@ -104,7 +102,13 @@ def _composed_pushforward(
     end_time: float,
     n_steps: int,
     batch_size: int,
+    euler: bool = False,
 ) -> np.ndarray:
+    """Use exactly n_steps composed maps, or explicit Euler vector-field steps."""
+    if n_steps <= 0 or batch_size <= 0:
+        raise ValueError("n_steps and batch_size must be positive.")
+    if end_time < start_time:
+        raise ValueError("end_time must be greater than or equal to start_time.")
     if end_time == start_time:
         return np.asarray(source, dtype=np.float32).copy()
     times = jnp.linspace(start_time, end_time, n_steps + 1, dtype=jnp.float32)
@@ -113,18 +117,27 @@ def _composed_pushforward(
     def run_batch(x):
         def step(current, interval):
             left, right = interval
-            result = jax.vmap(
-                lambda point: net.apply(
-                    params,
-                    left,
-                    right,
-                    point,
-                    label=None,
-                    train=False,
-                    calc_weight=False,
-                    return_X_and_phi=False,
-                )
-            )(current)
+            if euler:
+                velocity = jax.vmap(
+                    lambda point: net.apply(
+                        params, left, point, label=None, train=False,
+                        calc_weight=False, method="calc_b",
+                    )
+                )(current)
+                result = current + (right - left) * velocity
+            else:
+                result = jax.vmap(
+                    lambda point: net.apply(
+                        params,
+                        left,
+                        right,
+                        point,
+                        label=None,
+                        train=False,
+                        calc_weight=False,
+                        return_X_and_phi=False,
+                    )
+                )(current)
             return result, None
 
         result, _ = jax.lax.scan(step, x, (times[:-1], times[1:]))
@@ -136,37 +149,6 @@ def _composed_pushforward(
         result = run_batch(jnp.asarray(source[start : start + batch_size]))
         pieces.append(np.asarray(jax.device_get(result), dtype=np.float32))
     return np.concatenate(pieces, axis=0)
-
-
-def _summary_rows(rows: Iterable[Dict]) -> List[Dict]:
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[(row["method"], row["protocol"], row["timepoint"])].append(
-            float(row["w1"])
-        )
-    summaries = []
-    for (method, protocol, timepoint), values in sorted(grouped.items()):
-        array = np.asarray(values, dtype=np.float64)
-        sd = float(np.std(array, ddof=1)) if array.size > 1 else 0.0
-        summaries.append(
-            {
-                "method": method,
-                "protocol": protocol,
-                "timepoint": timepoint,
-                "n_checkpoints": int(array.size),
-                "w1_mean": float(np.mean(array)),
-                "w1_sd": sd,
-                "w1_se": sd / math.sqrt(array.size),
-            }
-        )
-    return summaries
-
-
-def _write_csv(path: Path, rows: List[Dict]) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def main() -> None:
@@ -191,7 +173,18 @@ def main() -> None:
         default=None,
         help="Optional EMA decay. By default use instantaneous parameters, matching training evaluation.",
     )
-    parser.add_argument("--n_steps_per_interval", type=int, default=50)
+    parser.add_argument(
+        "--n_steps_per_interval", type=int, default=50,
+        help="Number of equal steps from each observed source to each target marginal.",
+    )
+    parser.add_argument(
+        "--euler", action="store_true",
+        help="Evaluate only Euler sampling of the diagonal vector field instead of composed maps.",
+    )
+    parser.add_argument(
+        "--hparam_val_times", default=None,
+        help="Comma-separated validation days excluded from test_times; defaults to the training config.",
+    )
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--out_dir", default="outputs/maizels_observed_w1")
     args = parser.parse_args()
@@ -212,119 +205,61 @@ def main() -> None:
         **kwargs,
     )
     cfg.training.ndevices = jax.device_count()
-    retained = maizels.retained_timepoints(cfg)
     data = maizels.all_timepoint_data(cfg.problem.dataset_location)
-    populations = {
-        timepoint: np.asarray(
-            data["x"][data["timepoints"] == timepoint], dtype=np.float32
-        )
-        for timepoint in retained
-    }
-    if any(population.shape[0] == 0 for population in populations.values()):
-        raise RuntimeError(f"Empty retained population; sizes={ {k: len(v) for k, v in populations.items()} }")
+    marginals = checkpoint_eval.build_marginals(cfg, data, args.hparam_val_times)
     _adaptive_rescale(cfg)
+    sampler = "euler" if args.euler else "flowmap"
 
     rows: List[Dict] = []
     for method, seed, checkpoint in args.checkpoint:
         print(f"Restoring {method} seed={seed}: {checkpoint}", flush=True)
         net, params = _restore(
-            checkpoint, cfg, populations[retained[0]][0], args.ema_fac
+            checkpoint, cfg, marginals.populations[marginals.retained[0]][0], args.ema_fac
         )
 
-        # At the initial observed marginal the model distribution is exactly the
-        # empirical source distribution, hence W1 is zero by construction.
-        for protocol in ("interval", "rollout"):
-            rows.append(
-                {
-                    "method": method,
-                    "seed": seed,
-                    "protocol": protocol,
-                    "timepoint": retained[0],
-                    "source_timepoint": retained[0],
-                    "source_n": populations[retained[0]].shape[0],
-                    "target_n": populations[retained[0]].shape[0],
-                    "w1": 0.0,
-                    "checkpoint": str(checkpoint),
-                }
-            )
-
-        rollout = populations[retained[0]]
-        for source_timepoint, target_timepoint in zip(retained[:-1], retained[1:]):
-            start_time = maizels.normalized_time(source_timepoint, cfg)
-            end_time = maizels.normalized_time(target_timepoint, cfg)
-            target = populations[target_timepoint]
-
-            interval_prediction = _composed_pushforward(
-                net,
-                params,
-                populations[source_timepoint],
+        def pushforward(source, *, start_time, end_time, target_index, protocol):
+            return _pushforward(
+                net, params, source,
                 start_time=start_time,
                 end_time=end_time,
                 n_steps=args.n_steps_per_interval,
                 batch_size=args.batch_size,
-            )
-            interval_w1 = wasserstein.exact_emd(interval_prediction, target)
-            rows.append(
-                {
-                    "method": method,
-                    "seed": seed,
-                    "protocol": "interval",
-                    "timepoint": target_timepoint,
-                    "source_timepoint": source_timepoint,
-                    "source_n": interval_prediction.shape[0],
-                    "target_n": target.shape[0],
-                    "w1": interval_w1,
-                    "checkpoint": str(checkpoint),
-                }
+                euler=args.euler,
             )
 
-            if source_timepoint == retained[0]:
-                # Both protocols are identical in the first interval.
-                rollout = interval_prediction
-                rollout_w1 = interval_w1
-            else:
-                rollout = _composed_pushforward(
-                    net,
-                    params,
-                    rollout,
-                    start_time=start_time,
-                    end_time=end_time,
-                    n_steps=args.n_steps_per_interval,
-                    batch_size=args.batch_size,
-                )
-                rollout_w1 = wasserstein.exact_emd(rollout, target)
-            rows.append(
-                {
-                    "method": method,
-                    "seed": seed,
-                    "protocol": "rollout",
-                    "timepoint": target_timepoint,
-                    "source_timepoint": retained[0],
-                    "source_n": rollout.shape[0],
-                    "target_n": target.shape[0],
-                    "w1": rollout_w1,
-                    "checkpoint": str(checkpoint),
-                }
-            )
+        def progress(day, interval_w1, rollout_w1):
             print(
-                f"  {target_timepoint}: interval W1={interval_w1:.6f}; "
-                f"D3 rollout W1={rollout_w1:.6f}",
+                f"  {day}: interval W1={interval_w1:.6f}; rollout W1={rollout_w1:.6f}",
                 flush=True,
             )
 
-    summaries = _summary_rows(rows)
-    out_dir = Path(args.out_dir)
+        rows.extend(checkpoint_eval.evaluate_marginals(
+            marginals, pushforward,
+            context={
+                "method": method, "seed": seed, "checkpoint": str(checkpoint),
+                "sampler": sampler, "n_steps_per_interval": args.n_steps_per_interval,
+            },
+            progress=progress,
+        ))
+
+    summaries = checkpoint_eval.summary_rows(
+        rows, ("method", "sampler", "n_steps_per_interval", "protocol", "timepoint"),
+        count_field="n_checkpoints",
+    )
+    out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv(out_dir / "per_checkpoint.csv", rows)
-    _write_csv(out_dir / "summary.csv", summaries)
+    checkpoint_eval.write_csv(out_dir / "per_checkpoint.csv", rows)
+    checkpoint_eval.write_csv(out_dir / "summary.csv", summaries)
+    (out_dir / "metrics.json").write_text(
+        json.dumps(checkpoint_eval.metric_records(rows), indent=2) + "\n"
+    )
     metadata = {
+        **marginals.metadata(),
         "dataset_location": str(Path(args.dataset_location).expanduser().resolve()),
-        "retained_timepoints": list(retained),
         "time_mode": args.maizels_time_mode,
         "parameters": "instantaneous" if args.ema_fac is None else f"EMA {args.ema_fac}",
-        "sampler": "composed deterministic flow map",
+        "sampler": sampler,
         "n_steps_per_interval": args.n_steps_per_interval,
-        "population_sizes": {key: int(value.shape[0]) for key, value in populations.items()},
         "protocols": {
             "interval": "restart from the real population at each observed left endpoint",
             "rollout": "start from D3 once and carry predictions across observed intervals",
@@ -340,8 +275,11 @@ def main() -> None:
     for row in summaries:
         print(
             f"  {row['method']:>24s} {row['protocol']:>8s} "
-            f"{row['timepoint']:>4s}: {row['w1_mean']:.6f} +/- {row['w1_se']:.6f}"
+            f"{row['timepoint']:>10s}: {row['w1_mean']:.6f} +/- {row['w1_se']:.6f}"
         )
+        if row["timepoint"] == "test_times":
+            prefix = "final_eval" if row["protocol"] == "interval" else "rollout_eval"
+            print(f"    {prefix}/{sampler}_mean_emd_test_times={row['w1_mean']:.6f}")
     print(f"\nSaved results to {out_dir.resolve()}")
 
 

@@ -570,6 +570,49 @@ variants are required. Runs are sequential and resumable. Per-run metrics are
 collected in `outputs/maizels_stochastic_multiseed/results.csv`, with
 across-seed means and standard deviations in `summary.csv`.
 
+Re-evaluate saved Maizels deterministic or stochastic flow-map checkpoints at
+every marginal, using all source and target cells, without retraining:
+
+```bash
+python py/launchers/eval_maizels_observed_w1.py \
+    --checkpoint "ot:0:/path/to/deterministic/best.msgpack" \
+    --dataset_location "$PWD" \
+    --n_steps_per_interval 10 \
+    --out_dir /path/to/eval/deterministic_10_steps
+
+python py/launchers/eval_maizels_stochastic_observed_w1.py \
+    --checkpoint "ot:0:/path/to/stochastic/best.msgpack" \
+    --dataset_location "$PWD" \
+    --noise_draws 3 \
+    --n_steps_per_interval 10 \
+    --out_dir /path/to/eval/stochastic_10_steps
+```
+
+Repeat `--checkpoint METHOD:SEED:PATH` to compare methods or seeds. Deterministic
+evaluation must use the training configuration, schedule and clock (the defaults
+are `configs.maizels_pca50`, D3/D3.8/D8, and real time). Stochastic evaluation reads
+the companion `config.json` beside each checkpoint and uses its EMA parameters.
+The scripts report only the selected sampler: composed flow maps by default;
+add `--euler` for deterministic Euler or stochastic Euler--Maruyama sampling.
+`--n_steps_per_interval N` sets the equal steps from the preceding observed day
+to each evaluated marginal, including omitted days. Without an explicit count,
+deterministic evaluation uses 50; stochastic evaluation uses the selected
+sampler's saved step count. Local-only stochastic checkpoints require `--euler`.
+
+The primary `interval` protocol starts each prediction from the real population
+at its preceding observed day. A separate `rollout` protocol carries predictions
+from D3 across observed intervals; evaluating an omitted day does not change the
+carried state. CSVs report all ten marginals and a `test_times` row per protocol.
+For the default schedule, that aggregate averages D3.2, D3.6, D4, D5 and D7,
+excluding retained observations and the D3.4/D6 hyperparameter validation days.
+Use `--hparam_val_times D3.4,D6` to override the validation partition if needed.
+`metrics.json` includes `final_eval/flowmap_mean_emd_test_times` for interval
+composition, or the corresponding `euler`/`euler_maruyama` key with `--euler`;
+rollout metrics use `rollout_eval/`. `summary.csv` gives means, sample standard
+deviations and standard errors across checkpoints. For stochastic runs, Brownian
+draws are averaged within each checkpoint before computing uncertainty across
+trained seeds; `per_draw.csv` retains the individual draw scores.
+
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
 `optimization.bs`; because each optimizer batch is balanced across two retained

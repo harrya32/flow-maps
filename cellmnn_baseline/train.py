@@ -9,6 +9,8 @@ import csv
 import json
 import os
 import random
+import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -279,6 +281,35 @@ def resolve_device(requested):
     return torch.device(requested)
 
 
+def save_checkpoint(checkpoint, path):
+    """Replace a checkpoint only after its complete write succeeds."""
+    path = Path(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.",
+            suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            torch.save(checkpoint, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except (OSError, RuntimeError) as exc:
+        free_space = "unavailable"
+        with contextlib.suppress(OSError):
+            free_space = f"{shutil.disk_usage(path.parent).free / 2**20:.1f} MiB"
+        raise RuntimeError(
+            f"Could not save Cell-MNN checkpoint to {path}. "
+            f"Filesystem free space: {free_space}. Check disk space, quota and "
+            "write access. Any existing checkpoint was preserved."
+        ) from exc
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
+
 @contextlib.contextmanager
 def validation_rng(seed):
     """Repeat upstream validation batches without advancing training RNGs."""
@@ -425,22 +456,22 @@ class BenchmarkTrainer:
                     {f"val_{key}": value for key, value in validation.items()}
                 )
                 if validation["loss"] < self.best_loss:
+                    save_checkpoint(
+                        {
+                            "state_dict": self.model.state_dict(),
+                            "config": self.config,
+                            "epoch": epoch,
+                            "global_step": self.global_step,
+                            "val_loss": validation["loss"],
+                        },
+                        self.output / "best.pt",
+                    )
                     self.best_loss, self.best_step, self.best_epoch = (
                         validation["loss"],
                         self.global_step,
                         epoch,
                     )
                     self.stale_checks = 0
-                    torch.save(
-                        {
-                            "state_dict": self.model.state_dict(),
-                            "config": self.config,
-                            "epoch": epoch,
-                            "global_step": self.global_step,
-                            "val_loss": self.best_loss,
-                        },
-                        self.output / "best.pt",
-                    )
                 else:
                     self.stale_checks += 1
                 print(

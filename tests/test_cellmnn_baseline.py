@@ -26,6 +26,7 @@ from cellmnn_baseline.train import (
     BenchmarkTrainer,
     experiment_config,
     parse_args,
+    save_checkpoint,
     upstream_defaults,
 )
 from common import cite_multi, maizels
@@ -461,6 +462,40 @@ class CellMNNTests(unittest.TestCase):
         self.assertEqual(first, second)
         np.testing.assert_array_equal(expected_np, np.random.rand(5))
         torch.testing.assert_close(expected_torch, torch.rand(5), rtol=0, atol=0)
+
+    def test_successful_checkpoint_write_replaces_previous_weights(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "best.pt"
+            save_checkpoint({"epoch": 1, "weights": torch.zeros(3)}, path)
+            save_checkpoint({"epoch": 2, "weights": torch.ones(3)}, path)
+            saved = torch.load(path, weights_only=False)
+            self.assertEqual(saved["epoch"], 2)
+            torch.testing.assert_close(saved["weights"], torch.ones(3))
+            self.assertEqual(list(Path(temp).iterdir()), [path])
+
+    def test_failed_checkpoint_write_preserves_previous_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "best.pt"
+            save_checkpoint({"epoch": 1, "weights": torch.ones(3)}, path)
+            previous = path.read_bytes()
+
+            def fail_write(checkpoint, handle):
+                handle.write(b"partial checkpoint")
+                raise RuntimeError("PytorchStreamWriter failed writing file data/10")
+
+            with mock.patch(
+                "cellmnn_baseline.train.torch.save", side_effect=fail_write,
+            ), mock.patch(
+                "cellmnn_baseline.train.shutil.disk_usage",
+                return_value=SimpleNamespace(free=0),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "Filesystem free space: 0.0 MiB"
+                ):
+                    save_checkpoint({"epoch": 2}, path)
+            self.assertEqual(path.read_bytes(), previous)
+            self.assertEqual(torch.load(path, weights_only=False)["epoch"], 1)
+            self.assertEqual(list(Path(temp).iterdir()), [path])
 
     def test_best_checkpoint_uses_val_loss_and_restores_weights_without_rewinding_step(
         self,

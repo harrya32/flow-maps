@@ -156,7 +156,12 @@ def add_common_arguments(
     parser.add_argument("--patience", type=int, default=None)
     parser.add_argument("--val-check-interval", type=int, default=None)
     parser.add_argument("--eval-every-n-steps", type=int, default=None)
-    parser.add_argument("--eval-points-per-time", type=int, default=None)
+    parser.add_argument(
+        "--eval-points-per-time",
+        type=int,
+        default=None,
+        help="Maximum cells per evaluation population; 0 uses all cells.",
+    )
     parser.add_argument("--eval-euler-steps", type=int, default=None)
     parser.add_argument("--accelerator", default=None)
     parser.add_argument("--flow-accelerator", default=None)
@@ -198,7 +203,6 @@ def validate_common_args(args: argparse.Namespace) -> None:
         "validation_pairs",
         "val_check_interval",
         "eval_every_n_steps",
-        "eval_points_per_time",
         "eval_euler_steps",
     )
     for name in positive:
@@ -207,6 +211,8 @@ def validate_common_args(args: argparse.Namespace) -> None:
             raise ValueError(f"{name.replace('_', '-')} must be positive.")
     if args.patience is not None and args.patience < 0:
         raise ValueError("patience must be non-negative.")
+    if args.eval_points_per_time is not None and args.eval_points_per_time < 0:
+        raise ValueError("eval-points-per-time must be non-negative.")
 
 
 def resolve_config_path(value: str) -> Path:

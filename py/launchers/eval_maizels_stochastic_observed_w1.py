@@ -1,16 +1,13 @@
-"""Evaluate Maizels SSFM checkpoints at the observed training marginals."""
+"""Evaluate Maizels SSFM checkpoints at every marginal and test time."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
-import math
 import os
 import sys
-from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 py_dir = os.path.join(script_dir, "..")
@@ -18,14 +15,13 @@ sys.path.append(py_dir)
 
 import flax.serialization
 import jax
-import jax.numpy as jnp
 import ml_collections
 import numpy as np
 
 from common import maizels
+from common import maizels_checkpoint_eval as checkpoint_eval
 from common import maizels_stochastic_eval
 from common import stochastic_flow_map
-from common import wasserstein
 
 
 def _checkpoint_spec(value: str) -> Tuple[str, int, Path]:
@@ -65,38 +61,11 @@ def _load_checkpoint(path: Path):
     return model, payload["ema_params"], cfg, payload
 
 
-def _draw_key(seed: int, draw: int, interval: int, protocol: int):
+def _draw_key(seed: int, draw: int, target_index: int, protocol: int):
     key = jax.random.PRNGKey(int(seed))
     key = jax.random.fold_in(key, int(draw))
-    key = jax.random.fold_in(key, int(interval))
+    key = jax.random.fold_in(key, int(target_index))
     return jax.random.fold_in(key, int(protocol))
-
-
-def _summary_rows(rows: Iterable[Dict], group_fields: Tuple[str, ...]) -> List[Dict]:
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[tuple(row[field] for field in group_fields)].append(float(row["w1"]))
-    result = []
-    for group, values in sorted(grouped.items()):
-        array = np.asarray(values, dtype=np.float64)
-        sd = float(np.std(array, ddof=1)) if array.size > 1 else 0.0
-        result.append(
-            {
-                **dict(zip(group_fields, group)),
-                "n": int(array.size),
-                "w1_mean": float(np.mean(array)),
-                "w1_sd": sd,
-                "w1_se": sd / math.sqrt(array.size),
-            }
-        )
-    return result
-
-
-def _write_csv(path: Path, rows: List[Dict]) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def main() -> None:
@@ -118,7 +87,15 @@ def main() -> None:
         "--n_steps_per_interval",
         type=int,
         default=0,
-        help="Zero uses evaluation.flowmap_n_steps from each checkpoint.",
+        help="Steps from each observed source to each target; zero uses the selected sampler's checkpoint default.",
+    )
+    parser.add_argument(
+        "--euler", action="store_true",
+        help="Evaluate only Euler--Maruyama sampling instead of composed stochastic maps.",
+    )
+    parser.add_argument(
+        "--hparam_val_times", default=None,
+        help="Comma-separated validation days excluded from test_times; defaults to the saved config.",
     )
     parser.add_argument("--evaluation_seed", type=int, default=2701)
     parser.add_argument(
@@ -132,152 +109,67 @@ def main() -> None:
 
     rows: List[Dict] = []
     checkpoint_metadata = []
-    expected_retained = None
-    population_sizes = None
+    expected_marginals = None
+    time_mode = None
     dataset_locations = set()
+    sampler = "euler_maruyama" if args.euler else "flowmap"
+    sample = (
+        maizels_stochastic_eval.sample_euler_maruyama_pushforward if args.euler
+        else maizels_stochastic_eval.sample_composed_pushforward
+    )
     for method, seed, checkpoint in args.checkpoint:
         print(f"Restoring {method} seed={seed}: {checkpoint}", flush=True)
         model, params, cfg, payload = _load_checkpoint(checkpoint)
-        retained = maizels.retained_timepoints(cfg)
-        if expected_retained is None:
-            expected_retained = retained
-        elif retained != expected_retained:
+        if not args.euler and maizels_stochastic_eval.uses_euler_maruyama_evaluation(cfg):
             raise ValueError(
-                f"Checkpoints use different retained timepoints: "
-                f"{expected_retained} and {retained}."
-            )
-        if tuple(retained) != ("D3", "D3.8", "D8"):
-            raise ValueError(
-                "Observed-time evaluation expects the D3/D3.8/D8 schedule, "
-                f"got {retained}."
-            )
-        if str(cfg.problem.maizels_time_mode) != "real_time":
-            raise ValueError(
-                "This comparison expects real_time checkpoints, got "
-                f"{cfg.problem.maizels_time_mode!r}."
+                "This checkpoint trained only local updates; select --euler for Euler--Maruyama evaluation."
             )
         dataset_location = args.dataset_location or str(cfg.problem.dataset_location)
         dataset_locations.add(str(Path(dataset_location).expanduser().resolve()))
         data = maizels.all_timepoint_data(dataset_location)
-        populations = {
-            timepoint: np.asarray(
-                data["x"][data["timepoints"] == timepoint], dtype=np.float32
-            )
-            for timepoint in retained
-        }
-        current_sizes = {
-            timepoint: int(population.shape[0])
-            for timepoint, population in populations.items()
-        }
-        if population_sizes is None:
-            population_sizes = current_sizes
-        elif current_sizes != population_sizes:
+        marginals = checkpoint_eval.build_marginals(cfg, data, args.hparam_val_times)
+        current_marginals = marginals.metadata()
+        if expected_marginals is None:
+            expected_marginals = current_marginals
+            time_mode = str(cfg.problem.maizels_time_mode)
+        elif current_marginals != expected_marginals:
             raise ValueError(
-                f"Checkpoints resolve to datasets with different sizes: "
-                f"{population_sizes} and {current_sizes}."
+                "Checkpoints use different marginal populations, model clocks, or validation days."
             )
+        default_steps_field = "euler_maruyama_n_steps" if args.euler else "flowmap_n_steps"
         n_steps = int(
             args.n_steps_per_interval
-            or getattr(cfg.evaluation, "flowmap_n_steps", 50)
+            or getattr(cfg.evaluation, default_steps_field, 50)
         )
+        if n_steps <= 0:
+            raise ValueError(f"Checkpoint {default_steps_field} must be positive.")
 
         for draw in range(args.noise_draws):
-            rollout = populations[retained[0]]
-            for protocol in ("interval", "rollout"):
-                rows.append(
-                    {
-                        "method": method,
-                        "seed": seed,
-                        "noise_draw": draw,
-                        "protocol": protocol,
-                        "timepoint": retained[0],
-                        "source_timepoint": retained[0],
-                        "source_n": rollout.shape[0],
-                        "target_n": rollout.shape[0],
-                        "w1": 0.0,
-                        "checkpoint": str(checkpoint),
-                    }
+            def pushforward(source, *, start_time, end_time, target_index, protocol):
+                return sample(
+                    model, params, source, start_time, end_time,
+                    _draw_key(args.evaluation_seed, draw, target_index, int(protocol == "rollout")),
+                    n_coefficients=int(cfg.ssfm.n_coefficients),
+                    n_steps=n_steps,
                 )
 
-            for interval_index, (source_timepoint, target_timepoint) in enumerate(
-                zip(retained[:-1], retained[1:])
-            ):
-                start_time = maizels.normalized_time(source_timepoint, cfg)
-                end_time = maizels.normalized_time(target_timepoint, cfg)
-                target = populations[target_timepoint]
-                interval_prediction = (
-                    maizels_stochastic_eval.sample_composed_pushforward(
-                        model,
-                        params,
-                        populations[source_timepoint],
-                        start_time,
-                        end_time,
-                        _draw_key(
-                            args.evaluation_seed,
-                            draw,
-                            interval_index,
-                            protocol=0,
-                        ),
-                        n_coefficients=int(cfg.ssfm.n_coefficients),
-                        n_steps=n_steps,
-                    )
-                )
-                interval_w1 = wasserstein.exact_emd(interval_prediction, target)
-                rows.append(
-                    {
-                        "method": method,
-                        "seed": seed,
-                        "noise_draw": draw,
-                        "protocol": "interval",
-                        "timepoint": target_timepoint,
-                        "source_timepoint": source_timepoint,
-                        "source_n": interval_prediction.shape[0],
-                        "target_n": target.shape[0],
-                        "w1": interval_w1,
-                        "checkpoint": str(checkpoint),
-                    }
-                )
-
-                if interval_index == 0:
-                    rollout = interval_prediction
-                    rollout_w1 = interval_w1
-                else:
-                    rollout = maizels_stochastic_eval.sample_composed_pushforward(
-                        model,
-                        params,
-                        rollout,
-                        start_time,
-                        end_time,
-                        _draw_key(
-                            args.evaluation_seed,
-                            draw,
-                            interval_index,
-                            protocol=1,
-                        ),
-                        n_coefficients=int(cfg.ssfm.n_coefficients),
-                        n_steps=n_steps,
-                    )
-                    rollout_w1 = wasserstein.exact_emd(rollout, target)
-                rows.append(
-                    {
-                        "method": method,
-                        "seed": seed,
-                        "noise_draw": draw,
-                        "protocol": "rollout",
-                        "timepoint": target_timepoint,
-                        "source_timepoint": retained[0],
-                        "source_n": rollout.shape[0],
-                        "target_n": target.shape[0],
-                        "w1": rollout_w1,
-                        "checkpoint": str(checkpoint),
-                    }
-                )
+            def progress(day, interval_w1, rollout_w1):
                 print(
-                    f"  draw={draw} {target_timepoint}: "
+                    f"  draw={draw} {day}: "
                     f"interval W1={interval_w1:.6f}; "
-                    f"D3 rollout W1={rollout_w1:.6f}",
+                    f"rollout W1={rollout_w1:.6f}",
                     flush=True,
                 )
+
+            rows.extend(checkpoint_eval.evaluate_marginals(
+                marginals, pushforward,
+                context={
+                    "method": method, "seed": seed, "checkpoint": str(checkpoint),
+                    "sampler": sampler, "n_steps_per_interval": n_steps,
+                    "noise_draw": draw,
+                },
+                progress=progress,
+            ))
 
         checkpoint_metadata.append(
             {
@@ -295,36 +187,39 @@ def main() -> None:
             }
         )
 
-    per_checkpoint = _summary_rows(
-        rows, ("method", "seed", "protocol", "timepoint")
+    per_checkpoint = checkpoint_eval.summary_rows(
+        rows,
+        ("method", "seed", "checkpoint", "sampler", "n_steps_per_interval", "protocol", "timepoint"),
     )
     # The paper-style uncertainty is across independently trained checkpoints:
     # first average Brownian draws within a checkpoint, then compute s.e. over seeds.
     seed_mean_rows = [
         {
-            "method": row["method"],
-            "protocol": row["protocol"],
-            "timepoint": row["timepoint"],
+            **row,
             "w1": row["w1_mean"],
         }
         for row in per_checkpoint
     ]
-    summary = _summary_rows(seed_mean_rows, ("method", "protocol", "timepoint"))
+    summary = checkpoint_eval.summary_rows(
+        seed_mean_rows, ("method", "sampler", "n_steps_per_interval", "protocol", "timepoint")
+    )
 
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv(out_dir / "per_draw.csv", rows)
-    _write_csv(out_dir / "per_checkpoint.csv", per_checkpoint)
-    _write_csv(out_dir / "summary.csv", summary)
+    checkpoint_eval.write_csv(out_dir / "per_draw.csv", rows)
+    checkpoint_eval.write_csv(out_dir / "per_checkpoint.csv", per_checkpoint)
+    checkpoint_eval.write_csv(out_dir / "summary.csv", summary)
+    (out_dir / "metrics.json").write_text(
+        json.dumps(checkpoint_eval.metric_records(per_checkpoint, "w1_mean"), indent=2) + "\n"
+    )
     metadata = {
-        "retained_timepoints": list(expected_retained or ()),
-        "time_mode": "real_time",
+        **expected_marginals,
+        "time_mode": time_mode,
         "parameters": "EMA from each best checkpoint",
-        "sampler": "composed stochastic flow map",
+        "sampler": sampler,
         "noise_draws": args.noise_draws,
         "evaluation_seed": args.evaluation_seed,
         "dataset_locations": sorted(dataset_locations),
-        "population_sizes": population_sizes,
         "protocols": {
             "interval": "restart from the real population at each observed left endpoint",
             "rollout": "start from D3 once and carry predictions across observed intervals",
@@ -337,8 +232,12 @@ def main() -> None:
     for row in summary:
         print(
             f"  {row['method']:>25s} {row['protocol']:>8s} "
-            f"{row['timepoint']:>4s}: {row['w1_mean']:.6f} +/- {row['w1_se']:.6f}"
+            f"{row['timepoint']:>10s} ({row['n_steps_per_interval']} steps): "
+            f"{row['w1_mean']:.6f} +/- {row['w1_se']:.6f}"
         )
+        if row["timepoint"] == "test_times":
+            prefix = "final_eval" if row["protocol"] == "interval" else "rollout_eval"
+            print(f"    {prefix}/{sampler}_mean_emd_test_times={row['w1_mean']:.6f}")
     print(f"\nSaved results to {out_dir}")
 
 

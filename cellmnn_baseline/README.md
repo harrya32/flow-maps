@@ -127,6 +127,9 @@ their Laplacian kernel; the evaluation RBF MMD remains the suite's metric.
 W&B uses `self-distill-flow-maps`, with the existing entity default and core
 backend. Outputs go to `outputs/cellmnn_{cite,multi,maizels}_pca{100,100,50}/`:
 `experiment.json`, `losses.csv`, `best.pt`, `final_metrics.json` and plots.
+Checkpoint writes use a temporary file in the same directory and replace
+`best.pt` only after the complete write succeeds, preserving the previous
+checkpoint if storage fills up. `--working_dir` redirects all run outputs.
 The selected best weights are restored for final metrics. Periodic evaluation
 runs every 20 epochs; `--eval_every_epochs 0` selects final-only evaluation.
 

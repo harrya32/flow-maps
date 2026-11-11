@@ -133,7 +133,11 @@ D3.8 and D3.8 -> D8 EMDs are logged under `validation_distribution/*`, including
 their raw and source-to-target-normalized mean. The omitted-day metrics remain
 enabled under `distribution_eval/*`; each omitted day is rolled out from the
 left observed endpoint of its interval, so these remain test diagnostics rather
-than model-selection criteria. Real experimental time is used by default
+than model-selection criteria. MFM defaults to all cells for EMD and MMD
+(`maizels_eval_points_per_time: 0`), preserving the full source and target
+populations even when their sizes differ. A positive value caps each population
+independently without replacement, for both periodic and final evaluation.
+Real experimental time is used by default
 (`D3=0`, `D3.8=0.16`, `D8=1`).
 
 After training, Lightning reloads the flow checkpoint with the lowest
