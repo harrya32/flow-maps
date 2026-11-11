@@ -575,7 +575,7 @@ every marginal, using all source and target cells, without retraining:
 
 ```bash
 python py/launchers/eval_maizels_observed_w1.py \
-    --checkpoint "ot:0:/path/to/deterministic/best.msgpack" \
+    --checkpoint "ot:0:/path/to/deterministic/run_name_best.pkl" \
     --dataset_location "$PWD" \
     --n_steps_per_interval 10 \
     --out_dir /path/to/eval/deterministic_10_steps
@@ -599,16 +599,14 @@ to each evaluated marginal, including omitted days. Without an explicit count,
 deterministic evaluation uses 50; stochastic evaluation uses the selected
 sampler's saved step count. Local-only stochastic checkpoints require `--euler`.
 
-The primary `interval` protocol starts each prediction from the real population
-at its preceding observed day. A separate `rollout` protocol carries predictions
-from D3 across observed intervals; evaluating an omitted day does not change the
-carried state. CSVs report all ten marginals and a `test_times` row per protocol.
+The `interval` evaluation starts each prediction from the real population at its
+preceding observed day. CSVs report all ten marginals and a `test_times` row.
 For the default schedule, that aggregate averages D3.2, D3.6, D4, D5 and D7,
 excluding retained observations and the D3.4/D6 hyperparameter validation days.
 Use `--hparam_val_times D3.4,D6` to override the validation partition if needed.
 `metrics.json` includes `final_eval/flowmap_mean_emd_test_times` for interval
-composition, or the corresponding `euler`/`euler_maruyama` key with `--euler`;
-rollout metrics use `rollout_eval/`. `summary.csv` gives means, sample standard
+composition, or the corresponding `euler`/`euler_maruyama` key with `--euler`.
+`summary.csv` gives means, sample standard
 deviations and standard errors across checkpoints. For stochastic runs, Brownian
 draws are averaged within each checkpoint before computing uncertainty across
 trained seeds; `per_draw.csv` retains the individual draw scores.

@@ -64,7 +64,7 @@ def read_csv(path):
 
 
 class MarginalProtocolTests(unittest.TestCase):
-    def test_every_marginal_full_populations_and_rollout_only_advances_at_observations(self):
+    def test_every_marginal_uses_full_populations_from_preceding_observation(self):
         data, cfg, populations = data_and_config(large=True)
         marginals = maizels_checkpoint_eval.build_marginals(cfg, data)
         calls = []
@@ -82,30 +82,33 @@ class MarginalProtocolTests(unittest.TestCase):
             marginals, pushforward, context=context(), score=score
         )
         self.assertEqual(marginals.test_times, TEST_TIMES)
-        self.assertEqual(len(rows), 22)
-        for protocol in ("interval", "rollout"):
-            day_rows = {r["timepoint"]: r for r in rows if r["protocol"] == protocol}
-            self.assertEqual(set(day_rows), set(maizels.TIMEPOINTS) | {"test_times"})
-            for day in maizels.TIMEPOINTS:
-                row = day_rows[day]
-                self.assertEqual(row["target_n"], len(populations[day]))
-                left = "D3" if maizels.parse_timepoint(day) <= 3.8 else "D3.8"
-                expected_source = "D3" if protocol == "rollout" else left
-                self.assertEqual(row["source_n"], len(populations[expected_source]))
-            aggregate = day_rows["test_times"]
-            self.assertEqual(aggregate["n_timepoints"], 5)
-            self.assertAlmostEqual(
-                aggregate["w1"], np.mean([day_rows[day]["w1"] for day in TEST_TIMES])
-            )
+        self.assertEqual(len(rows), 11)
+        self.assertEqual({r["protocol"] for r in rows}, {"interval"})
+        day_rows = {r["timepoint"]: r for r in rows}
+        self.assertEqual(set(day_rows), set(maizels.TIMEPOINTS) | {"test_times"})
+        for day in maizels.TIMEPOINTS:
+            row = day_rows[day]
+            self.assertEqual(row["target_n"], len(populations[day]))
+            left = "D3" if maizels.parse_timepoint(day) <= 3.8 else "D3.8"
+            self.assertEqual(row["source_timepoint"], left)
+            self.assertEqual(row["source_n"], len(populations[left]))
+        aggregate = day_rows["test_times"]
+        self.assertEqual(aggregate["n_timepoints"], 5)
+        self.assertAlmostEqual(
+            aggregate["w1"], np.mean([day_rows[day]["w1"] for day in TEST_TIMES])
+        )
         self.assertIn((len(populations["D3"]), len(populations["D3.8"])), scored_sizes)
         self.assertIn((len(populations["D3.8"]), len(populations["D7"])), scored_sizes)
-        carried_sources = [source for source, kw in calls if kw["protocol"] == "rollout"]
-        self.assertEqual(len(carried_sources), 5)
-        for source in carried_sources:
-            np.testing.assert_allclose(source, populations["D3"] + 10.16)
+        self.assertEqual(len(calls), 9)
+        self.assertEqual(len(scored_sizes), 9)
+        for source, kwargs in calls:
+            target = maizels.TIMEPOINTS[kwargs["target_index"]]
+            left = "D3" if maizels.parse_timepoint(target) <= 3.8 else "D3.8"
+            np.testing.assert_array_equal(source, populations[left])
         records = maizels_checkpoint_eval.metric_records(rows)
         self.assertEqual(len(records), 1)
         self.assertIn("final_eval/flowmap_mean_emd_test_times", records[0]["metrics"])
+        self.assertTrue(all(name.startswith("final_eval/") for name in records[0]["metrics"]))
 
     def test_validation_override_and_missing_marginal(self):
         data, cfg, _ = data_and_config()
@@ -145,10 +148,9 @@ class MarginalProtocolTests(unittest.TestCase):
                 rows = maizels_checkpoint_eval.evaluate_marginals(
                     marginals, sample, context=context(), score=lambda x, y: 0.0
                 )
-                self.assertEqual(len(rows), 22)
+                self.assertEqual(len(rows), 11)
                 d4_call = next(call for call in calls
-                               if call["target_index"] == maizels.TIMEPOINTS.index("D4")
-                               and call["protocol"] == "interval")
+                               if call["target_index"] == maizels.TIMEPOINTS.index("D4"))
                 self.assertAlmostEqual(d4_call["start_time"], 0.0 if n_test == 6 else 0.5)
                 self.assertAlmostEqual(d4_call["end_time"], marginals.times["D4"])
 
@@ -203,12 +205,18 @@ class DeterministicSamplerTests(unittest.TestCase):
                     deterministic.main()
                 rows = read_csv(out / "per_checkpoint.csv")
                 sampler = "euler" if euler else "flowmap"
+                self.assertEqual(len(rows), 11)
+                self.assertEqual({r["protocol"] for r in rows}, {"interval"})
                 self.assertEqual({r["sampler"] for r in rows}, {sampler})
                 self.assertEqual({r["n_steps_per_interval"] for r in rows}, {"3"})
                 self.assertEqual({r["timepoint"] for r in rows}, set(maizels.TIMEPOINTS) | {"test_times"})
                 record = json.loads((out / "metrics.json").read_text())[0]
                 self.assertIn(f"final_eval/{sampler}_mean_emd_test_times", record["metrics"])
                 self.assertTrue(all(f"/{sampler}_" in name for name in record["metrics"]))
+                self.assertTrue(all(name.startswith("final_eval/") for name in record["metrics"]))
+                metadata = json.loads((out / "metadata.json").read_text())
+                self.assertEqual(set(metadata["protocols"]), {"interval"})
+                self.assertEqual({r["protocol"] for r in read_csv(out / "summary.csv")}, {"interval"})
 
 
 def save_stochastic_checkpoint(path, seed=0, local_fraction=0.75, embedded=True):
@@ -288,9 +296,11 @@ class StochasticCheckpointTests(unittest.TestCase):
                 save_stochastic_checkpoint(path, seed=seed)
             out = Path(tmp) / "eval"
             sampler = self.run_cli(paths, data, out, ["--noise_draws", "2", "--n_steps_per_interval", "7"])
-            self.assertTrue(sampler.call_args_list)
+            self.assertEqual(sampler.call_count, 2 * 2 * (len(maizels.TIMEPOINTS) - 1))
             self.assertEqual({call.kwargs["n_steps"] for call in sampler.call_args_list}, {7})
             raw = read_csv(out / "per_draw.csv")
+            self.assertEqual(len(raw), 2 * 2 * 11)
+            self.assertEqual({r["protocol"] for r in raw}, {"interval"})
             self.assertEqual({r["sampler"] for r in raw}, {"flowmap"})
             self.assertEqual({r["timepoint"] for r in raw}, set(maizels.TIMEPOINTS) | {"test_times"})
             for seed in ("0", "1"):
@@ -314,6 +324,11 @@ class StochasticCheckpointTests(unittest.TestCase):
             for record in records:
                 self.assertAlmostEqual(record["metrics"]["final_eval/flowmap_mean_emd_test_times"], means[record["seed"]])
                 self.assertTrue(all("/flowmap_" in name for name in record["metrics"]))
+                self.assertTrue(all(name.startswith("final_eval/") for name in record["metrics"]))
+            metadata = json.loads((out / "metadata.json").read_text())
+            self.assertEqual(set(metadata["protocols"]), {"interval"})
+            for filename in ("per_checkpoint.csv", "summary.csv"):
+                self.assertEqual({r["protocol"] for r in read_csv(out / filename)}, {"interval"})
 
     def test_euler_flag_uses_selected_checkpoint_default_and_explicit_steps(self):
         data, _, _ = data_and_config()
@@ -329,6 +344,7 @@ class StochasticCheckpointTests(unittest.TestCase):
                 record = json.loads((out / "metrics.json").read_text())[0]
                 self.assertIn("final_eval/euler_maruyama_mean_emd_test_times", record["metrics"])
                 self.assertTrue(all("/euler_maruyama_" in name for name in record["metrics"]))
+                self.assertTrue(all(name.startswith("final_eval/") for name in record["metrics"]))
             with self.assertRaisesRegex(ValueError, "select --euler"):
                 self.run_cli([path], data, Path(tmp) / "invalid", [])
 

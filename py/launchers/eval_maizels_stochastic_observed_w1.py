@@ -61,11 +61,12 @@ def _load_checkpoint(path: Path):
     return model, payload["ema_params"], cfg, payload
 
 
-def _draw_key(seed: int, draw: int, target_index: int, protocol: int):
+def _draw_key(seed: int, draw: int, target_index: int):
     key = jax.random.PRNGKey(int(seed))
     key = jax.random.fold_in(key, int(draw))
     key = jax.random.fold_in(key, int(target_index))
-    return jax.random.fold_in(key, int(protocol))
+    # Retain the interval stream's final fold for reproducible evaluations.
+    return jax.random.fold_in(key, 0)
 
 
 def main() -> None:
@@ -145,19 +146,18 @@ def main() -> None:
             raise ValueError(f"Checkpoint {default_steps_field} must be positive.")
 
         for draw in range(args.noise_draws):
-            def pushforward(source, *, start_time, end_time, target_index, protocol):
+            def pushforward(source, *, start_time, end_time, target_index):
                 return sample(
                     model, params, source, start_time, end_time,
-                    _draw_key(args.evaluation_seed, draw, target_index, int(protocol == "rollout")),
+                    _draw_key(args.evaluation_seed, draw, target_index),
                     n_coefficients=int(cfg.ssfm.n_coefficients),
                     n_steps=n_steps,
                 )
 
-            def progress(day, interval_w1, rollout_w1):
+            def progress(day, interval_w1):
                 print(
                     f"  draw={draw} {day}: "
-                    f"interval W1={interval_w1:.6f}; "
-                    f"rollout W1={rollout_w1:.6f}",
+                    f"interval W1={interval_w1:.6f}",
                     flush=True,
                 )
 
@@ -222,7 +222,6 @@ def main() -> None:
         "dataset_locations": sorted(dataset_locations),
         "protocols": {
             "interval": "restart from the real population at each observed left endpoint",
-            "rollout": "start from D3 once and carry predictions across observed intervals",
         },
         "checkpoints": checkpoint_metadata,
     }
@@ -236,8 +235,7 @@ def main() -> None:
             f"{row['w1_mean']:.6f} +/- {row['w1_se']:.6f}"
         )
         if row["timepoint"] == "test_times":
-            prefix = "final_eval" if row["protocol"] == "interval" else "rollout_eval"
-            print(f"    {prefix}/{sampler}_mean_emd_test_times={row['w1_mean']:.6f}")
+            print(f"    final_eval/{sampler}_mean_emd_test_times={row['w1_mean']:.6f}")
     print(f"\nSaved results to {out_dir}")
 
 

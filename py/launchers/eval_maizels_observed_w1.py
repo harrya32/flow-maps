@@ -1,9 +1,7 @@
 """Evaluate deterministic Maizels checkpoints at every marginal and test time.
 
-The primary ``interval`` protocol mirrors the held-out distribution evaluation:
-each learned interval starts from the real population at its left endpoint.  The
-additional ``rollout`` protocol starts at D3 once and carries the model samples
-through every retained interval, without resetting them at D3.8.
+The ``interval`` protocol mirrors the held-out distribution evaluation:
+each target starts from the real population at its preceding observed time.
 """
 
 from __future__ import annotations
@@ -217,7 +215,7 @@ def main() -> None:
             checkpoint, cfg, marginals.populations[marginals.retained[0]][0], args.ema_fac
         )
 
-        def pushforward(source, *, start_time, end_time, target_index, protocol):
+        def pushforward(source, *, start_time, end_time, target_index):
             return _pushforward(
                 net, params, source,
                 start_time=start_time,
@@ -227,9 +225,9 @@ def main() -> None:
                 euler=args.euler,
             )
 
-        def progress(day, interval_w1, rollout_w1):
+        def progress(day, interval_w1):
             print(
-                f"  {day}: interval W1={interval_w1:.6f}; rollout W1={rollout_w1:.6f}",
+                f"  {day}: interval W1={interval_w1:.6f}",
                 flush=True,
             )
 
@@ -262,7 +260,6 @@ def main() -> None:
         "n_steps_per_interval": args.n_steps_per_interval,
         "protocols": {
             "interval": "restart from the real population at each observed left endpoint",
-            "rollout": "start from D3 once and carry predictions across observed intervals",
         },
         "checkpoints": [
             {"method": method, "seed": seed, "path": str(path)}
@@ -278,8 +275,7 @@ def main() -> None:
             f"{row['timepoint']:>10s}: {row['w1_mean']:.6f} +/- {row['w1_se']:.6f}"
         )
         if row["timepoint"] == "test_times":
-            prefix = "final_eval" if row["protocol"] == "interval" else "rollout_eval"
-            print(f"    {prefix}/{sampler}_mean_emd_test_times={row['w1_mean']:.6f}")
+            print(f"    final_eval/{sampler}_mean_emd_test_times={row['w1_mean']:.6f}")
     print(f"\nSaved results to {out_dir.resolve()}")
 
 

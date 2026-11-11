@@ -1,4 +1,4 @@
-"""Shared marginal protocols and summaries for Maizels checkpoint evaluation."""
+"""Shared interval evaluation and summaries for Maizels checkpoints."""
 
 from __future__ import annotations
 
@@ -92,42 +92,32 @@ def evaluate_marginals(
     score: Callable = None,
     progress: Callable = None,
 ) -> List[Dict]:
-    """Score interval restarts and a rollout carried only across observations.
-
-    Each target uses the requested sampler from its preceding retained day.
-    Evaluating an omitted marginal never changes the carried rollout state.
-    """
+    """Score each marginal from the real population at its preceding retained day."""
     if score is None:
         score = wasserstein.exact_emd
     rows = []
     source_day = marginals.retained[0]
 
-    def add_row(protocol, day, prediction, w1):
+    def add_row(day, source_timepoint, prediction, w1):
         observed = day in marginals.retained
         row = {
             **context,
-            "protocol": protocol,
+            "protocol": "interval",
             "timepoint": day,
             "partition": "observed" if observed else (
                 "hparam_val" if day in marginals.hparam_val_times else "test"
             ),
             "n_timepoints": 1,
-            "source_timepoint": source_day if protocol == "rollout" else left,
+            "source_timepoint": source_timepoint,
             "source_n": int(len(prediction)),
             "target_n": int(len(marginals.populations[day])),
             "w1": float(w1),
         }
         rows.append(row)
 
-    left = source_day
-    rollout = marginals.populations[source_day]
-    for protocol in ("interval", "rollout"):
-        add_row(protocol, source_day, rollout, 0.0)
+    add_row(source_day, source_day, marginals.populations[source_day], 0.0)
 
     for left, right in zip(marginals.retained[:-1], marginals.retained[1:]):
-        # Hold the state at the observed left endpoint fixed for all targets in
-        # this interval; only the observed right endpoint advances the rollout.
-        rollout_at_left = rollout
         for index, day in enumerate(marginals.timepoints):
             if not (marginals.times[left] < marginals.times[day] <= marginals.times[right]):
                 continue
@@ -137,44 +127,28 @@ def evaluate_marginals(
                 "target_index": index,
             }
             prediction = pushforward(
-                marginals.populations[left], protocol="interval", **kwargs
+                marginals.populations[left], **kwargs
             )
             if not np.isfinite(prediction).all():
                 raise FloatingPointError(f"Non-finite interval predictions at {day}.")
             interval_w1 = score(prediction, marginals.populations[day])
-            add_row("interval", day, prediction, interval_w1)
-            if left == source_day:
-                rollout_prediction, rollout_w1 = prediction, interval_w1
-            else:
-                rollout_prediction = pushforward(
-                    rollout_at_left, protocol="rollout", **kwargs
-                )
-                if not np.isfinite(rollout_prediction).all():
-                    raise FloatingPointError(f"Non-finite rollout predictions at {day}.")
-                rollout_w1 = score(rollout_prediction, marginals.populations[day])
-            add_row("rollout", day, rollout_prediction, rollout_w1)
-            if day == right:
-                rollout = rollout_prediction
+            add_row(day, left, prediction, interval_w1)
             if progress is not None:
-                progress(day, interval_w1, rollout_w1)
+                progress(day, interval_w1)
 
-    for protocol in ("interval", "rollout"):
-        values = [
-            row["w1"] for row in rows
-            if row["protocol"] == protocol and row["timepoint"] in marginals.test_times
-        ]
-        if values:
-            rows.append({
-                **context,
-                "protocol": protocol,
-                "timepoint": "test_times",
-                "partition": "test",
-                "n_timepoints": len(values),
-                "source_timepoint": source_day if protocol == "rollout" else "mixed",
-                "source_n": None,
-                "target_n": None,
-                "w1": float(np.mean(values)),
-            })
+    values = [row["w1"] for row in rows if row["timepoint"] in marginals.test_times]
+    if values:
+        rows.append({
+            **context,
+            "protocol": "interval",
+            "timepoint": "test_times",
+            "partition": "test",
+            "n_timepoints": len(values),
+            "source_timepoint": "mixed",
+            "source_n": None,
+            "target_n": None,
+            "w1": float(np.mean(values)),
+        })
     return rows
 
 
@@ -205,12 +179,11 @@ def metric_records(rows: Iterable[Dict], value_field: str = "w1") -> List[Dict]:
     for row in rows:
         identity = tuple(row[field] for field in fields)
         record = grouped.setdefault(identity, {**dict(zip(fields, identity)), "metrics": {}})
-        prefix = "final_eval" if row["protocol"] == "interval" else "rollout_eval"
         suffix = (
             "mean_emd_test_times" if row["timepoint"] == "test_times"
             else "emd_" + row["timepoint"].replace(".", "p")
         )
-        record["metrics"][f"{prefix}/{row['sampler']}_{suffix}"] = float(row[value_field])
+        record["metrics"][f"final_eval/{row['sampler']}_{suffix}"] = float(row[value_field])
     return list(grouped.values())
 
 
