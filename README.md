@@ -611,6 +611,47 @@ deviations and standard errors across checkpoints. For stochastic runs, Brownian
 draws are averaged within each checkpoint before computing uncertainty across
 trained seeds; `per_draw.csv` retains the individual draw scores.
 
+Use the PyTorch checkpoint evaluator for Maizels OTP-FM and metric flow matching
+(MFM). It uses the same all-cell interval protocol and output files described
+above, and accepts several sampling step counts in one invocation:
+
+```bash
+python py/launchers/eval_maizels_torch.py \
+    --backend otpfm \
+    --checkpoint "otpfm:0:/path/to/otpfm/run_name/models/best.pt" \
+    --dataset_location "$PWD" \
+    --device cuda \
+    --n_steps_per_interval 1 2 4 8 16 32 64 \
+    --out_dir /path/to/eval/otpfm_seed0
+
+python py/launchers/eval_maizels_torch.py \
+    --backend mfm \
+    --checkpoint "mfm:0:/path/to/mfm/flow_model/best.ckpt" \
+    --config_path /path/to/saved_mfm_training.yaml \
+    --dataset_location "$PWD" \
+    --device cuda \
+    --n_steps_per_interval 1 2 4 8 16 32 64 \
+    --out_dir /path/to/eval/mfm_seed0
+```
+
+OTP-FM uses composed maps by default; add `--euler` to evaluate its velocity
+field instead. Its companion `experiment.json` supplies the network settings,
+training clock and normalization statistics. MFM always uses Euler and requires
+the `flow_model` checkpoint. Its config is read from the checkpoint when present
+or discovered from a nearby `sweep_config.yaml`, `config.yaml`, `hparams.yaml` or
+`config.json`; older runs need `--config_path` pointing to their training YAML.
+Use the config from that run so its activation, retained observations and model
+clock match training. The three-observation MFM preset is
+`metric-flow-matching/configs/single_cell/50dims/i-mfm_maizels_3marginal.yaml`.
+
+Each checkpoint is loaded once for all requested step counts. Repeat
+`--checkpoint METHOD:SEED:PATH` for additional trained seeds; summaries group by
+method, sampler and step count. The default is 50 steps. EMA weights are selected
+as in training evaluation; `--no-ema` selects instantaneous weights. `metrics.json`
+reports `final_eval/flowmap_mean_emd_test_times` for OTP-FM composition or
+`final_eval/euler_mean_emd_test_times` for Euler sampling. `--batch_size` controls
+inference memory use while preserving every source and target cell.
+
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
 `optimization.bs`; because each optimizer batch is balanced across two retained
