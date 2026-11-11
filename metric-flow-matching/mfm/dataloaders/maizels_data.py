@@ -454,11 +454,13 @@ class MaizelsEndpointDataModule(pl.LightningDataModule):
         }
         self.active_pair_mode = "none"
 
-        eval_n = min(
-            int(self.args.maizels_eval_points_per_time),
+        heldout_available = min(
             int(self.splits["source_holdout_n"]),
             int(self.splits["target_holdout_n"]),
         )
+        eval_cap = int(self.args.maizels_eval_points_per_time)
+        # Zero removes the population cap; it must not create zero trajectories.
+        eval_n = heldout_available if eval_cap == 0 else min(eval_cap, heldout_available)
         self.eval_pairs, self.eval_pair_stats = maizels.make_endpoint_split_pair_pool(
             self.cfg,
             eval_n,
@@ -496,6 +498,8 @@ class MaizelsEndpointDataModule(pl.LightningDataModule):
             int(self.splits["source_holdout_n"]),
             int(self.splits["target_holdout_n"]),
         )
+        if eval_n == 0:
+            eval_n = heldout_available
         eval_split = "heldout" if heldout_available >= eval_n else "train"
         self.eval_pairs, eval_pair_stats = maizels.make_endpoint_split_pair_pool(
             self.cfg,
