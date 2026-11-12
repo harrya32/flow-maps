@@ -719,6 +719,11 @@ errors across seeds. `metrics.json` includes
 `final_eval/euler_mean_emd_test_times`. `--batch_size` affects inference batching
 without subsampling either population.
 
+Add `--test-only` to evaluate only the omitted day. This skips prediction and
+EMD computation for the retained days, while keeping the omitted-day result
+and the `test_times` aggregate for every requested sampling step count. The
+source remains the full real population at the preceding retained day.
+
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
 `optimization.bs`; because each optimizer batch is balanced across two retained

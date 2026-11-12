@@ -53,6 +53,54 @@ def write_dataset(root, dataset_name, data=None):
 
 
 class MarginalProtocolTests(unittest.TestCase):
+    def test_test_only_skips_training_day_predictions_and_keeps_test_aggregate(self):
+        data, populations = fixture_data(large=True)
+        for omitted in ("3", "4"):
+            for clock in cite_multi.TIME_MODES:
+                cfg = SimpleNamespace(
+                    problem=SimpleNamespace(
+                        heldout_timepoint=omitted,
+                        cite_multi_time_mode=clock,
+                    )
+                )
+                marginals = evaluation.build_marginals(cfg, data)
+                calls = []
+
+                def pushforward(source, **kwargs):
+                    calls.append((source.copy(), kwargs))
+                    return source.copy()
+
+                rows = evaluation.evaluate_marginals(
+                    marginals,
+                    pushforward,
+                    context={
+                        "method": "test",
+                        "seed": 4,
+                        "checkpoint": "test.pkl",
+                        "sampler": "flowmap",
+                        "n_steps_per_interval": 8,
+                    },
+                    score=lambda prediction, target: np.linalg.norm(
+                        prediction[0] - target[0]
+                    ),
+                    test_only=True,
+                )
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(
+                    [row["timepoint"] for row in rows], [omitted, "test_times"]
+                )
+                previous = "2" if omitted == "3" else "3"
+                np.testing.assert_array_equal(calls[0][0], populations[previous])
+                self.assertAlmostEqual(
+                    calls[0][1]["start_time"], marginals.times[previous]
+                )
+                self.assertAlmostEqual(
+                    calls[0][1]["end_time"], marginals.times[omitted]
+                )
+                self.assertEqual(rows[0]["source_n"], len(populations[previous]))
+                self.assertEqual(rows[0]["target_n"], len(populations[omitted]))
+                self.assertEqual(rows[0]["w1"], rows[1]["w1"])
+
     def test_both_folds_and_clocks_restart_from_real_full_populations(self):
         data, populations = fixture_data(large=True)
         for omitted in ("3", "4"):
@@ -187,6 +235,10 @@ class MarginalProtocolTests(unittest.TestCase):
             path = Path(tmp) / "best.pt"
             path.write_bytes(b"test")
             base = ["--backend", "otpfm", "--checkpoint", f"otpfm:4:{path}"]
+            self.assertFalse(eval_cite_multi.parse_args(base).test_only)
+            self.assertTrue(
+                eval_cite_multi.parse_args(base + ["--test-only"]).test_only
+            )
             self.assertEqual(
                 eval_cite_multi.parse_args(
                     base + ["--n_steps_per_interval", "1", "2", "2"]

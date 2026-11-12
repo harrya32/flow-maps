@@ -26,6 +26,7 @@ from common import (
     cite_multi_flowmaps_checkpoint as loader,
     datasets,
     state_utils,
+    wasserstein,
 )
 from configs import cite_multi_pca100
 from launchers import eval_cite_multi
@@ -61,6 +62,57 @@ def save_checkpoint(root, dataset_name="cite", omitted="4", clock="equal_time"):
 
 
 class NativeCheckpointTests(unittest.TestCase):
+    def test_test_only_scores_only_the_omitted_day_for_each_step_count(self):
+        _, populations = fixture_data()
+        for omitted in ("3", "4"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_dataset(root, "cite")
+                path, config_path, _ = save_checkpoint(root, omitted=omitted)
+                out = root / "eval"
+                with mock.patch.object(
+                    wasserstein, "exact_emd", wraps=wasserstein.exact_emd
+                ) as scoring, contextlib.redirect_stdout(io.StringIO()):
+                    eval_cite_multi.main(
+                        [
+                            "--backend",
+                            "flowmaps",
+                            "--checkpoint",
+                            f"map:4:{path}",
+                            "--config_path",
+                            str(config_path),
+                            "--dataset_location",
+                            str(root),
+                            "--rescale",
+                            "2.5",
+                            "--device",
+                            "cpu",
+                            "--test-only",
+                            "--n_steps_per_interval",
+                            "1",
+                            "4",
+                            "--out_dir",
+                            str(out),
+                        ]
+                    )
+                self.assertEqual(scoring.call_count, 2)
+                with (out / "per_checkpoint.csv").open() as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(len(rows), 4)
+                self.assertEqual(
+                    {row["timepoint"] for row in rows}, {omitted, "test_times"}
+                )
+                previous = "2" if omitted == "3" else "3"
+                for row in rows:
+                    if row["timepoint"] == omitted:
+                        self.assertEqual(row["source_timepoint"], previous)
+                        self.assertEqual(
+                            int(row["source_n"]), len(populations[previous])
+                        )
+                metadata = json.loads((out / "metadata.json").read_text())
+                self.assertTrue(metadata["test_only"])
+                self.assertEqual(metadata["evaluated_timepoints"], [omitted])
+
     def test_all_folds_clocks_and_samplers_restore_once_and_score_all_marginals(self):
         _, populations = fixture_data()
         for name in ("cite", "multi"):

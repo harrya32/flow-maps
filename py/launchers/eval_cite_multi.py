@@ -98,6 +98,11 @@ def parse_args(argv=None):
         help="Step counts; each checkpoint is restored once for all counts.",
     )
     parser.add_argument(
+        "--test-only",
+        action="store_true",
+        help="Evaluate only the held-out day and its test_times aggregate.",
+    )
+    parser.add_argument(
         "--euler",
         action="store_true",
         help="Select Euler for native flow matching or OTP-FM; MFM always uses Euler.",
@@ -297,6 +302,7 @@ def main(argv=None):
                         "n_steps_per_interval": n_steps,
                     },
                     progress=progress,
+                    test_only=args.test_only,
                 )
             )
         del loaded, sample
@@ -335,6 +341,12 @@ def main(argv=None):
                 "device": str(device),
                 "metric_space": "raw PCA100",
                 "n_steps_per_interval": args.n_steps_per_interval,
+                "test_only": args.test_only,
+                "evaluated_timepoints": (
+                    expected_marginals["test_times"]
+                    if args.test_only
+                    else expected_marginals["timepoints"]
+                ),
                 "dataset_locations": sorted(dataset_locations),
                 "protocols": {
                     "interval": "start from the real population at the preceding observed day"

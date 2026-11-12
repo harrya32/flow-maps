@@ -25,7 +25,7 @@ for directory in (
 ):
     sys.path.insert(0, str(directory))
 
-from common import cite_multi, maizels_torch_checkpoint as loader
+from common import cite_multi, maizels_torch_checkpoint as loader, wasserstein
 from launchers import eval_cite_multi
 from mfm.flow_matchers.ema import EMA
 from mfm.networks.flow_networks.mlp import VelocityNet
@@ -126,6 +126,69 @@ def read_csv(path):
 
 
 class TorchCheckpointTests(unittest.TestCase):
+    def test_test_only_keeps_the_test_metric_and_skips_observed_day_emd(self):
+        _, populations = fixture_data()
+        for backend in ("otpfm", "mfm"):
+            for omitted in ("3", "4"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write_dataset(root, "cite")
+                    path = (
+                        save_otpfm(root, omitted=omitted)
+                        if backend == "otpfm"
+                        else save_mfm(root, omitted=omitted)
+                    )
+                    out = root / "eval"
+                    with mock.patch.object(
+                        wasserstein, "exact_emd", wraps=wasserstein.exact_emd
+                    ) as scoring, contextlib.redirect_stdout(io.StringIO()):
+                        eval_cite_multi.main(
+                            [
+                                "--backend",
+                                backend,
+                                "--checkpoint",
+                                f"{backend}:4:{path}",
+                                "--dataset_location",
+                                str(root),
+                                "--device",
+                                "cpu",
+                                "--test-only",
+                                "--n_steps_per_interval",
+                                "1",
+                                "4",
+                                "--out_dir",
+                                str(out),
+                            ]
+                        )
+                    self.assertEqual(scoring.call_count, 2)
+                    rows = read_csv(out / "per_checkpoint.csv")
+                    self.assertEqual(len(rows), 4)
+                    self.assertEqual(
+                        {row["timepoint"] for row in rows}, {omitted, "test_times"}
+                    )
+                    previous = "2" if omitted == "3" else "3"
+                    for row in rows:
+                        if row["timepoint"] == omitted:
+                            self.assertEqual(row["source_timepoint"], previous)
+                            self.assertEqual(
+                                int(row["source_n"]), len(populations[previous])
+                            )
+                            self.assertEqual(
+                                int(row["target_n"]), len(populations[omitted])
+                            )
+                    metadata = json.loads((out / "metadata.json").read_text())
+                    self.assertTrue(metadata["test_only"])
+                    self.assertEqual(metadata["evaluated_timepoints"], [omitted])
+                    sampler = "flowmap" if backend == "otpfm" else "euler"
+                    records = json.loads((out / "metrics.json").read_text())
+                    self.assertTrue(
+                        all(
+                            f"final_eval/{sampler}_mean_emd_test_times"
+                            in record["metrics"]
+                            for record in records
+                        )
+                    )
+
     def test_all_datasets_folds_and_clocks_evaluate_all_marginals_without_training(
         self,
     ):

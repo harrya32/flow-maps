@@ -91,6 +91,7 @@ def evaluate_marginals(
     context: Dict,
     score: Callable = None,
     progress: Callable = None,
+    test_only: bool = False,
 ) -> List[Dict]:
     """Score each marginal from the real population at its preceding retained day."""
     if score is None:
@@ -115,10 +116,13 @@ def evaluate_marginals(
         }
         rows.append(row)
 
-    add_row(source_day, source_day, marginals.populations[source_day], 0.0)
+    if not test_only:
+        add_row(source_day, source_day, marginals.populations[source_day], 0.0)
 
     for left, right in zip(marginals.retained[:-1], marginals.retained[1:]):
         for index, day in enumerate(marginals.timepoints):
+            if test_only and day not in marginals.test_times:
+                continue
             if not (marginals.times[left] < marginals.times[day] <= marginals.times[right]):
                 continue
             kwargs = {
