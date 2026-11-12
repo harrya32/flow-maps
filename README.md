@@ -652,6 +652,73 @@ reports `final_eval/flowmap_mean_emd_test_times` for OTP-FM composition or
 `final_eval/euler_mean_emd_test_times` for Euler sampling. `--batch_size` controls
 inference memory use while preserving every source and target cell.
 
+For CITE/Multi deterministic checkpoints, use `py/launchers/eval_cite_multi.py`.
+It supports native JAX flow maps/flow matching (`--backend flowmaps`), OTP-FM
+(`--backend otpfm`), and metric flow matching (`--backend mfm`). It evaluates all
+cells at days 2, 3, 4 and 7, restarting each prediction from the real population
+at the preceding retained day. The `test_times` aggregate is the omitted day
+(3 or 4) in each leave-one-day-out task. Only the interval protocol and the
+selected sampler are reported, in raw PCA100 coordinates.
+
+```bash
+# Native plain-OT flow map: use the config module and preset used in training.
+python py/launchers/eval_cite_multi.py \
+    --backend flowmaps \
+    --checkpoint "ot_flow_map:4:/path/to/native/run_name_best.pkl" \
+    --cfg_path configs.cite_multi_pca100 --slurm_id 7 \
+    --dataset_name cite --heldout_day 4 --cite_multi_time_mode equal_time \
+    --dataset_location "$PWD" --device cuda \
+    --n_steps_per_interval 1 2 4 8 16 32 64 \
+    --out_dir /path/to/eval/cite_ot_flow_map_seed4
+
+python py/launchers/eval_cite_multi.py \
+    --backend otpfm \
+    --checkpoint "otpfm:4:/path/to/otpfm/run_name/models/best.pt" \
+    --dataset_location "$PWD" --device cuda \
+    --n_steps_per_interval 1 2 4 8 16 32 64 \
+    --out_dir /path/to/eval/cite_otpfm_seed4
+
+python py/launchers/eval_cite_multi.py \
+    --backend mfm \
+    --checkpoint "mfm:4:/path/to/mfm/flow_model/best.ckpt" \
+    --config_path /path/to/saved_mfm_training.yaml --heldout_day 4 \
+    --dataset_location "$PWD" --device cuda \
+    --n_steps_per_interval 1 2 4 8 16 32 64 \
+    --out_dir /path/to/eval/cite_mfm_seed4
+```
+
+Use `--euler` for native flow-matching checkpoints or to select OTP-FM Euler
+sampling; composed maps are otherwise the default. MFM always uses Euler.
+Native evaluation runs in the JAX training environment; OTP-FM/MFM run in their
+PyTorch environment. Native preset IDs are those of the chosen training config
+module, so `configs.cite_multi_pca100` ID 7 is the plain-OT flow map.
+
+The Torch backends discover the saved config as in Maizels evaluation. OTP-FM
+restores its saved normalization and evaluation EMA setting. MFM restores its
+flow network and EMA when present; if training used whitening, it reproduces
+the original all-row scaler and converts predictions back to raw PCA for EMD.
+When an MFM YAML covers both omitted-day folds, pass `--heldout_day 3` or `4`
+to identify this checkpoint's task. `--dataset_name multi` selects Multi when
+reconstructing a native config; Torch normally reads the dataset from its saved
+config. `--cite_multi_time_mode` overrides the saved clock when needed.
+
+For native checkpoints, a full saved JSON or W&B YAML config can be supplied
+with `--config_path` instead of reconstructing the module/preset. Native
+evaluation reproduces training's adaptive scale from compact OT pools or the
+same sampled/filtered training pairs. `--rescale X` uses a known training scale
+directly; reproducing filtered pairs requires the original classifier artifacts.
+Native parameters are instantaneous by default; `--ema_fac DECAY` selects a
+saved EMA. The Torch `--ema`/`--no-ema` overrides retain their Maizels behavior.
+
+Repeat `--checkpoint METHOD:SEED:PATH` for seeds of the same dataset, omitted
+day and clock. Each checkpoint is loaded once for all step counts.
+`per_checkpoint.csv`, `summary.csv`, `metrics.json` and `metadata.json` contain
+the per-day and `test_times` results, with standard deviations and standard
+errors across seeds. `metrics.json` includes
+`final_eval/flowmap_mean_emd_test_times` or
+`final_eval/euler_mean_emd_test_times`. `--batch_size` affects inference batching
+without subsampling either population.
+
 For CITE/Multi, `ot`/`ot_plain` and `ot_endpoint_interpolant` use fresh exact
 minibatch OT couplings during training. The OT size tracks
 `optimization.bs`; because each optimizer batch is balanced across two retained

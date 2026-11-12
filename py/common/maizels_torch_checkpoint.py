@@ -1,4 +1,4 @@
-"""Inference loaders for saved Maizels OTP-FM and MFM checkpoints."""
+"""OTP-FM/MFM inference loaders shared by Maizels and CITE/Multi evaluation."""
 
 from __future__ import annotations
 

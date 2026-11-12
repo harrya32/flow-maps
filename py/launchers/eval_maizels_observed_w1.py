@@ -29,6 +29,7 @@ import common.flow_map as flow_map
 import common.maizels as maizels
 import common.maizels_checkpoint_eval as checkpoint_eval
 import common.state_utils as state_utils
+from common.deterministic_checkpoint import pushforward as _pushforward
 
 
 def _checkpoint_spec(value: str) -> Tuple[str, int, Path]:
@@ -89,64 +90,6 @@ def _restore(checkpoint: Path, cfg, example: np.ndarray, ema_fac: float | None):
     if ema_fac is None:
         return net, state.params
     return net, state.ema_params.get(ema_fac, state.params)
-
-
-def _pushforward(
-    net,
-    params,
-    source: np.ndarray,
-    *,
-    start_time: float,
-    end_time: float,
-    n_steps: int,
-    batch_size: int,
-    euler: bool = False,
-) -> np.ndarray:
-    """Use exactly n_steps composed maps, or explicit Euler vector-field steps."""
-    if n_steps <= 0 or batch_size <= 0:
-        raise ValueError("n_steps and batch_size must be positive.")
-    if end_time < start_time:
-        raise ValueError("end_time must be greater than or equal to start_time.")
-    if end_time == start_time:
-        return np.asarray(source, dtype=np.float32).copy()
-    times = jnp.linspace(start_time, end_time, n_steps + 1, dtype=jnp.float32)
-
-    @jax.jit
-    def run_batch(x):
-        def step(current, interval):
-            left, right = interval
-            if euler:
-                velocity = jax.vmap(
-                    lambda point: net.apply(
-                        params, left, point, label=None, train=False,
-                        calc_weight=False, method="calc_b",
-                    )
-                )(current)
-                result = current + (right - left) * velocity
-            else:
-                result = jax.vmap(
-                    lambda point: net.apply(
-                        params,
-                        left,
-                        right,
-                        point,
-                        label=None,
-                        train=False,
-                        calc_weight=False,
-                        return_X_and_phi=False,
-                    )
-                )(current)
-            return result, None
-
-        result, _ = jax.lax.scan(step, x, (times[:-1], times[1:]))
-        return result
-
-    source = np.asarray(source, dtype=np.float32)
-    pieces = []
-    for start in range(0, source.shape[0], batch_size):
-        result = run_batch(jnp.asarray(source[start : start + batch_size]))
-        pieces.append(np.asarray(jax.device_get(result), dtype=np.float32))
-    return np.concatenate(pieces, axis=0)
 
 
 def main() -> None:
