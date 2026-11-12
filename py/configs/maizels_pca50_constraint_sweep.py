@@ -100,13 +100,14 @@ VARIANTS = [
         "velocity_rollout_loss_scope": "endpoints",
     },
     {
-        "mode": "bio_prior_ot_constrained_flow_matching_w350_e001",
+        "mode": "bio_prior_ot_constrained_flow_matching_w1000_e0",
         "base_slurm_id": 2,
         "pair_mode": "ot_endpoint_interpolant",
         "constraints_enabled": True,
         "path_mode": "velocity_loss_points_nll",
-        "weight": 350.0,
-        "loss_point_entropy_weight": 0.01,
+        "weight": 1000.0,
+        "loss_point_entropy_weight": 0.0,
+        "learning_rate": 0.0003,
         "diag_fraction": 1.0,
         "velocity_rollout_loss_scope": "endpoints",
     },
@@ -153,7 +154,9 @@ def get_config(
         maizels_schedule=maizels_schedule,
         maizels_time_mode=maizels_time_mode,
         hparam_val_times=hparam_val_times,
-        learning_rate=learning_rate,
+        learning_rate=(
+            learning_rate if learning_rate is not None else variant.get("learning_rate")
+        ),
         seed=seed,
     )
     seed = int(
@@ -209,7 +212,9 @@ def get_config(
         "velocity_rollout_max_steps",
         getattr(cfg.constraints, "velocity_rollout_max_steps", 0),
     )
-    cfg.optimization.diag_fraction = variant.get("diag_fraction", 0.75)
+    cfg.optimization.diag_fraction = variant.get(
+        "diag_fraction", cfg.optimization.diag_fraction
+    )
 
     mode = variant["mode"]
     run_name = f"maizels_pca50_{mode}_seed{seed}"
