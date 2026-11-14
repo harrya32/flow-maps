@@ -673,6 +673,23 @@ reports `final_eval/flowmap_mean_emd_test_times` for OTP-FM composition or
 `final_eval/euler_maruyama_mean_emd_test_times` for SF2M. `--batch_size` controls
 inference memory use while preserving every source and target cell.
 
+To turn one method's sampling sweep into a single CSV row, run:
+
+```bash
+python scripts/summarize_sampling_eval.py /path/to/sampling_eval
+```
+
+This writes `sampling_summary.csv` inside that folder, with columns `method`,
+`1 sample`, `2 samples`, `4 samples`, `8 samples`, `16 samples`, `32 samples`,
+and `64 samples`. Each value is the interval `test_times` mean EMD from the
+evaluator's `summary.csv`. It supports a single file containing every step count
+and separate files in step-count subdirectories, including stochastic results
+whose noise draws have already been averaged. Missing counts are left empty.
+Use `--method "Display name"` to rename the row, `--output /path/to/table.csv`
+to change the destination, or `--sampler flowmap`, `euler`, or `euler_maruyama`
+if the folder contains more than one sampler. The script uses only Python's
+standard library.
+
 For CITE/Multi deterministic checkpoints, use `py/launchers/eval_cite_multi.py`.
 It supports native JAX flow maps/flow matching (`--backend flowmaps`), OTP-FM
 (`--backend otpfm`), and metric flow matching (`--backend mfm`). It evaluates all
