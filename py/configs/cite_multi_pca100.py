@@ -208,7 +208,7 @@ def get_config(
 
     cfg.optimization.total_steps = 10_000
 
-    cfg.constraints.loss_point_entropy_weight = 0.1
+    cfg.constraints.loss_point_entropy_weight = 0.0
     cfg.constraints.weight = 1000.0
 
     cfg.logging.visual_ema_factor = None

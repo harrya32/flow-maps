@@ -1,10 +1,11 @@
-"""OTP-FM/MFM inference loaders shared by Maizels and CITE/Multi evaluation."""
+"""OTP-FM/MFM/SF2M inference loaders for cell-data checkpoint evaluation."""
 
 from __future__ import annotations
 
 from argparse import Namespace
 from collections import OrderedDict
 from collections.abc import Mapping
+import csv
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -224,16 +225,75 @@ class MFMSampler:
         return prediction
 
 
-def _mfm_checkpoint(path, payload, config, config_source, device, batch_size, ema):
+class SF2MSampler:
+    """Euler--Maruyama with the saved probability-flow velocity and score.
+
+    Generate each step's Brownian increment for the whole population before
+    batching network inference. This preserves the random stream when the
+    inference batch size changes and leaves the caller's source cells intact.
+    """
+
+    def __init__(self, velocity, score, dimension, device, batch_size, sigma):
+        self.velocity = velocity
+        self.score = score
+        self.dimension = dimension
+        self.device = device
+        self.batch_size = batch_size
+        self.sigma = float(sigma)
+        if not np.isfinite(self.sigma) or self.sigma <= 0.0:
+            raise ValueError("SF2M diffusion sigma must be finite and positive.")
+
+    @torch.inference_mode()
+    def sample(
+        self, source, *, start_time, end_time, n_steps,
+        sampler="euler_maruyama", seed=2701,
+    ):
+        if sampler != "euler_maruyama":
+            raise ValueError("SF2M supports Euler--Maruyama sampling.")
+        start_time, end_time = float(start_time), float(end_time)
+        if (
+            n_steps <= 0 or self.batch_size <= 0
+            or not np.isfinite([start_time, end_time]).all()
+            or not 0.0 <= start_time <= end_time <= 1.0
+        ):
+            raise ValueError("SF2M sampling requires positive steps/batches and 0 <= start <= end <= 1.")
+        source = np.asarray(source, dtype=np.float32)
+        if source.ndim != 2 or not len(source) or source.shape[1] != self.dimension:
+            raise ValueError("SF2M source population has the wrong shape or is empty.")
+        if not np.isfinite(source).all():
+            raise ValueError("SF2M source population must be finite.")
+        if end_time == start_time:
+            return source.copy()
+        # as_tensor shares the NumPy buffer on CPU; clone before in-place updates.
+        state = torch.as_tensor(source, device=self.device).clone()
+        dt = (end_time - start_time) / int(n_steps)
+        generator = torch.Generator(device="cpu").manual_seed(int(seed))
+        for step in range(int(n_steps)):
+            noise = torch.randn(
+                state.shape, generator=generator, dtype=state.dtype, device="cpu",
+            ).to(self.device)
+            for left in range(0, len(state), self.batch_size):
+                right = left + self.batch_size
+                x = state[left:right]
+                t = torch.full(
+                    (len(x), 1), start_time + step * dt,
+                    dtype=x.dtype, device=self.device,
+                )
+                drift = self.velocity(t, x) + 0.5 * self.sigma**2 * self.score(t, x)
+                state[left:right] = x + dt * drift + self.sigma * np.sqrt(dt) * noise[left:right]
+            if not torch.isfinite(state).all():
+                raise FloatingPointError(f"Non-finite SF2M predictions at sampling step {step + 1}.")
+        return state.cpu().numpy()
+
+
+def _velocity_network(state, prefix, config, device, ema, label):
+    """Restore one VelocityNet, including its own EMA shadow parameters."""
     from mfm.networks.flow_networks.mlp import VelocityNet
     from mfm.flow_matchers.ema import EMA
 
-    state = payload.get("state_dict", {})
-    if config.get("sf2m") or any(key.startswith("score_net.") for key in state):
-        raise ValueError("SF2M checkpoints require a stochastic evaluator; this backend is for MFM.")
-    flow_state = {key[len("flow_net."):]: value for key, value in state.items() if key.startswith("flow_net.")}
+    flow_state = {key[len(prefix):]: value for key, value in state.items() if key.startswith(prefix)}
     if not flow_state:
-        raise ValueError(f"No flow_net weights found in {path}; select the flow_model checkpoint.")
+        raise ValueError(f"No {prefix.rstrip('.')} weights found; select the flow_model checkpoint.")
     has_ema = any(key.startswith("shadow_params.") for key in flow_state)
     raw_state = (
         {key[len("model."):]: value for key, value in flow_state.items() if key.startswith("model.")}
@@ -245,12 +305,12 @@ def _mfm_checkpoint(path, payload, config, config_source, device, batch_size, em
         if (match := re.fullmatch(r"model\.(\d+)\.weight", key)) and value.ndim == 2
     )
     if not linear_weights:
-        raise ValueError("The MFM checkpoint does not contain a supported VelocityNet MLP.")
+        raise ValueError(f"The {label} checkpoint does not contain a supported VelocityNet MLP.")
     dimension = int(linear_weights[-1][1].shape[0])
     hidden_dims = [int(weight.shape[0]) for _, weight in linear_weights[:-1]]
     if int(config.get("dim", dimension)) != dimension or list(config.get("hidden_dims_flow", hidden_dims)) != hidden_dims:
         raise ValueError(
-            f"MFM training config does not match checkpoint architecture: "
+            f"{label} training config does not match checkpoint architecture: "
             f"dim={dimension}, hidden_dims_flow={hidden_dims}."
         )
     model = VelocityNet(
@@ -259,7 +319,7 @@ def _mfm_checkpoint(path, payload, config, config_source, device, batch_size, em
     )
     use_ema = has_ema if ema is None else bool(ema)
     if use_ema and not has_ema:
-        raise ValueError("The MFM checkpoint has no EMA weights.")
+        raise ValueError(f"The {label} {prefix.rstrip('.')} checkpoint has no EMA weights.")
     if use_ema:
         model = EMA(model, decay=float(config.get("ema_decay") or 0.999))
         model.load_state_dict(flow_state, strict=True)
@@ -267,6 +327,16 @@ def _mfm_checkpoint(path, payload, config, config_source, device, batch_size, em
         model.load_state_dict(raw_state, strict=True)
     model = model.to(device)
     model.eval()
+    return model, dimension, hidden_dims, use_ema
+
+
+def _mfm_checkpoint(path, payload, config, config_source, device, batch_size, ema):
+    state = payload.get("state_dict", {})
+    if config.get("sf2m") or any(key.startswith("score_net.") for key in state):
+        raise ValueError("SF2M checkpoints require --backend sf2m; this backend is for MFM.")
+    model, dimension, hidden_dims, use_ema = _velocity_network(
+        state, "flow_net.", config, device, ema, "MFM",
+    )
     return TorchCheckpoint(
         MFMSampler(model, dimension, device, batch_size), config, dimension,
         {
@@ -279,6 +349,73 @@ def _mfm_checkpoint(path, payload, config, config_source, device, batch_size, em
     )
 
 
+def _sf2m_checkpoint(path, payload, config, config_source, device, batch_size, ema):
+    if config.get("mfm") or config.get("sf2m") is False:
+        raise ValueError("The SF2M backend requires an SF2M checkpoint (sf2m=true, mfm=false).")
+    if "sf2m_sigma" not in config:
+        raise ValueError("Saved sf2m_sigma is required to reconstruct SF2M diffusion.")
+    state = payload.get("state_dict", {})
+    velocity, dimension, hidden_dims, flow_ema = _velocity_network(
+        state, "flow_net.", config, device, ema, "SF2M",
+    )
+    score, score_dimension, score_hidden_dims, score_ema = _velocity_network(
+        state, "score_net.", config, device, ema, "SF2M",
+    )
+    if score_dimension != dimension:
+        raise ValueError("SF2M velocity and score output dimensions differ.")
+    if flow_ema != score_ema:
+        raise ValueError("SF2M velocity and score have inconsistent EMA weights; use --no-ema for both.")
+    sampler = SF2MSampler(
+        velocity, score, dimension, device, batch_size, config["sf2m_sigma"],
+    )
+    return TorchCheckpoint(sampler, config, dimension, {
+        "backend": "sf2m", "config_path": config_source,
+        "parameters": "EMA" if flow_ema else "instantaneous",
+        "dimension": dimension, "hidden_dims_flow": hidden_dims,
+        "hidden_dims_score": score_hidden_dims,
+        "activation_flow": config.get("activation_flow", "selu"),
+        "sf2m_sigma": sampler.sigma, "global_step": payload.get("global_step"),
+    })
+
+
+def checkpoints_from_sweep(root, backend, seeds=None):
+    """Find validation-selected checkpoints recorded by the MFM/SF2M runner."""
+    root = Path(root).expanduser().resolve()
+    selected_seeds = None if seeds is None else set(seeds)
+    checkpoints = {}
+    with (root / "results.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    for row in rows:
+        if row.get("status") != "complete" or row.get("method") != backend:
+            continue
+        seed = int(row["seed"])
+        if selected_seeds is not None and seed not in selected_seeds:
+            continue
+        if seed in checkpoints:
+            raise ValueError(f"Multiple completed {backend} configurations for seed {seed}; use explicit --checkpoint paths.")
+        metrics_path = Path(row["metrics_json"]).expanduser()
+        metrics = json.loads(metrics_path.read_text())
+        checkpoint_path = metrics.get("final_eval/best_checkpoint_path")
+        if checkpoint_path:
+            checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+        else:
+            candidates = sorted(
+                path for path in Path(row["run_output_folder"]).rglob("*.ckpt")
+                if path.parent.name == "flow_model" and path.name != "last.ckpt"
+            )
+            if len(candidates) != 1:
+                raise ValueError(f"Cannot identify one best {backend} checkpoint for seed {seed}; use --checkpoint.")
+            checkpoint_path = candidates[0].resolve()
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"Recorded best checkpoint is missing: {checkpoint_path}")
+        checkpoints[seed] = (backend, seed, checkpoint_path)
+    if selected_seeds is not None and selected_seeds != set(checkpoints):
+        raise ValueError(f"No completed {backend} runs for seeds {sorted(selected_seeds - set(checkpoints))}.")
+    if not checkpoints:
+        raise ValueError(f"No completed {backend} checkpoints in {root / 'results.csv'}.")
+    return [checkpoints[seed] for seed in sorted(checkpoints)]
+
+
 def load_checkpoint(
     backend: str,
     path: Path,
@@ -288,7 +425,7 @@ def load_checkpoint(
     config_path=None,
     ema: Optional[bool] = None,
 ) -> TorchCheckpoint:
-    if backend not in ("otpfm", "mfm"):
+    if backend not in ("otpfm", "mfm", "sf2m"):
         raise ValueError(f"Unsupported checkpoint backend {backend!r}.")
     if batch_size <= 0:
         raise ValueError("Sampling batch size must be positive.")
@@ -297,5 +434,5 @@ def load_checkpoint(
     if not isinstance(payload, dict):
         raise ValueError(f"Expected a checkpoint mapping in {path}.")
     config, source = _checkpoint_config(backend, path, payload, config_path)
-    loader = _otpfm_checkpoint if backend == "otpfm" else _mfm_checkpoint
+    loader = {"otpfm": _otpfm_checkpoint, "mfm": _mfm_checkpoint, "sf2m": _sf2m_checkpoint}[backend]
     return loader(path, payload, config, source, device, batch_size, ema)
