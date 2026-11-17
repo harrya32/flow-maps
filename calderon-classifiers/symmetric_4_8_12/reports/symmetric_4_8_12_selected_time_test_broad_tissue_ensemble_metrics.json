@@ -1,0 +1,93 @@
+{
+  "method": "ensemble",
+  "target": "broad_tissue",
+  "variant": "symmetric_4_8_12_selected_time_test",
+  "class_names": [
+    "Amnioserosa",
+    "Brain",
+    "Crystal cells",
+    "Ectoderm",
+    "Epidermis",
+    "Fat body",
+    "Fore & hindgut",
+    "Germ",
+    "Mesoderm",
+    "Midgut",
+    "Midline/glia",
+    "Muscle",
+    "Muscle/Ubi",
+    "Neural",
+    "Plasmatocytes",
+    "Salivary gland",
+    "Sense",
+    "Somatic muscle",
+    "Tracheal sys.",
+    "Unknown",
+    "Ventral nerve cord",
+    "Visceral muscle",
+    "Yolk"
+  ],
+  "validation": {
+    "n_cells": 16221,
+    "n_present_classes": 23,
+    "n_output_classes": 23,
+    "accuracy": 0.7702977621601628,
+    "balanced_accuracy": 0.7629925914114699,
+    "macro_f1": 0.7487105909480539,
+    "weighted_f1": 0.7697090068310692,
+    "top3_accuracy": 0.9315085383145305,
+    "log_loss": 0.7065200171329048,
+    "majority_training_class_accuracy": 0.18790456815239504,
+    "confidence_subsets": {
+      "0.8": {
+        "coverage": 0.5791258245484249,
+        "accuracy": 0.9457100276772408,
+        "n_cells": 9394
+      },
+      "0.9": {
+        "coverage": 0.47284384439923555,
+        "accuracy": 0.9713168187744459,
+        "n_cells": 7670
+      }
+    },
+    "expected_calibration_error_15bins": 0.010790506533869143,
+    "macro_average_scope": "Classes present in this evaluated split"
+  },
+  "test": {
+    "n_cells": 16221,
+    "n_present_classes": 23,
+    "n_output_classes": 23,
+    "accuracy": 0.754823993588558,
+    "balanced_accuracy": 0.7481112883903195,
+    "macro_f1": 0.7328051215653282,
+    "weighted_f1": 0.7543298887063947,
+    "top3_accuracy": 0.9283028173355526,
+    "log_loss": 0.7294989607543519,
+    "majority_training_class_accuracy": 0.18790456815239504,
+    "confidence_subsets": {
+      "0.8": {
+        "coverage": 0.5792491215091548,
+        "accuracy": 0.9384844614729673,
+        "n_cells": 9396
+      },
+      "0.9": {
+        "coverage": 0.47056285062573205,
+        "accuracy": 0.9675094982313638,
+        "n_cells": 7633
+      }
+    },
+    "expected_calibration_error_15bins": 0.02185496020409676,
+    "macro_average_scope": "Classes present in this evaluated split"
+  },
+  "selected": true,
+  "best_expressive": false,
+  "selection_sha256": "87110c9967b8732038e9da19c71f8b8424ff12511fe772e3a8203d575d73687b",
+  "cell_and_split_sha256": "59b796998413ec2d26dcaa15e065a0b382abf144b96c996aa5f3e2ab5c2a839d",
+  "selection_metric": "Selected-time validation macro-F1; ties use validation cross entropy",
+  "test_used_for_selection": false,
+  "members": [
+    "residual_mixup_ema",
+    "joint"
+  ],
+  "temperature": 0.9312772057531051
+}

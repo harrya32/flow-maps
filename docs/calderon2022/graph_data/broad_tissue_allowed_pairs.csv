@@ -1,0 +1,72 @@
+source,target
+Amnioserosa,Amnioserosa
+Blastoderm,Blastoderm
+Blastoderm,Ectoderm
+Blastoderm,Germ
+Blastoderm,Unknown
+Brain,Brain
+Crystal cells,Crystal cells
+Ectoderm,Brain
+Ectoderm,Ectoderm
+Ectoderm,Epidermis
+Ectoderm,Mesoderm
+Ectoderm,Midline/glia
+Ectoderm,Neural
+Ectoderm,Plasmatocytes
+Ectoderm,Somatic muscle
+Ectoderm,Tracheal sys.
+Ectoderm,Visceral muscle
+Epidermis,Epidermis
+Epidermis,Fore & hindgut
+Epidermis,Neural
+Epidermis,Sense
+Fat body,Fat body
+Fore & hindgut,Fat body
+Fore & hindgut,Fore & hindgut
+Germ,Germ
+Mesoderm,Brain
+Mesoderm,Mesoderm
+Mesoderm,Plasmatocytes
+Mesoderm,Somatic muscle
+Mesoderm,Visceral muscle
+Midgut,Midgut
+Midgut,Salivary gland
+Midline/glia,Midline/glia
+Muscle,Muscle
+Muscle/Ubi,Muscle/Ubi
+Neural,Neural
+Plasmatocytes,Plasmatocytes
+Salivary gland,Salivary gland
+Sense,Sense
+Somatic muscle,Brain
+Somatic muscle,Neural
+Somatic muscle,Plasmatocytes
+Somatic muscle,Somatic muscle
+Somatic muscle,Ventral nerve cord
+Tracheal sys.,Tracheal sys.
+Unknown,Amnioserosa
+Unknown,Brain
+Unknown,Crystal cells
+Unknown,Ectoderm
+Unknown,Epidermis
+Unknown,Fat body
+Unknown,Fore & hindgut
+Unknown,Mesoderm
+Unknown,Midgut
+Unknown,Midline/glia
+Unknown,Muscle
+Unknown,Muscle/Ubi
+Unknown,Neural
+Unknown,Plasmatocytes
+Unknown,Salivary gland
+Unknown,Sense
+Unknown,Somatic muscle
+Unknown,Tracheal sys.
+Unknown,Unknown
+Unknown,Ventral nerve cord
+Unknown,Visceral muscle
+Ventral nerve cord,Neural
+Ventral nerve cord,Ventral nerve cord
+Visceral muscle,Brain
+Visceral muscle,Visceral muscle
+Yolk,Yolk

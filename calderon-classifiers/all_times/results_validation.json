@@ -1,0 +1,49 @@
+{
+  "status": "passed",
+  "all_cell_unsupervised_fit_verified": true,
+  "classifier_label_splits_disjoint": true,
+  "all_classes_and_times_present": true,
+  "selected_checkpoints_use_validation_only": true,
+  "test_metrics_recomputed": true,
+  "selected_manifests_reloaded_and_verified": [
+    {
+      "target": "branch_id",
+      "selected_manifest_sha256": "0e99d7a93aee6e5020c1f08b18a904f7920a3272319c30ee48c9a93c5a4b0438",
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0,
+      "n_test_cells": 31439,
+      "n_test_classes": 53
+    },
+    {
+      "target": "broad_tissue",
+      "selected_manifest_sha256": "0513384ee9e4153f72881d1481d3a701f129ca64f5f086340ecbc57196d63690",
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0,
+      "n_test_cells": 31439,
+      "n_test_classes": 24
+    }
+  ],
+  "source_counts_and_previous_representations_unchanged": true,
+  "n_cells": 314387,
+  "split_sizes": {
+    "train": 251509,
+    "validation": 31439,
+    "test": 31439
+  },
+  "selection_sha256": "c77aab20d9f5c790287d29e7425bca011a79b750aeaa308775a7eba3c3723a6d",
+  "representation_fit_includes_validation_test_expressions": true,
+  "max_absolute_proportion_difference_pp": {
+    "branch_id": {
+      "validation": 0.0018715374211115687,
+      "test": 0.0016031444082009738
+    },
+    "broad_tissue": {
+      "validation": 0.002099622918814603,
+      "test": 0.0025042055557742415
+    },
+    "day": {
+      "validation": 0.3039048646048741,
+      "test": 0.23337427065009386
+    }
+  }
+}

@@ -1,0 +1,471 @@
+{
+  "status": "Preliminary reconstruction, not the complete weighted Figure 3C RNA edge export.",
+  "scope": {
+    "modality": "RNA",
+    "inferred_age_hours": [
+      0,
+      18
+    ],
+    "annotated_temporal_states": 184,
+    "assigned_cells": 314387,
+    "all_atlas_annotation_strings": 51,
+    "assigned_subset_annotation_strings": 49,
+    "annotation_strings_without_assigned_branch": [
+      "ectoderm anlage",
+      "proventriculus"
+    ],
+    "branches_containing_multiple_annotation_strings": 32,
+    "duplicate_decoder_lines": [
+      "Ubi_AAAB"
+    ],
+    "ambiguous_parent_assignments": [
+      {
+        "child": "6-8:3",
+        "candidate_parents": [
+          "4-6:1",
+          "4-6:10",
+          "4-6:16",
+          "4-6:5"
+        ]
+      },
+      {
+        "child": "16-18:2",
+        "candidate_parents": [
+          "14-16:3",
+          "14-16:33"
+        ]
+      }
+    ],
+    "gap_bridges": [
+      {
+        "source": "2-4:5",
+        "target": "6-8:23",
+        "time_gap_hours": 4
+      }
+    ],
+    "unconnected_states_after_initial_window": [],
+    "states_with_mixed_annotation_comments": [
+      "6-8:1",
+      "6-8:18",
+      "8-10:7",
+      "8-10:12",
+      "8-10:28",
+      "10-12:5"
+    ],
+    "uncertain_link_sensitivity": {
+      "rule": "Remove every ambiguous-parent edge and the inferred gap bridge; retain all nodes.",
+      "temporal_edges": 178,
+      "cell_state_edges": 72,
+      "cell_state_cyclic_groups": [
+        [
+          "brain",
+          "brain primordium",
+          "epidermis primordium",
+          "muscle",
+          "sensory nervous system",
+          "somatic muscle",
+          "somatic muscle primordium",
+          "trunk mesoderm primordium",
+          "ubiquitous",
+          "ventral nerve cord"
+        ],
+        [
+          "peripheral nervous system",
+          "sensory nervous system primordium"
+        ]
+      ],
+      "projected_allowed_nonself_pairs": 222
+    }
+  },
+  "metrics": {
+    "branches": {
+      "nodes": 53,
+      "nonself_edges": 50,
+      "weak_components": 3,
+      "roots": 3,
+      "leaves": 31,
+      "nodes_with_multiple_children": 14,
+      "nodes_with_multiple_parents": 0,
+      "max_children": 6,
+      "is_dag": true,
+      "longest_dag_path_edges": 5,
+      "longest_dag_path": [
+        "Ubi_0",
+        "Ubi_A",
+        "Ubi_AA",
+        "Ubi_AAB",
+        "Ubi_AABA",
+        "Ubi_AABAA"
+      ],
+      "cyclic_groups": [],
+      "cyclic_nodes": 0,
+      "condensation_nodes": 53,
+      "condensation_longest_path_edges": 5,
+      "projected_allowed_nonself_pairs": 137,
+      "projected_allowed_pairs_with_self": 190,
+      "projected_nonself_support_fraction": 0.04970972423802612,
+      "closure_of_merged_edges_nonself_pairs": 137,
+      "extra_pairs_created_by_second_closure": 0,
+      "extra_pair_examples": [],
+      "temporally_witnessed_nonself_branch_pairs": 137,
+      "prefix_pairs_not_witnessed_in_temporal_reconstruction": 0
+    },
+    "cell_states": {
+      "nodes": 49,
+      "nonself_edges": 73,
+      "weak_components": 1,
+      "roots": 1,
+      "leaves": 11,
+      "nodes_with_multiple_children": 20,
+      "nodes_with_multiple_parents": 14,
+      "max_children": 6,
+      "is_dag": false,
+      "longest_dag_path_edges": null,
+      "longest_dag_path": null,
+      "cyclic_groups": [
+        [
+          "brain",
+          "brain primordium",
+          "epidermis primordium",
+          "muscle",
+          "sensory nervous system",
+          "somatic muscle",
+          "somatic muscle primordium",
+          "trunk mesoderm primordium",
+          "ubiquitous",
+          "ventral nerve cord"
+        ],
+        [
+          "peripheral nervous system",
+          "sensory nervous system primordium"
+        ]
+      ],
+      "cyclic_nodes": 12,
+      "condensation_nodes": 39,
+      "condensation_longest_path_edges": 10,
+      "projected_allowed_nonself_pairs": 222,
+      "projected_allowed_pairs_with_self": 271,
+      "projected_nonself_support_fraction": 0.09438775510204081,
+      "closure_of_merged_edges_nonself_pairs": 604,
+      "extra_pairs_created_by_second_closure": 382,
+      "extra_pair_examples": [
+        [
+          "anlage in statu nascendi",
+          "epidermis primordium"
+        ],
+        [
+          "anlage in statu nascendi",
+          "plasmatocytes"
+        ],
+        [
+          "anlage in statu nascendi",
+          "plasmatocytes anlage"
+        ],
+        [
+          "anlage in statu nascendi",
+          "somatic muscle"
+        ],
+        [
+          "anlage in statu nascendi",
+          "somatic muscle primordium"
+        ],
+        [
+          "anlage in statu nascendi",
+          "spiracle (tracheal system)"
+        ],
+        [
+          "anlage in statu nascendi",
+          "spiracles (tracheal system)"
+        ],
+        [
+          "anlage in statu nascendi",
+          "tracheal primordium"
+        ],
+        [
+          "anlage in statu nascendi",
+          "tracheal system"
+        ],
+        [
+          "anlage in statu nascendi",
+          "unknown"
+        ],
+        [
+          "anlage in statu nascendi",
+          "ventral nerve cord"
+        ],
+        [
+          "anlage in statu nascendi",
+          "visceral muscle"
+        ],
+        [
+          "brain",
+          "brain primordium"
+        ],
+        [
+          "brain",
+          "crystal cell"
+        ],
+        [
+          "brain",
+          "epidermis"
+        ],
+        [
+          "brain",
+          "epidermis primordium"
+        ],
+        [
+          "brain",
+          "foregut / hindgut / anal pad"
+        ],
+        [
+          "brain",
+          "muscle"
+        ],
+        [
+          "brain",
+          "plasmatocytes"
+        ],
+        [
+          "brain",
+          "plasmatocytes anlage"
+        ],
+        [
+          "brain",
+          "procrystal cell"
+        ],
+        [
+          "brain",
+          "salivary gland"
+        ],
+        [
+          "brain",
+          "somatic muscle"
+        ],
+        [
+          "brain",
+          "somatic muscle primordium"
+        ],
+        [
+          "brain",
+          "spiracle (tracheal system)"
+        ]
+      ]
+    },
+    "broad_tissues": {
+      "nodes": 24,
+      "nonself_edges": 30,
+      "weak_components": 2,
+      "roots": 2,
+      "leaves": 14,
+      "nodes_with_multiple_children": 6,
+      "nodes_with_multiple_parents": 6,
+      "max_children": 11,
+      "is_dag": true,
+      "longest_dag_path_edges": 6,
+      "longest_dag_path": [
+        "Blastoderm",
+        "Unknown",
+        "Ectoderm",
+        "Mesoderm",
+        "Somatic muscle",
+        "Ventral nerve cord",
+        "Neural"
+      ],
+      "cyclic_groups": [],
+      "cyclic_nodes": 0,
+      "condensation_nodes": 24,
+      "condensation_longest_path_edges": 6,
+      "projected_allowed_nonself_pairs": 47,
+      "projected_allowed_pairs_with_self": 71,
+      "projected_nonself_support_fraction": 0.08514492753623189,
+      "closure_of_merged_edges_nonself_pairs": 73,
+      "extra_pairs_created_by_second_closure": 26,
+      "extra_pair_examples": [
+        [
+          "Blastoderm",
+          "Amnioserosa"
+        ],
+        [
+          "Blastoderm",
+          "Brain"
+        ],
+        [
+          "Blastoderm",
+          "Crystal cells"
+        ],
+        [
+          "Blastoderm",
+          "Epidermis"
+        ],
+        [
+          "Blastoderm",
+          "Fat body"
+        ],
+        [
+          "Blastoderm",
+          "Fore & hindgut"
+        ],
+        [
+          "Blastoderm",
+          "Mesoderm"
+        ],
+        [
+          "Blastoderm",
+          "Midgut"
+        ],
+        [
+          "Blastoderm",
+          "Midline/glia"
+        ],
+        [
+          "Blastoderm",
+          "Muscle"
+        ],
+        [
+          "Blastoderm",
+          "Muscle/Ubi"
+        ],
+        [
+          "Blastoderm",
+          "Neural"
+        ],
+        [
+          "Blastoderm",
+          "Plasmatocytes"
+        ],
+        [
+          "Blastoderm",
+          "Salivary gland"
+        ],
+        [
+          "Blastoderm",
+          "Sense"
+        ],
+        [
+          "Blastoderm",
+          "Somatic muscle"
+        ],
+        [
+          "Blastoderm",
+          "Tracheal sys."
+        ],
+        [
+          "Blastoderm",
+          "Ventral nerve cord"
+        ],
+        [
+          "Blastoderm",
+          "Visceral muscle"
+        ],
+        [
+          "Ectoderm",
+          "Fat body"
+        ],
+        [
+          "Ectoderm",
+          "Fore & hindgut"
+        ],
+        [
+          "Ectoderm",
+          "Sense"
+        ],
+        [
+          "Ectoderm",
+          "Ventral nerve cord"
+        ],
+        [
+          "Epidermis",
+          "Fat body"
+        ],
+        [
+          "Mesoderm",
+          "Neural"
+        ]
+      ]
+    },
+    "temporal_source": {
+      "nodes": 184,
+      "nonself_edges": 185,
+      "weak_components": 3,
+      "roots": 3,
+      "leaves": 43,
+      "nodes_with_multiple_children": 26,
+      "nodes_with_multiple_parents": 2,
+      "max_children": 6,
+      "is_dag": true,
+      "longest_dag_path_edges": 8,
+      "longest_dag_path": [
+        "0-2:2",
+        "2-4:16",
+        "4-6:20",
+        "6-8:7",
+        "8-10:2",
+        "10-12:7",
+        "12-14:13",
+        "14-16:13",
+        "16-18:26"
+      ],
+      "cyclic_groups": [],
+      "cyclic_nodes": 0,
+      "condensation_nodes": 184,
+      "condensation_longest_path_edges": 8
+    },
+    "maizels": {
+      "nodes": 9,
+      "nonself_edges": 8,
+      "weak_components": 1,
+      "roots": 1,
+      "leaves": 4,
+      "nodes_with_multiple_children": 3,
+      "nodes_with_multiple_parents": 0,
+      "max_children": 2,
+      "is_dag": true,
+      "longest_dag_path_edges": 4,
+      "longest_dag_path": [
+        "NMP",
+        "Early_Neural",
+        "Neural",
+        "pMN",
+        "MN"
+      ],
+      "cyclic_groups": [],
+      "cyclic_nodes": 0,
+      "condensation_nodes": 9,
+      "condensation_longest_path_edges": 4
+    },
+    "cite_multi": {
+      "nodes": 7,
+      "nonself_edges": 6,
+      "weak_components": 1,
+      "roots": 1,
+      "leaves": 6,
+      "nodes_with_multiple_children": 1,
+      "nodes_with_multiple_parents": 0,
+      "max_children": 6,
+      "is_dag": true,
+      "longest_dag_path_edges": 1,
+      "longest_dag_path": [
+        "HSC",
+        "BP"
+      ],
+      "cyclic_groups": [],
+      "cyclic_nodes": 0,
+      "condensation_nodes": 7,
+      "condensation_longest_path_edges": 1
+    }
+  },
+  "sources": [
+    {
+      "path": "docs/calderon2022/table_s1_withLineage.xlsx",
+      "sha256": "2f2df089adf0171359d4010a6c0dcee7bf80f5c0c890618c1324dfa3ec1990d0"
+    },
+    {
+      "path": "docs/calderon2022/celltype_list_rna.txt",
+      "sha256": "1f91468b31de264de7ed10f05c05f1219737d1316698aea6e98e61c349c29377"
+    },
+    {
+      "path": "docs/calderon2022/inspection.json",
+      "sha256": "023326d04ddd2b926885eb129bbd37b3faca9f3d60d2813893efd06b2976cbcd"
+    }
+  ]
+}

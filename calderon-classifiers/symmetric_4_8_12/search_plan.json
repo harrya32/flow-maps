@@ -1,0 +1,79 @@
+{
+  "variant": "symmetric_4_8_12",
+  "target": "broad_tissue",
+  "requested_recipes": [
+    "wide",
+    "wide_balanced",
+    "residual",
+    "residual_mixup_ema",
+    "joint"
+  ],
+  "recipes": {
+    "wide": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "wide_balanced": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.5,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "residual": {
+      "family": "residual",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "residual_mixup_ema": {
+      "family": "residual",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.02,
+      "mixup": 0.2,
+      "noise": 0.03,
+      "ema": 0.995
+    },
+    "joint": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0,
+      "tissue_loss_weight": 0.5,
+      "consistency_weight": 0.1
+    }
+  },
+  "seed": 0,
+  "max_epochs": 160,
+  "patience": 30,
+  "batch_size": 2048,
+  "learning_rate": 0.001,
+  "source_h5ad": "/Users/harryamad/Desktop/drive/2026/flow-maps/datasets/calderon2022/symmetric_4_8_12/lineage_assigned_hvg3000_pca100_symmetric_4_8_12.h5ad",
+  "source_h5ad_sha256": "dadfb31d74a79ab1cfaed3ebe4ff08661848845fd39f1d74ecb08255755d7f51",
+  "source_global_pca_sha256": "f3babb7934e5ef8c61e8cc6b7c6683af3651229af2c5da98d3a8c93607ae11e1",
+  "training_windows": [
+    "4-6",
+    "8-10",
+    "12-14"
+  ],
+  "intermediate_windows": [
+    "6-8",
+    "10-12"
+  ],
+  "selection": "Selected-time validation macro-F1 only; intermediate/test labels excluded",
+  "joint_recipe": "Branch prediction is an auxiliary task trained only at the same selected times"
+}

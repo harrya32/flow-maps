@@ -1,0 +1,79 @@
+{
+  "status": "passed",
+  "training_windows": [
+    "4-6",
+    "8-10",
+    "12-14"
+  ],
+  "intermediate_windows": [
+    "6-8",
+    "10-12"
+  ],
+  "split_sizes": {
+    "train": 129764,
+    "validation": 16221,
+    "test": 16221
+  },
+  "cell_and_temporal_holdouts_disjoint_from_training_and_selection": true,
+  "selection_frozen_before_test_and_intermediate_evaluation": true,
+  "selection_sha256": "87110c9967b8732038e9da19c71f8b8424ff12511fe772e3a8203d575d73687b",
+  "verified_populations": [
+    {
+      "population": "selected_time_test",
+      "n_cells": 16221,
+      "n_present_classes": 23,
+      "metrics_recomputed": true
+    },
+    {
+      "population": "intermediate_6_8",
+      "n_cells": 30876,
+      "n_present_classes": 16,
+      "metrics_recomputed": true
+    },
+    {
+      "population": "intermediate_10_12",
+      "n_cells": 21448,
+      "n_present_classes": 21,
+      "metrics_recomputed": true
+    },
+    {
+      "population": "intermediate_pooled",
+      "n_cells": 52324,
+      "n_present_classes": 21,
+      "metrics_recomputed": true
+    }
+  ],
+  "selected_predictor_reload_verifications": [
+    {
+      "population": "selected_time_test",
+      "n_cells": 16221,
+      "n_present_classes": 23,
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0
+    },
+    {
+      "population": "intermediate_pooled",
+      "n_cells": 52324,
+      "n_present_classes": 21,
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0
+    },
+    {
+      "population": "intermediate_6_8",
+      "n_cells": 30876,
+      "n_present_classes": 16,
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0
+    },
+    {
+      "population": "intermediate_10_12",
+      "n_cells": 21448,
+      "n_present_classes": 21,
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0
+    }
+  ],
+  "source_pca_unchanged_and_reused": true,
+  "reference_oracle_unchanged": true,
+  "validation_and_test_expression_in_global_pca_fit": true
+}

@@ -1,0 +1,140 @@
+digraph G {
+graph [rankdir=LR, newrank=true, nodesep=0.22, ranksep=0.52, splines=spline, outputorder=edgesfirst, bgcolor="white", pad=0.1];
+node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11, margin="0.10,0.065", color="#A8B4BE", penwidth=0.7];
+edge [color="#91A1AD", penwidth=1, arrowsize=0.55];
+"maternal" [label="maternal", fillcolor="#DCE2E7", color="#A8B4BE"];
+"ectoderm anlage in statu nascendi" [label="ectoderm anlage in statu\nnascendi", fillcolor="#F8E6AE", color="#A8B4BE"];
+"cellular blastoderm / pole cell" [label="cellular blastoderm / pole\ncell", fillcolor="#DCE2E7", color="#A8B4BE"];
+"anlage in statu nascendi" [label="anlage in statu nascendi", fillcolor="#DCE2E7", color="#A8B4BE"];
+"ubiquitous" [label="ubiquitous", fillcolor="#DCE2E7", color="#B64650"];
+"yolk nuclei" [label="yolk nuclei", fillcolor="#DCE2E7", color="#A8B4BE"];
+"ectoderm primordium" [label="ectoderm primordium", fillcolor="#F8E6AE", color="#A8B4BE"];
+"mesoderm primordium" [label="mesoderm primordium", fillcolor="#F0D4D6", color="#A8B4BE"];
+"peripheral nervous system primordium" [label="peripheral nervous system\nprimordium", fillcolor="#D4E5F4", color="#A8B4BE"];
+"germ cell" [label="germ cell", fillcolor="#DCE2E7", color="#A8B4BE"];
+"endoderm primordium" [label="endoderm primordium", fillcolor="#DCEBCC", color="#A8B4BE"];
+"ventral nerve cord primordium" [label="ventral nerve cord\nprimordium", fillcolor="#D4E5F4", color="#A8B4BE"];
+"amnioserosa" [label="amnioserosa", fillcolor="#DCE2E7", color="#A8B4BE"];
+"tracheal primordium" [label="tracheal primordium", fillcolor="#F8E6AE", color="#A8B4BE"];
+"foregut / hindgut primordium" [label="foregut / hindgut\nprimordium", fillcolor="#F8E6AE", color="#A8B4BE"];
+"epidermis primordium" [label="epidermis primordium", fillcolor="#F8E6AE", color="#B64650"];
+"brain primordium" [label="brain primordium", fillcolor="#D4E5F4", color="#B64650"];
+"trunk mesoderm primordium" [label="trunk mesoderm primordium", fillcolor="#F0D4D6", color="#B64650"];
+"sensory nervous system primordium" [label="sensory nervous system\nprimordium", fillcolor="#D4E5F4", color="#B64650"];
+"visceral muscle primordium" [label="visceral muscle primordium", fillcolor="#F0D4D6", color="#A8B4BE"];
+"midgut primordium" [label="midgut primordium", fillcolor="#DCEBCC", color="#A8B4BE"];
+"salivary gland primordium" [label="salivary gland primordium", fillcolor="#F8E6AE", color="#A8B4BE"];
+"unknown" [label="unknown", fillcolor="#DCE2E7", color="#A8B4BE"];
+"midline primordium" [label="midline primordium", fillcolor="#D4E5F4", color="#A8B4BE"];
+"somatic muscle primordium" [label="somatic muscle primordium", fillcolor="#F0D4D6", color="#B64650"];
+"hindgut primordium" [label="hindgut primordium", fillcolor="#F8E6AE", color="#A8B4BE"];
+"peripheral nervous system" [label="peripheral nervous system", fillcolor="#D4E5F4", color="#B64650"];
+"procrystal cell" [label="procrystal cell", fillcolor="#F0D4D6", color="#A8B4BE"];
+"plasmatocytes anlage" [label="plasmatocytes anlage", fillcolor="#F0D4D6", color="#A8B4BE"];
+"salivary gland body primordium" [label="salivary gland body\nprimordium", fillcolor="#F8E6AE", color="#A8B4BE"];
+"muscle" [label="muscle", fillcolor="#F0D4D6", color="#B64650"];
+"brain" [label="brain", fillcolor="#D4E5F4", color="#B64650"];
+"epidermis" [label="epidermis", fillcolor="#F8E6AE", color="#A8B4BE"];
+"midgut" [label="midgut", fillcolor="#DCEBCC", color="#A8B4BE"];
+"somatic muscle" [label="somatic muscle", fillcolor="#F0D4D6", color="#B64650"];
+"salivary gland" [label="salivary gland", fillcolor="#F8E6AE", color="#A8B4BE"];
+"plasmatocytes" [label="plasmatocytes", fillcolor="#F0D4D6", color="#A8B4BE"];
+"glia" [label="glia", fillcolor="#D4E5F4", color="#A8B4BE"];
+"fat body" [label="fat body", fillcolor="#F0D4D6", color="#A8B4BE"];
+"hindgut / anal pad" [label="hindgut / anal pad", fillcolor="#F8E6AE", color="#A8B4BE"];
+"tracheal system" [label="tracheal system", fillcolor="#F8E6AE", color="#A8B4BE"];
+"crystal cell" [label="crystal cell", fillcolor="#F0D4D6", color="#A8B4BE"];
+"ventral nerve cord" [label="ventral nerve cord", fillcolor="#D4E5F4", color="#B64650"];
+"foregut / hindgut / anal pad" [label="foregut / hindgut / anal\npad", fillcolor="#F8E6AE", color="#A8B4BE"];
+"sensory nervous system" [label="sensory nervous system", fillcolor="#D4E5F4", color="#B64650"];
+"visceral muscle" [label="visceral muscle", fillcolor="#F0D4D6", color="#A8B4BE"];
+"spiracles (tracheal system)" [label="spiracles (tracheal\nsystem)", fillcolor="#F8E6AE", color="#A8B4BE"];
+"spiracle (tracheal system)" [label="spiracle (tracheal system)", fillcolor="#F8E6AE", color="#A8B4BE"];
+"Malpighian tubule" [label="Malpighian tubule", fillcolor="#F8E6AE", color="#A8B4BE"];
+subgraph cluster_cycle_1 {label="Cycle group 1: 10 labels"; style="rounded"; color="#D59DA2"; fontsize=11; fontname="DejaVu Sans"; "brain"; "brain primordium"; "epidermis primordium"; "muscle"; "sensory nervous system"; "somatic muscle"; "somatic muscle primordium"; "trunk mesoderm primordium"; "ubiquitous"; "ventral nerve cord";}
+subgraph cluster_cycle_2 {label="Cycle group 2: 2 labels"; style="rounded"; color="#D59DA2"; fontsize=11; fontname="DejaVu Sans"; "peripheral nervous system"; "sensory nervous system primordium";}
+{rank=same; "maternal";}
+{rank=same; "anlage in statu nascendi"; "cellular blastoderm / pole cell"; "ectoderm anlage in statu nascendi"; "yolk nuclei";}
+{rank=same; "amnioserosa"; "ectoderm primordium"; "endoderm primordium"; "foregut / hindgut primordium"; "germ cell"; "mesoderm primordium"; "peripheral nervous system primordium"; "ventral nerve cord primordium";}
+{rank=same; "hindgut primordium"; "midgut primordium"; "midline primordium"; "peripheral nervous system"; "salivary gland primordium"; "sensory nervous system primordium"; "visceral muscle primordium";}
+{rank=same; "brain"; "brain primordium"; "epidermis primordium"; "fat body"; "glia"; "hindgut / anal pad"; "midgut"; "muscle"; "salivary gland body primordium"; "sensory nervous system"; "somatic muscle"; "somatic muscle primordium"; "trunk mesoderm primordium"; "ubiquitous"; "ventral nerve cord";}
+{rank=same; "Malpighian tubule"; "plasmatocytes anlage"; "procrystal cell"; "tracheal primordium"; "visceral muscle";}
+{rank=same; "crystal cell"; "plasmatocytes"; "tracheal system"; "unknown";}
+{rank=same; "salivary gland";}
+{rank=same; "epidermis";}
+{rank=same; "foregut / hindgut / anal pad"; "spiracles (tracheal system)";}
+{rank=same; "spiracle (tracheal system)";}
+"maternal" -> "yolk nuclei" [color="#91A1AD"];
+"maternal" -> "cellular blastoderm / pole cell" [color="#91A1AD"];
+"maternal" -> "ectoderm anlage in statu nascendi" [color="#91A1AD"];
+"maternal" -> "anlage in statu nascendi" [color="#91A1AD"];
+"maternal" -> "ubiquitous" [color="#91A1AD"];
+"ectoderm anlage in statu nascendi" -> "ectoderm primordium" [color="#91A1AD"];
+"ectoderm anlage in statu nascendi" -> "mesoderm primordium" [color="#91A1AD"];
+"cellular blastoderm / pole cell" -> "germ cell" [color="#91A1AD"];
+"cellular blastoderm / pole cell" -> "tracheal primordium" [color="#91A1AD"];
+"cellular blastoderm / pole cell" -> "unknown" [color="#91A1AD"];
+"anlage in statu nascendi" -> "peripheral nervous system primordium" [color="#91A1AD"];
+"anlage in statu nascendi" -> "endoderm primordium" [color="#91A1AD"];
+"anlage in statu nascendi" -> "ubiquitous" [color="#91A1AD"];
+"anlage in statu nascendi" -> "ventral nerve cord primordium" [color="#91A1AD"];
+"anlage in statu nascendi" -> "amnioserosa" [color="#91A1AD"];
+"anlage in statu nascendi" -> "foregut / hindgut primordium" [color="#91A1AD"];
+"ubiquitous" -> "brain primordium" [color="#B64650"];
+"ubiquitous" -> "trunk mesoderm primordium" [color="#B64650"];
+"ubiquitous" -> "epidermis primordium" [color="#B64650"];
+"ubiquitous" -> "procrystal cell" [color="#91A1AD"];
+"ubiquitous" -> "brain" [color="#B64650"];
+"ubiquitous" -> "muscle" [color="#B64650"];
+"ectoderm primordium" -> "epidermis primordium" [color="#91A1AD"];
+"ectoderm primordium" -> "midline primordium" [color="#91A1AD"];
+"mesoderm primordium" -> "trunk mesoderm primordium" [color="#91A1AD"];
+"mesoderm primordium" -> "visceral muscle primordium" [color="#91A1AD"];
+"peripheral nervous system primordium" -> "sensory nervous system primordium" [color="#91A1AD"];
+"peripheral nervous system primordium" -> "brain primordium" [color="#91A1AD"];
+"germ cell" -> "ubiquitous" [color="#91A1AD"];
+"endoderm primordium" -> "midgut primordium" [color="#91A1AD"];
+"endoderm primordium" -> "salivary gland primordium" [color="#91A1AD"];
+"ventral nerve cord primordium" -> "brain primordium" [color="#91A1AD"];
+"tracheal primordium" -> "unknown" [color="#91A1AD"];
+"tracheal primordium" -> "tracheal system" [color="#91A1AD"];
+"foregut / hindgut primordium" -> "hindgut primordium" [color="#91A1AD"];
+"epidermis primordium" -> "brain primordium" [color="#B64650"];
+"epidermis primordium" -> "tracheal primordium" [color="#91A1AD"];
+"epidermis primordium" -> "epidermis" [color="#91A1AD"];
+"epidermis primordium" -> "somatic muscle" [color="#B64650"];
+"brain primordium" -> "brain" [color="#B64650"];
+"brain primordium" -> "epidermis" [color="#91A1AD"];
+"trunk mesoderm primordium" -> "somatic muscle primordium" [color="#B64650"];
+"trunk mesoderm primordium" -> "plasmatocytes anlage" [color="#91A1AD"];
+"trunk mesoderm primordium" -> "muscle" [color="#B64650"];
+"sensory nervous system primordium" -> "peripheral nervous system" [color="#B64650"];
+"sensory nervous system primordium" -> "sensory nervous system" [color="#91A1AD"];
+"visceral muscle primordium" -> "brain" [color="#91A1AD"];
+"visceral muscle primordium" -> "muscle" [color="#91A1AD"];
+"midgut primordium" -> "midgut" [color="#91A1AD"];
+"salivary gland primordium" -> "salivary gland body primordium" [color="#91A1AD"];
+"unknown" -> "salivary gland" [color="#91A1AD"];
+"midline primordium" -> "glia" [color="#91A1AD"];
+"somatic muscle primordium" -> "somatic muscle" [color="#B64650"];
+"hindgut primordium" -> "fat body" [color="#91A1AD"];
+"hindgut primordium" -> "hindgut / anal pad" [color="#91A1AD"];
+"peripheral nervous system" -> "sensory nervous system primordium" [color="#B64650"];
+"procrystal cell" -> "crystal cell" [color="#91A1AD"];
+"plasmatocytes anlage" -> "plasmatocytes" [color="#91A1AD"];
+"salivary gland body primordium" -> "salivary gland" [color="#91A1AD"];
+"muscle" -> "visceral muscle" [color="#91A1AD"];
+"muscle" -> "ubiquitous" [color="#B64650"];
+"brain" -> "sensory nervous system" [color="#B64650"];
+"brain" -> "ubiquitous" [color="#B64650"];
+"epidermis" -> "foregut / hindgut / anal pad" [color="#91A1AD"];
+"epidermis" -> "spiracles (tracheal system)" [color="#91A1AD"];
+"midgut" -> "Malpighian tubule" [color="#91A1AD"];
+"somatic muscle" -> "ventral nerve cord" [color="#B64650"];
+"salivary gland" -> "epidermis" [color="#91A1AD"];
+"hindgut / anal pad" -> "foregut / hindgut / anal pad" [color="#91A1AD"];
+"ventral nerve cord" -> "brain" [color="#B64650"];
+"ventral nerve cord" -> "sensory nervous system" [color="#B64650"];
+"sensory nervous system" -> "brain" [color="#B64650"];
+"spiracles (tracheal system)" -> "spiracle (tracheal system)" [color="#91A1AD"];
+}

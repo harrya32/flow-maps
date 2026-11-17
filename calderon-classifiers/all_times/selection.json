@@ -1,0 +1,591 @@
+{
+  "schema_version": 2,
+  "groups": [
+    {
+      "variant": "all_times",
+      "target": "branch_id",
+      "class_names": [
+        "Blastoderm_A",
+        "Blastoderm_AA",
+        "Blastoderm_AB",
+        "Blastoderm_AC",
+        "Ubi_0",
+        "Ubi_A",
+        "Ubi_AA",
+        "Ubi_AAA",
+        "Ubi_AAAA",
+        "Ubi_AAAB",
+        "Ubi_AAAC",
+        "Ubi_AAAD",
+        "Ubi_AAB",
+        "Ubi_AABA",
+        "Ubi_AABAA",
+        "Ubi_AABB",
+        "Ubi_AB",
+        "Ubi_AC",
+        "Ubi_B",
+        "Ubi_BA",
+        "Ubi_BAB",
+        "Ubi_BB",
+        "Ubi_BC",
+        "Ubi_BCA",
+        "Ubi_BCAA",
+        "Ubi_BCB",
+        "Ubi_BD",
+        "Ubi_BDA",
+        "Ubi_BDAB",
+        "Ubi_BDB",
+        "Ubi_BDBA",
+        "Ubi_BDBB",
+        "Ubi_C",
+        "Ubi_CA",
+        "Ubi_CAB",
+        "Ubi_CB",
+        "Ubi_CBB",
+        "Ubi_CC",
+        "Ubi_CD",
+        "Ubi_CDA",
+        "Ubi_CDB",
+        "Ubi_CDBA",
+        "Ubi_CDBB",
+        "Ubi_CDBC",
+        "Ubi_CDBD",
+        "Ubi_CDBDA",
+        "Ubi_CE",
+        "Ubi_CEB",
+        "Ubi_CF",
+        "Ubi_D",
+        "Yolk_A",
+        "Yolk_AB",
+        "Yolk_AC"
+      ],
+      "cell_and_split_sha256": "b30d3ac27ca924c5ca8f5320ee8be2f1127f8b576715ff911b525aaa955051c1",
+      "split_sizes": {
+        "train": 251509,
+        "validation": 31439,
+        "test": 31439
+      },
+      "candidates": [
+        {
+          "id": "wide",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_branch_id_wide_seed0/branch_id.pt",
+          "checkpoint_sha256": "be9c649e2cce7ab9d596acd6df4e427101bf1b3161825bf6f2b4a5a41a8c8fc4",
+          "temperature": 1.096284390910606,
+          "parameter_count": 224565,
+          "best_epoch": 25,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 53,
+            "n_output_classes": 53,
+            "accuracy": 0.6538057826266739,
+            "balanced_accuracy": 0.6398503939242337,
+            "macro_f1": 0.6288701018392521,
+            "weighted_f1": 0.6533671571843798,
+            "top3_accuracy": 0.8788765545977926,
+            "log_loss": 1.0738023320061496,
+            "majority_training_class_accuracy": 0.0509240115779764,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.3741531219186361,
+                "accuracy": 0.9244240414860154,
+                "n_cells": 11763
+              },
+              "0.9": {
+                "coverage": 0.27729889627532683,
+                "accuracy": 0.9589355356733196,
+                "n_cells": 8718
+              }
+            },
+            "expected_calibration_error_15bins": 0.014188779764887638,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "wide_balanced",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_branch_id_wide_balanced_seed0/branch_id.pt",
+          "checkpoint_sha256": "09a06b0815066d63f15ce90cb90dfa8fda8c6c9621ea774c4e6ff852e401f6b0",
+          "temperature": 1.0907302463776831,
+          "parameter_count": 224565,
+          "best_epoch": 22,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 53,
+            "n_output_classes": 53,
+            "accuracy": 0.649575368173288,
+            "balanced_accuracy": 0.6465067704717431,
+            "macro_f1": 0.6236679299531314,
+            "weighted_f1": 0.6504086546732274,
+            "top3_accuracy": 0.8749006011641591,
+            "log_loss": 1.0847138013799338,
+            "majority_training_class_accuracy": 0.0509240115779764,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.37319889309456405,
+                "accuracy": 0.9214182221085826,
+                "n_cells": 11733
+              },
+              "0.9": {
+                "coverage": 0.2705874868793537,
+                "accuracy": 0.9600329140707653,
+                "n_cells": 8507
+              }
+            },
+            "expected_calibration_error_15bins": 0.010138822963490366,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "residual",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_branch_id_residual_seed0/branch_id.pt",
+          "checkpoint_sha256": "bb8f6a7d60a250d2dec57e77afde6bb52f6d9b87f517b0e3931b4803bfd585a5",
+          "temperature": 1.0829940834866474,
+          "parameter_count": 239285,
+          "best_epoch": 12,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 53,
+            "n_output_classes": 53,
+            "accuracy": 0.6545691656859315,
+            "balanced_accuracy": 0.6396321591524327,
+            "macro_f1": 0.6276056743446304,
+            "weighted_f1": 0.6523641076575402,
+            "top3_accuracy": 0.8759820604981075,
+            "log_loss": 1.0633946132995706,
+            "majority_training_class_accuracy": 0.0509240115779764,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.372689971055059,
+                "accuracy": 0.9261756422292395,
+                "n_cells": 11717
+              },
+              "0.9": {
+                "coverage": 0.2565603231654951,
+                "accuracy": 0.9680138854450782,
+                "n_cells": 8066
+              }
+            },
+            "expected_calibration_error_15bins": 0.009560427196640717,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "residual_mixup_ema",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_branch_id_residual_mixup_ema_seed0/branch_id.pt",
+          "checkpoint_sha256": "627566e437254aa04d9534f9779b17efb20cf9ba2df738b2d398bdb7e446794f",
+          "temperature": 0.8726753583206445,
+          "parameter_count": 239285,
+          "best_epoch": 23,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 53,
+            "n_output_classes": 53,
+            "accuracy": 0.6582588504723432,
+            "balanced_accuracy": 0.6451149984080895,
+            "macro_f1": 0.631975416899306,
+            "weighted_f1": 0.6555718927383736,
+            "top3_accuracy": 0.8795127071471739,
+            "log_loss": 1.0699412013287528,
+            "majority_training_class_accuracy": 0.0509240115779764,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.4058335188778269,
+                "accuracy": 0.9140214750372286,
+                "n_cells": 12759
+              },
+              "0.9": {
+                "coverage": 0.27745793441267214,
+                "accuracy": 0.9597615499254843,
+                "n_cells": 8723
+              }
+            },
+            "expected_calibration_error_15bins": 0.0283790810402843,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "joint",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_branch_id+broad_tissue_joint_seed0/branch_id.pt",
+          "checkpoint_sha256": "8801770fe3c9dbfd5bcd6d43bc259caedc4fe40dd1f6b696bb3f6595284c8ac8",
+          "temperature": 1.0924898222131392,
+          "parameter_count": 227661,
+          "best_epoch": 29,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 53,
+            "n_output_classes": 53,
+            "accuracy": 0.654346512293648,
+            "balanced_accuracy": 0.6366309482113273,
+            "macro_f1": 0.6281419535487764,
+            "weighted_f1": 0.6540058103001908,
+            "top3_accuracy": 0.8776996723814371,
+            "log_loss": 1.0751089299972658,
+            "majority_training_class_accuracy": 0.0509240115779764,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.37968764909825375,
+                "accuracy": 0.9204155147859596,
+                "n_cells": 11937
+              },
+              "0.9": {
+                "coverage": 0.27920735392347085,
+                "accuracy": 0.9588744588744589,
+                "n_cells": 8778
+              }
+            },
+            "expected_calibration_error_15bins": 0.015229842253698852,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        }
+      ],
+      "best_expressive": "residual_mixup_ema",
+      "single_winner": "residual_mixup_ema",
+      "ensemble_members": [
+        "residual_mixup_ema",
+        "wide",
+        "joint"
+      ],
+      "ensemble_temperature": 0.9409092272803168,
+      "ensemble_validation": {
+        "n_cells": 31439,
+        "n_present_classes": 53,
+        "n_output_classes": 53,
+        "accuracy": 0.6632526479849868,
+        "balanced_accuracy": 0.6490569629091806,
+        "macro_f1": 0.6380414859248381,
+        "weighted_f1": 0.6619379335983967,
+        "top3_accuracy": 0.8854289258564204,
+        "log_loss": 1.0293237159715904,
+        "majority_training_class_accuracy": 0.0509240115779764,
+        "confidence_subsets": {
+          "0.8": {
+            "coverage": 0.3979134196380292,
+            "accuracy": 0.921902478017586,
+            "n_cells": 12510
+          },
+          "0.9": {
+            "coverage": 0.2906262921848659,
+            "accuracy": 0.9618036554667834,
+            "n_cells": 9137
+          }
+        },
+        "expected_calibration_error_15bins": 0.01376739673797796,
+        "macro_average_scope": "Classes present in this evaluated split"
+      },
+      "selected": "ensemble",
+      "selection_metric": "Validation macro-F1; ties use validation cross entropy",
+      "test_used_for_selection": false
+    },
+    {
+      "variant": "all_times",
+      "target": "broad_tissue",
+      "class_names": [
+        "Amnioserosa",
+        "Blastoderm",
+        "Brain",
+        "Crystal cells",
+        "Ectoderm",
+        "Epidermis",
+        "Fat body",
+        "Fore & hindgut",
+        "Germ",
+        "Mesoderm",
+        "Midgut",
+        "Midline/glia",
+        "Muscle",
+        "Muscle/Ubi",
+        "Neural",
+        "Plasmatocytes",
+        "Salivary gland",
+        "Sense",
+        "Somatic muscle",
+        "Tracheal sys.",
+        "Unknown",
+        "Ventral nerve cord",
+        "Visceral muscle",
+        "Yolk"
+      ],
+      "cell_and_split_sha256": "b30d3ac27ca924c5ca8f5320ee8be2f1127f8b576715ff911b525aaa955051c1",
+      "split_sizes": {
+        "train": 251509,
+        "validation": 31439,
+        "test": 31439
+      },
+      "candidates": [
+        {
+          "id": "wide",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_broad_tissue_wide_seed0/broad_tissue.pt",
+          "checkpoint_sha256": "3924082e5a36ac2542841529164e3318196a4a7b13956c710b8f11f46016d1bc",
+          "temperature": 1.0940619910111284,
+          "parameter_count": 220824,
+          "best_epoch": 23,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 24,
+            "n_output_classes": 24,
+            "accuracy": 0.7241960622157193,
+            "balanced_accuracy": 0.7215555586891963,
+            "macro_f1": 0.7009819720350489,
+            "weighted_f1": 0.7245809146266456,
+            "top3_accuracy": 0.9207353923470848,
+            "log_loss": 0.8181988757161606,
+            "majority_training_class_accuracy": 0.16062851871878878,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.48204459429371166,
+                "accuracy": 0.9382382052128011,
+                "n_cells": 15155
+              },
+              "0.9": {
+                "coverage": 0.3704634371322243,
+                "accuracy": 0.9683180218081909,
+                "n_cells": 11647
+              }
+            },
+            "expected_calibration_error_15bins": 0.012019864591316378,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "wide_balanced",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_broad_tissue_wide_balanced_seed0/broad_tissue.pt",
+          "checkpoint_sha256": "8f11e49d32cd5b101b28e81622612353242ec3ed7c963a6447f60dffef99d326",
+          "temperature": 1.1875191678281163,
+          "parameter_count": 220824,
+          "best_epoch": 34,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 24,
+            "n_output_classes": 24,
+            "accuracy": 0.7161487324660454,
+            "balanced_accuracy": 0.7395152880349594,
+            "macro_f1": 0.6959062914911183,
+            "weighted_f1": 0.7174773023321849,
+            "top3_accuracy": 0.9194630872483222,
+            "log_loss": 0.8477484691785488,
+            "majority_training_class_accuracy": 0.16062851871878878,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.4720569992684246,
+                "accuracy": 0.9302607640994542,
+                "n_cells": 14841
+              },
+              "0.9": {
+                "coverage": 0.36120741753872576,
+                "accuracy": 0.9629270870024657,
+                "n_cells": 11356
+              }
+            },
+            "expected_calibration_error_15bins": 0.017309453695639954,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "residual",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_broad_tissue_residual_seed0/broad_tissue.pt",
+          "checkpoint_sha256": "389bc4c38d184fbbb5700a79da189908eeb199cf80764d7c00b82fa46e5d253a",
+          "temperature": 1.0886695227282874,
+          "parameter_count": 231832,
+          "best_epoch": 12,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 24,
+            "n_output_classes": 24,
+            "accuracy": 0.7239416011959668,
+            "balanced_accuracy": 0.7212343363591515,
+            "macro_f1": 0.7002510735642972,
+            "weighted_f1": 0.7235271691697839,
+            "top3_accuracy": 0.9214351601514043,
+            "log_loss": 0.8148416396104278,
+            "majority_training_class_accuracy": 0.16062851871878878,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.47647825948662487,
+                "accuracy": 0.9367823765020027,
+                "n_cells": 14980
+              },
+              "0.9": {
+                "coverage": 0.35659531155571106,
+                "accuracy": 0.9728837748639729,
+                "n_cells": 11211
+              }
+            },
+            "expected_calibration_error_15bins": 0.010246976968319851,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "residual_mixup_ema",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_broad_tissue_residual_mixup_ema_seed0/broad_tissue.pt",
+          "checkpoint_sha256": "f432f7cc7d4475f3a81fdfe061cc8b9ae79330586a2c2ab3d31a20072eb412b8",
+          "temperature": 0.8746114357422196,
+          "parameter_count": 231832,
+          "best_epoch": 36,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 24,
+            "n_output_classes": 24,
+            "accuracy": 0.7274086325900951,
+            "balanced_accuracy": 0.7267323844499574,
+            "macro_f1": 0.704017301871518,
+            "weighted_f1": 0.7268790685612273,
+            "top3_accuracy": 0.9214351601514043,
+            "log_loss": 0.8291936709114235,
+            "majority_training_class_accuracy": 0.16062851871878878,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.5169375616272782,
+                "accuracy": 0.9264090573467881,
+                "n_cells": 16252
+              },
+              "0.9": {
+                "coverage": 0.3785743821368364,
+                "accuracy": 0.9614350529322803,
+                "n_cells": 11902
+              }
+            },
+            "expected_calibration_error_15bins": 0.027282660975097236,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        },
+        {
+          "id": "joint",
+          "kind": "expressive",
+          "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/all_times/search/all_times_branch_id+broad_tissue_joint_seed0/broad_tissue.pt",
+          "checkpoint_sha256": "a30a0099a0a1fd01f734c1e0fcb5c0601d24e852ba00d487bf010b7181fa924b",
+          "temperature": 1.0636642086694026,
+          "parameter_count": 227661,
+          "best_epoch": 23,
+          "validation": {
+            "n_cells": 31439,
+            "n_present_classes": 24,
+            "n_output_classes": 24,
+            "accuracy": 0.7233372562740545,
+            "balanced_accuracy": 0.7226595971004125,
+            "macro_f1": 0.7030359805668912,
+            "weighted_f1": 0.7240789638613068,
+            "top3_accuracy": 0.9209898533668374,
+            "log_loss": 0.8185557830171152,
+            "majority_training_class_accuracy": 0.16062851871878878,
+            "confidence_subsets": {
+              "0.8": {
+                "coverage": 0.48576608670759247,
+                "accuracy": 0.9374017810371923,
+                "n_cells": 15272
+              },
+              "0.9": {
+                "coverage": 0.3775883456852953,
+                "accuracy": 0.9652093336702889,
+                "n_cells": 11871
+              }
+            },
+            "expected_calibration_error_15bins": 0.012293751326740716,
+            "macro_average_scope": "Classes present in this evaluated split"
+          }
+        }
+      ],
+      "best_expressive": "residual_mixup_ema",
+      "single_winner": "residual_mixup_ema",
+      "ensemble_members": [
+        "residual_mixup_ema",
+        "joint",
+        "wide"
+      ],
+      "ensemble_temperature": 0.9358427814183012,
+      "ensemble_validation": {
+        "n_cells": 31439,
+        "n_present_classes": 24,
+        "n_output_classes": 24,
+        "accuracy": 0.7332294284169344,
+        "balanced_accuracy": 0.7325880499055154,
+        "macro_f1": 0.7119057810670043,
+        "weighted_f1": 0.7332735105220536,
+        "top3_accuracy": 0.9263017271541716,
+        "log_loss": 0.7846254887302987,
+        "majority_training_class_accuracy": 0.16062851871878878,
+        "confidence_subsets": {
+          "0.8": {
+            "coverage": 0.5098444607016762,
+            "accuracy": 0.9361157901303887,
+            "n_cells": 16029
+          },
+          "0.9": {
+            "coverage": 0.3940646967142721,
+            "accuracy": 0.9665832593429655,
+            "n_cells": 12389
+          }
+        },
+        "expected_calibration_error_15bins": 0.013991316364953503,
+        "macro_average_scope": "Classes present in this evaluated split"
+      },
+      "selected": "ensemble",
+      "selection_metric": "Validation macro-F1; ties use validation cross entropy",
+      "test_used_for_selection": false
+    }
+  ],
+  "recipes": {
+    "wide": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "wide_balanced": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.5,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "residual": {
+      "family": "residual",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "residual_mixup_ema": {
+      "family": "residual",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.02,
+      "mixup": 0.2,
+      "noise": 0.03,
+      "ema": 0.995
+    },
+    "joint": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0,
+      "tissue_loss_weight": 0.5,
+      "consistency_weight": 0.1
+    }
+  },
+  "seed": 0,
+  "selection_frozen_before_new_test_evaluation": true,
+  "source_h5ad": "/Users/harryamad/Desktop/drive/2026/flow-maps/datasets/calderon2022/all_times/lineage_assigned_hvg3000_pca100_all_times.h5ad",
+  "source_h5ad_sha256": "f3babb7934e5ef8c61e8cc6b7c6683af3651229af2c5da98d3a8c93607ae11e1",
+  "preprocessing_npz_sha256": "11db8f7b47ecaf4bc798a59a34db2a7d9686d50bd5cc795cf187f05d4f1e71eb",
+  "representation_fit": "All labelled cells, including classifier validation/test expressions",
+  "classifier_supervision": "Training labels only; selection/calibration use validation labels only",
+  "calibration": "Scalar temperatures fitted using validation negative log likelihood"
+}

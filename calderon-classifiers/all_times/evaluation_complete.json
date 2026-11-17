@@ -1,0 +1,25 @@
+{
+  "selection_sha256": "c77aab20d9f5c790287d29e7425bca011a79b750aeaa308775a7eba3c3723a6d",
+  "methods_evaluated": 12,
+  "selection_used_validation_only": true,
+  "selected_manifests_verified": [
+    {
+      "target": "branch_id",
+      "selected_manifest_sha256": "0e99d7a93aee6e5020c1f08b18a904f7920a3272319c30ee48c9a93c5a4b0438",
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0,
+      "n_test_cells": 31439,
+      "n_test_classes": 53
+    },
+    {
+      "target": "broad_tissue",
+      "selected_manifest_sha256": "0513384ee9e4153f72881d1481d3a701f129ca64f5f086340ecbc57196d63690",
+      "probabilities_reproduced_after_manifest_reload": true,
+      "max_absolute_probability_difference_256_cells": 0.0,
+      "n_test_cells": 31439,
+      "n_test_classes": 24
+    }
+  ],
+  "test_labels_excluded_from_supervised_training": true,
+  "representation_fit_includes_validation_test_expressions": true
+}

@@ -1,0 +1,445 @@
+{
+  "status": "passed",
+  "cohort": "all_lineage_assigned_cells",
+  "n_cells": 314387,
+  "source_hashes": {
+    "datasets/calderon2022/lineage_assigned_metadata.csv.gz": "1a322fff969075c651fba91558c2ca943514c98d06f5e9d0143338b4ceba971f",
+    "docs/calderon2022/graph_data/broad_tissue_allowed_pairs.csv": "e69c41ada0dc69c1fb99b0e98d250e954c1e560059590202ae4b5265aa1ae04f"
+  },
+  "sources_unchanged": true,
+  "n_triplets_audited": 84,
+  "minimum_windows_for_all_24_tissues": {
+    "n_windows": 4,
+    "witness": [
+      "0-2",
+      "4-6",
+      "8-10",
+      "12-14"
+    ]
+  },
+  "per_tissue_support_windows": {
+    "Amnioserosa": [
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16"
+    ],
+    "Blastoderm": [
+      "0-2",
+      "2-4"
+    ],
+    "Brain": [
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Crystal cells": [
+      "8-10",
+      "10-12"
+    ],
+    "Ectoderm": [
+      "2-4",
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16"
+    ],
+    "Epidermis": [
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Fat body": [
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Fore & hindgut": [
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16"
+    ],
+    "Germ": [
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16"
+    ],
+    "Mesoderm": [
+      "4-6"
+    ],
+    "Midgut": [
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Midline/glia": [
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14"
+    ],
+    "Muscle": [
+      "6-8",
+      "8-10",
+      "10-12"
+    ],
+    "Muscle/Ubi": [
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Neural": [
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Plasmatocytes": [
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Salivary gland": [
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16"
+    ],
+    "Sense": [
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16"
+    ],
+    "Somatic muscle": [
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Tracheal sys.": [
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Unknown": [
+      "0-2",
+      "2-4",
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12"
+    ],
+    "Ventral nerve cord": [
+      "12-14",
+      "14-16",
+      "16-18"
+    ],
+    "Visceral muscle": [
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14"
+    ],
+    "Yolk": [
+      "0-2",
+      "2-4",
+      "4-6",
+      "6-8",
+      "8-10",
+      "10-12",
+      "12-14",
+      "14-16",
+      "16-18"
+    ]
+  },
+  "existing_pair_support_recomputed_and_matched": true,
+  "candidates": [
+    {
+      "name": "Proposed",
+      "coverage": {
+        "training_times": "4-6; 10-12; 16-18",
+        "heldout_times": "6-8; 8-10; 12-14; 14-16",
+        "first": "4-6",
+        "last": "16-18",
+        "training_time_cells": 98263,
+        "heldout_time_cells": 181255,
+        "tissues_in_interval": 23,
+        "tissues_at_training_times": 23,
+        "missing_interval_tissues": "",
+        "global_tissues_absent_from_training": "Blastoderm",
+        "all_interval_tissues_covered": true,
+        "heldout_window_in_each_gap": true,
+        "rarest_present_training_tissue": "Muscle",
+        "rarest_present_training_tissue_cells": 66,
+        "unknown_training_pct": 26.536946765313495,
+        "first_interval_forced_forbidden_pct": 7.061579578811772,
+        "second_interval_forced_forbidden_pct": 39.884363444776724,
+        "first_interval_orphan_source_pct": 0.0,
+        "second_interval_orphan_source_pct": 22.864602760164114
+      },
+      "tissue_counts_at_training_times": {
+        "Amnioserosa": 2199,
+        "Blastoderm": 0,
+        "Brain": 5132,
+        "Crystal cells": 237,
+        "Ectoderm": 5552,
+        "Epidermis": 13455,
+        "Fat body": 1628,
+        "Fore & hindgut": 1349,
+        "Germ": 4314,
+        "Mesoderm": 3199,
+        "Midgut": 3912,
+        "Midline/glia": 371,
+        "Muscle": 66,
+        "Muscle/Ubi": 3519,
+        "Neural": 3589,
+        "Plasmatocytes": 2233,
+        "Salivary gland": 832,
+        "Sense": 691,
+        "Somatic muscle": 5799,
+        "Tracheal sys.": 4484,
+        "Unknown": 26076,
+        "Ventral nerve cord": 2451,
+        "Visceral muscle": 401,
+        "Yolk": 6774
+      }
+    },
+    {
+      "name": "Recommended compromise",
+      "coverage": {
+        "training_times": "4-6; 8-10; 14-16",
+        "heldout_times": "6-8; 10-12; 12-14",
+        "first": "4-6",
+        "last": "14-16",
+        "training_time_cells": 151669,
+        "heldout_time_cells": 103780,
+        "tissues_in_interval": 23,
+        "tissues_at_training_times": 23,
+        "missing_interval_tissues": "",
+        "global_tissues_absent_from_training": "Blastoderm",
+        "all_interval_tissues_covered": true,
+        "heldout_window_in_each_gap": true,
+        "rarest_present_training_tissue": "Muscle",
+        "rarest_present_training_tissue_cells": 147,
+        "unknown_training_pct": 20.09771278244071,
+        "first_interval_forced_forbidden_pct": 5.627430778259601,
+        "second_interval_forced_forbidden_pct": 21.913028246379408,
+        "first_interval_orphan_source_pct": 0.0,
+        "second_interval_orphan_source_pct": 5.31687469829667
+      },
+      "tissue_counts_at_training_times": {
+        "Amnioserosa": 5214,
+        "Blastoderm": 0,
+        "Brain": 14186,
+        "Crystal cells": 1909,
+        "Ectoderm": 6364,
+        "Epidermis": 20652,
+        "Fat body": 1629,
+        "Fore & hindgut": 5317,
+        "Germ": 8082,
+        "Mesoderm": 3199,
+        "Midgut": 6244,
+        "Midline/glia": 1028,
+        "Muscle": 147,
+        "Muscle/Ubi": 3726,
+        "Neural": 8313,
+        "Plasmatocytes": 3757,
+        "Salivary gland": 2177,
+        "Sense": 2681,
+        "Somatic muscle": 6270,
+        "Tracheal sys.": 6308,
+        "Unknown": 30482,
+        "Ventral nerve cord": 2208,
+        "Visceral muscle": 1515,
+        "Yolk": 10261
+      }
+    },
+    {
+      "name": "Symmetric shorter interval",
+      "coverage": {
+        "training_times": "4-6; 8-10; 12-14",
+        "heldout_times": "6-8; 10-12",
+        "first": "4-6",
+        "last": "12-14",
+        "training_time_cells": 162206,
+        "heldout_time_cells": 52324,
+        "tissues_in_interval": 23,
+        "tissues_at_training_times": 23,
+        "missing_interval_tissues": "",
+        "global_tissues_absent_from_training": "Blastoderm",
+        "all_interval_tissues_covered": true,
+        "heldout_window_in_each_gap": true,
+        "rarest_present_training_tissue": "Muscle",
+        "rarest_present_training_tissue_cells": 147,
+        "unknown_training_pct": 18.79215318792153,
+        "first_interval_forced_forbidden_pct": 5.627430778259601,
+        "second_interval_forced_forbidden_pct": 20.37503978216806,
+        "first_interval_orphan_source_pct": 0.0,
+        "second_interval_orphan_source_pct": 3.5445831321977797
+      },
+      "tissue_counts_at_training_times": {
+        "Amnioserosa": 5462,
+        "Blastoderm": 0,
+        "Brain": 12951,
+        "Crystal cells": 1909,
+        "Ectoderm": 6030,
+        "Epidermis": 21153,
+        "Fat body": 2312,
+        "Fore & hindgut": 6699,
+        "Germ": 9438,
+        "Mesoderm": 3199,
+        "Midgut": 6590,
+        "Midline/glia": 1601,
+        "Muscle": 147,
+        "Muscle/Ubi": 3367,
+        "Neural": 9367,
+        "Plasmatocytes": 3407,
+        "Salivary gland": 2700,
+        "Sense": 3069,
+        "Somatic muscle": 7686,
+        "Tracheal sys.": 7611,
+        "Unknown": 30482,
+        "Ventral nerve cord": 3102,
+        "Visceral muscle": 2317,
+        "Yolk": 11607
+      }
+    },
+    {
+      "name": "Longer interval with more middle cells",
+      "coverage": {
+        "training_times": "4-6; 8-10; 16-18",
+        "heldout_times": "6-8; 10-12; 12-14; 14-16",
+        "first": "4-6",
+        "last": "16-18",
+        "training_time_cells": 134819,
+        "heldout_time_cells": 144699,
+        "tissues_in_interval": 23,
+        "tissues_at_training_times": 23,
+        "missing_interval_tissues": "",
+        "global_tissues_absent_from_training": "Blastoderm",
+        "all_interval_tissues_covered": true,
+        "heldout_window_in_each_gap": true,
+        "rarest_present_training_tissue": "Muscle",
+        "rarest_present_training_tissue_cells": 147,
+        "unknown_training_pct": 22.609572834689473,
+        "first_interval_forced_forbidden_pct": 5.627430778259601,
+        "second_interval_forced_forbidden_pct": 39.492915898422034,
+        "first_interval_orphan_source_pct": 0.0,
+        "second_interval_orphan_source_pct": 23.534583821805395
+      },
+      "tissue_counts_at_training_times": {
+        "Amnioserosa": 4305,
+        "Blastoderm": 0,
+        "Brain": 9442,
+        "Crystal cells": 1909,
+        "Ectoderm": 5714,
+        "Epidermis": 16305,
+        "Fat body": 1317,
+        "Fore & hindgut": 3530,
+        "Germ": 6833,
+        "Mesoderm": 3199,
+        "Midgut": 4830,
+        "Midline/glia": 1028,
+        "Muscle": 147,
+        "Muscle/Ubi": 4313,
+        "Neural": 7924,
+        "Plasmatocytes": 3338,
+        "Salivary gland": 1146,
+        "Sense": 2089,
+        "Somatic muscle": 7472,
+        "Tracheal sys.": 5925,
+        "Unknown": 30482,
+        "Ventral nerve cord": 2451,
+        "Visceral muscle": 1515,
+        "Yolk": 9605
+      }
+    },
+    {
+      "name": "Later middle, earlier final",
+      "coverage": {
+        "training_times": "4-6; 10-12; 14-16",
+        "heldout_times": "6-8; 8-10; 12-14",
+        "first": "4-6",
+        "last": "14-16",
+        "training_time_cells": 115113,
+        "heldout_time_cells": 140336,
+        "tissues_in_interval": 23,
+        "tissues_at_training_times": 23,
+        "missing_interval_tissues": "",
+        "global_tissues_absent_from_training": "Blastoderm",
+        "all_interval_tissues_covered": true,
+        "heldout_window_in_each_gap": true,
+        "rarest_present_training_tissue": "Muscle",
+        "rarest_present_training_tissue_cells": 66,
+        "unknown_training_pct": 22.652524041593914,
+        "first_interval_forced_forbidden_pct": 7.061579578811772,
+        "second_interval_forced_forbidden_pct": 20.58934749311736,
+        "first_interval_orphan_source_pct": 0.0,
+        "second_interval_orphan_source_pct": 3.1424841477060794
+      },
+      "tissue_counts_at_training_times": {
+        "Amnioserosa": 3108,
+        "Blastoderm": 0,
+        "Brain": 9876,
+        "Crystal cells": 237,
+        "Ectoderm": 6202,
+        "Epidermis": 17802,
+        "Fat body": 1940,
+        "Fore & hindgut": 3136,
+        "Germ": 5563,
+        "Mesoderm": 3199,
+        "Midgut": 5326,
+        "Midline/glia": 371,
+        "Muscle": 66,
+        "Muscle/Ubi": 2932,
+        "Neural": 3978,
+        "Plasmatocytes": 2652,
+        "Salivary gland": 1863,
+        "Sense": 1283,
+        "Somatic muscle": 4597,
+        "Tracheal sys.": 4867,
+        "Unknown": 26076,
+        "Ventral nerve cord": 2208,
+        "Visceral muscle": 401,
+        "Yolk": 7430
+      }
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+source,target
+anlage in statu nascendi,amnioserosa
+anlage in statu nascendi,endoderm primordium
+anlage in statu nascendi,foregut / hindgut primordium
+anlage in statu nascendi,peripheral nervous system primordium
+anlage in statu nascendi,ubiquitous
+anlage in statu nascendi,ventral nerve cord primordium
+brain,sensory nervous system
+brain,ubiquitous
+brain primordium,brain
+brain primordium,epidermis
+cellular blastoderm / pole cell,germ cell
+cellular blastoderm / pole cell,tracheal primordium
+cellular blastoderm / pole cell,unknown
+ectoderm anlage in statu nascendi,ectoderm primordium
+ectoderm anlage in statu nascendi,mesoderm primordium
+ectoderm primordium,epidermis primordium
+ectoderm primordium,midline primordium
+endoderm primordium,midgut primordium
+endoderm primordium,salivary gland primordium
+epidermis,foregut / hindgut / anal pad
+epidermis,spiracles (tracheal system)
+epidermis primordium,brain primordium
+epidermis primordium,epidermis
+epidermis primordium,somatic muscle
+epidermis primordium,tracheal primordium
+foregut / hindgut primordium,hindgut primordium
+germ cell,ubiquitous
+hindgut / anal pad,foregut / hindgut / anal pad
+hindgut primordium,fat body
+hindgut primordium,hindgut / anal pad
+maternal,anlage in statu nascendi
+maternal,cellular blastoderm / pole cell
+maternal,ectoderm anlage in statu nascendi
+maternal,ubiquitous
+maternal,yolk nuclei
+mesoderm primordium,trunk mesoderm primordium
+mesoderm primordium,visceral muscle primordium
+midgut,Malpighian tubule
+midgut primordium,midgut
+midline primordium,glia
+muscle,ubiquitous
+muscle,visceral muscle
+peripheral nervous system,sensory nervous system primordium
+peripheral nervous system primordium,brain primordium
+peripheral nervous system primordium,sensory nervous system primordium
+plasmatocytes anlage,plasmatocytes
+procrystal cell,crystal cell
+salivary gland,epidermis
+salivary gland body primordium,salivary gland
+salivary gland primordium,salivary gland body primordium
+sensory nervous system,brain
+sensory nervous system primordium,peripheral nervous system
+sensory nervous system primordium,sensory nervous system
+somatic muscle,ventral nerve cord
+somatic muscle primordium,somatic muscle
+spiracles (tracheal system),spiracle (tracheal system)
+tracheal primordium,tracheal system
+tracheal primordium,unknown
+trunk mesoderm primordium,muscle
+trunk mesoderm primordium,plasmatocytes anlage
+trunk mesoderm primordium,somatic muscle primordium
+ubiquitous,brain
+ubiquitous,brain primordium
+ubiquitous,epidermis primordium
+ubiquitous,muscle
+ubiquitous,procrystal cell
+ubiquitous,trunk mesoderm primordium
+unknown,salivary gland
+ventral nerve cord,brain
+ventral nerve cord,sensory nervous system
+ventral nerve cord primordium,brain primordium
+visceral muscle primordium,brain
+visceral muscle primordium,muscle

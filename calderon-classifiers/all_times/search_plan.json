@@ -1,0 +1,66 @@
+{
+  "recipes": {
+    "wide": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "wide_balanced": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.5,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "residual": {
+      "family": "residual",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0
+    },
+    "residual_mixup_ema": {
+      "family": "residual",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.02,
+      "mixup": 0.2,
+      "noise": 0.03,
+      "ema": 0.995
+    },
+    "joint": {
+      "family": "wide",
+      "dropout": 0.1,
+      "weight_power": 0.25,
+      "smoothing": 0.0,
+      "mixup": 0.0,
+      "noise": 0.0,
+      "ema": 0.0,
+      "tissue_loss_weight": 0.5,
+      "consistency_weight": 0.1
+    }
+  },
+  "variants": [
+    "all_times"
+  ],
+  "targets": [
+    "branch_id",
+    "broad_tissue"
+  ],
+  "seed": 0,
+  "max_epochs": 160,
+  "patience": 30,
+  "batch_size": 2048,
+  "learning_rate": 0.001,
+  "data_directory": "/Users/harryamad/Desktop/drive/2026/flow-maps/datasets/calderon2022/all_times",
+  "selection": "Validation macro-F1 only; no new test scores during search",
+  "ensemble": "Validation-selected greedy probability averaging, at most three members; temperatures fit on validation only"
+}

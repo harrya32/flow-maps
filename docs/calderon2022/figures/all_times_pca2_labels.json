@@ -1,0 +1,443 @@
+{
+  "source_h5ad": "/Users/harryamad/Desktop/drive/2026/flow-maps/datasets/calderon2022/all_times/lineage_assigned_hvg3000_pca100_all_times.h5ad",
+  "source_h5ad_sha256": "f3babb7934e5ef8c61e8cc6b7c6683af3651229af2c5da98d3a8c93607ae11e1",
+  "n_plotted_cells": 314387,
+  "subsampled": false,
+  "coordinates": "obsm/X_pca[:, :2]",
+  "fit_population": "all_lineage_assigned_cells",
+  "variance_ratio": [
+    0.007584545155831451,
+    0.0061468496982926306
+  ],
+  "time_windows": [
+    "0-2",
+    "2-4",
+    "4-6",
+    "6-8",
+    "8-10",
+    "10-12",
+    "12-14",
+    "14-16",
+    "16-18"
+  ],
+  "draw_order_seed": 0,
+  "same_draw_order_for_both_labels": true,
+  "axis_limits": [
+    [
+      -33.340084075927734,
+      20.299541473388672
+    ],
+    [
+      -28.74847412109375,
+      41.55047607421875
+    ]
+  ],
+  "point_size": 0.7,
+  "alpha": 0.55,
+  "targets": {
+    "branch_id": {
+      "n_classes": 53,
+      "outputs": [
+        "/Users/harryamad/Desktop/drive/2026/flow-maps/docs/calderon2022/figures/all_times_pca2_branch_id.png",
+        "/Users/harryamad/Desktop/drive/2026/flow-maps/docs/calderon2022/figures/all_times_pca2_branch_id.svg"
+      ],
+      "classes": [
+        {
+          "label": "Blastoderm_A",
+          "n_cells": 11792,
+          "color": "#086ba6"
+        },
+        {
+          "label": "Blastoderm_AA",
+          "n_cells": 15075,
+          "color": "#0ad10a"
+        },
+        {
+          "label": "Blastoderm_AB",
+          "n_cells": 409,
+          "color": "#f70c0c"
+        },
+        {
+          "label": "Blastoderm_AC",
+          "n_cells": 3143,
+          "color": "#f70cf7"
+        },
+        {
+          "label": "Ubi_0",
+          "n_cells": 5477,
+          "color": "#a68f4b"
+        },
+        {
+          "label": "Ubi_A",
+          "n_cells": 1677,
+          "color": "#f76fa2"
+        },
+        {
+          "label": "Ubi_AA",
+          "n_cells": 7946,
+          "color": "#0ad1b8"
+        },
+        {
+          "label": "Ubi_AAA",
+          "n_cells": 5931,
+          "color": "#0c56f7"
+        },
+        {
+          "label": "Ubi_AAAA",
+          "n_cells": 1437,
+          "color": "#f7910c"
+        },
+        {
+          "label": "Ubi_AAAB",
+          "n_cells": 3513,
+          "color": "#a63929"
+        },
+        {
+          "label": "Ubi_AAAC",
+          "n_cells": 7480,
+          "color": "#894ba6"
+        },
+        {
+          "label": "Ubi_AAAD",
+          "n_cells": 1757,
+          "color": "#56a64b"
+        },
+        {
+          "label": "Ubi_AAB",
+          "n_cells": 8565,
+          "color": "#0ccbf7"
+        },
+        {
+          "label": "Ubi_AABA",
+          "n_cells": 7761,
+          "color": "#820cf7"
+        },
+        {
+          "label": "Ubi_AABAA",
+          "n_cells": 2483,
+          "color": "#d1b80a"
+        },
+        {
+          "label": "Ubi_AABB",
+          "n_cells": 4086,
+          "color": "#f70cae"
+        },
+        {
+          "label": "Ubi_AB",
+          "n_cells": 4671,
+          "color": "#f70c56"
+        },
+        {
+          "label": "Ubi_AC",
+          "n_cells": 9869,
+          "color": "#3e83f7"
+        },
+        {
+          "label": "Ubi_B",
+          "n_cells": 3264,
+          "color": "#f79a6f"
+        },
+        {
+          "label": "Ubi_BA",
+          "n_cells": 11205,
+          "color": "#e66ff7"
+        },
+        {
+          "label": "Ubi_BAB",
+          "n_cells": 2107,
+          "color": "#a66108"
+        },
+        {
+          "label": "Ubi_BB",
+          "n_cells": 3792,
+          "color": "#8c34d1"
+        },
+        {
+          "label": "Ubi_BC",
+          "n_cells": 4329,
+          "color": "#a62977"
+        },
+        {
+          "label": "Ubi_BCA",
+          "n_cells": 12164,
+          "color": "#0ad161"
+        },
+        {
+          "label": "Ubi_BCAA",
+          "n_cells": 9869,
+          "color": "#88a608"
+        },
+        {
+          "label": "Ubi_BCB",
+          "n_cells": 2205,
+          "color": "#f7613e"
+        },
+        {
+          "label": "Ubi_BD",
+          "n_cells": 3199,
+          "color": "#6fabf7"
+        },
+        {
+          "label": "Ubi_BDA",
+          "n_cells": 4205,
+          "color": "#a64b61"
+        },
+        {
+          "label": "Ubi_BDAB",
+          "n_cells": 4241,
+          "color": "#a6089c"
+        },
+        {
+          "label": "Ubi_BDB",
+          "n_cells": 5902,
+          "color": "#089ca6"
+        },
+        {
+          "label": "Ubi_BDBA",
+          "n_cells": 2344,
+          "color": "#a6674b"
+        },
+        {
+          "label": "Ubi_BDBB",
+          "n_cells": 7504,
+          "color": "#f70c82"
+        },
+        {
+          "label": "Ubi_C",
+          "n_cells": 1833,
+          "color": "#39a608"
+        },
+        {
+          "label": "Ubi_CA",
+          "n_cells": 8060,
+          "color": "#f76f6f"
+        },
+        {
+          "label": "Ubi_CAB",
+          "n_cells": 5569,
+          "color": "#916ff7"
+        },
+        {
+          "label": "Ubi_CB",
+          "n_cells": 11038,
+          "color": "#34d18c"
+        },
+        {
+          "label": "Ubi_CBB",
+          "n_cells": 5061,
+          "color": "#4b56a6"
+        },
+        {
+          "label": "Ubi_CC",
+          "n_cells": 7519,
+          "color": "#4ba678"
+        },
+        {
+          "label": "Ubi_CD",
+          "n_cells": 1744,
+          "color": "#f76fcd"
+        },
+        {
+          "label": "Ubi_CDA",
+          "n_cells": 547,
+          "color": "#a68808"
+        },
+        {
+          "label": "Ubi_CDB",
+          "n_cells": 864,
+          "color": "#8fa64b"
+        },
+        {
+          "label": "Ubi_CDBA",
+          "n_cells": 9154,
+          "color": "#7ad10a"
+        },
+        {
+          "label": "Ubi_CDBB",
+          "n_cells": 2146,
+          "color": "#d10a23"
+        },
+        {
+          "label": "Ubi_CDBC",
+          "n_cells": 3032,
+          "color": "#d13465"
+        },
+        {
+          "label": "Ubi_CDBD",
+          "n_cells": 9109,
+          "color": "#0a55d1"
+        },
+        {
+          "label": "Ubi_CDBDA",
+          "n_cells": 877,
+          "color": "#d1610a"
+        },
+        {
+          "label": "Ubi_CE",
+          "n_cells": 7176,
+          "color": "#f73ee0"
+        },
+        {
+          "label": "Ubi_CEB",
+          "n_cells": 5988,
+          "color": "#c93ef7"
+        },
+        {
+          "label": "Ubi_CF",
+          "n_cells": 8471,
+          "color": "#553ef7"
+        },
+        {
+          "label": "Ubi_D",
+          "n_cells": 16011,
+          "color": "#34a0d1"
+        },
+        {
+          "label": "Yolk_A",
+          "n_cells": 14673,
+          "color": "#f7560c"
+        },
+        {
+          "label": "Yolk_AB",
+          "n_cells": 9108,
+          "color": "#d134a0"
+        },
+        {
+          "label": "Yolk_AC",
+          "n_cells": 7005,
+          "color": "#0a7ad1"
+        }
+      ]
+    },
+    "broad_tissue": {
+      "n_classes": 24,
+      "outputs": [
+        "/Users/harryamad/Desktop/drive/2026/flow-maps/docs/calderon2022/figures/all_times_pca2_broad_tissue.png",
+        "/Users/harryamad/Desktop/drive/2026/flow-maps/docs/calderon2022/figures/all_times_pca2_broad_tissue.svg"
+      ],
+      "classes": [
+        {
+          "label": "Amnioserosa",
+          "n_cells": 8471,
+          "color": "#086ba6"
+        },
+        {
+          "label": "Blastoderm",
+          "n_cells": 11792,
+          "color": "#0ad10a"
+        },
+        {
+          "label": "Brain",
+          "n_cells": 24090,
+          "color": "#f70c0c"
+        },
+        {
+          "label": "Crystal cells",
+          "n_cells": 2146,
+          "color": "#f70cf7"
+        },
+        {
+          "label": "Ectoderm",
+          "n_cells": 10736,
+          "color": "#a68f4b"
+        },
+        {
+          "label": "Epidermis",
+          "n_cells": 41813,
+          "color": "#f76fa2"
+        },
+        {
+          "label": "Fat body",
+          "n_cells": 5569,
+          "color": "#0ad1b8"
+        },
+        {
+          "label": "Fore & hindgut",
+          "n_cells": 9497,
+          "color": "#0c56f7"
+        },
+        {
+          "label": "Germ",
+          "n_cells": 15075,
+          "color": "#f7910c"
+        },
+        {
+          "label": "Mesoderm",
+          "n_cells": 3199,
+          "color": "#a63929"
+        },
+        {
+          "label": "Midgut",
+          "n_cells": 11038,
+          "color": "#894ba6"
+        },
+        {
+          "label": "Midline/glia",
+          "n_cells": 2205,
+          "color": "#56a64b"
+        },
+        {
+          "label": "Muscle",
+          "n_cells": 547,
+          "color": "#0ccbf7"
+        },
+        {
+          "label": "Muscle/Ubi",
+          "n_cells": 9154,
+          "color": "#820cf7"
+        },
+        {
+          "label": "Neural",
+          "n_cells": 15384,
+          "color": "#d1b80a"
+        },
+        {
+          "label": "Plasmatocytes",
+          "n_cells": 7504,
+          "color": "#f70cae"
+        },
+        {
+          "label": "Salivary gland",
+          "n_cells": 5061,
+          "color": "#f70c56"
+        },
+        {
+          "label": "Sense",
+          "n_cells": 5988,
+          "color": "#3e83f7"
+        },
+        {
+          "label": "Somatic muscle",
+          "n_cells": 18553,
+          "color": "#f79a6f"
+        },
+        {
+          "label": "Tracheal sys.",
+          "n_cells": 13312,
+          "color": "#e66ff7"
+        },
+        {
+          "label": "Unknown",
+          "n_cells": 50501,
+          "color": "#73777d"
+        },
+        {
+          "label": "Ventral nerve cord",
+          "n_cells": 7761,
+          "color": "#a66108"
+        },
+        {
+          "label": "Visceral muscle",
+          "n_cells": 4205,
+          "color": "#8c34d1"
+        },
+        {
+          "label": "Yolk",
+          "n_cells": 30786,
+          "color": "#a62977"
+        }
+      ]
+    }
+  },
+  "source_unchanged": true
+}

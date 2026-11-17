@@ -1,0 +1,167 @@
+{
+  "backend": "otpfm",
+  "device": "cpu",
+  "torch_version": "2.3.0",
+  "numpy_version": "1.26.4",
+  "pot_version": "0.9.3",
+  "torch_threads": 4,
+  "config": {
+    "_description": "W2 (W2Inf + OT-coupling).",
+    "data_dir": "OTP-FM/data",
+    "pca_dim": 50,
+    "normalize": true,
+    "ot_coupling": true,
+    "ot_method": "emd",
+    "batch_size": 256,
+    "val_split": 0.1,
+    "hidden_dim": 768,
+    "num_hidden_layers": 10,
+    "x_hidden_layers": 0,
+    "t_hidden_layers": 0,
+    "x_emb_dim": 64,
+    "t_emb_dim": 64,
+    "activation": "silu",
+    "layernorm": true,
+    "dropout": 0.2,
+    "residual_every": 2,
+    "potential": "w2inf",
+    "tks": [
+      0.16
+    ],
+    "strength": 300.0,
+    "lambda_type": "delta",
+    "lambda_width": 0.33,
+    "epochs": 200,
+    "lr": 0.003,
+    "lr_schedule": "cosine",
+    "optimizer": "adam",
+    "grad_clip": 0.0,
+    "reshuffle_each_epoch": true,
+    "consistency_loss": "meanflow",
+    "lossfn": "adaptive",
+    "time_sampler": "uniform_scaled_marginal",
+    "diag_prob": 0.75,
+    "euler_steps": 2,
+    "ema_decay": 0.99,
+    "ema_ot": true,
+    "jvp_clamp": 100.0,
+    "solver_type": "direct",
+    "picard_steps": 5,
+    "sampling_steps": 50,
+    "eval_n_steps": 50,
+    "eval_num_samples": null,
+    "eval_metrics": [
+      "w1",
+      "swd",
+      "mmd",
+      "w2"
+    ],
+    "traj_skips": 20,
+    "num_1d_plot_samples": 5,
+    "otp_alpha_type": "sigmoid",
+    "otp_alpha_slope": 6.0,
+    "otp_alpha_mean_scale": 0.5,
+    "seed": 42,
+    "debug": false
+  },
+  "components": {
+    "otpfm_step_without_potential": {
+      "first_call_s": 0.2995994169614278,
+      "median_s": 0.08080799999879673,
+      "min_s": 0.06763870897702873,
+      "max_s": 0.15522033302113414,
+      "repeats": 15,
+      "last_loss": 0.9997177124023438
+    },
+    "otpfm_step_with_w2inf": {
+      "first_call_s": 0.089948957960587,
+      "median_s": 0.08942258299794048,
+      "min_s": 0.07318324997322634,
+      "max_s": 0.12560316699091345,
+      "repeats": 15,
+      "last_loss": 0.9998618960380554
+    },
+    "otpfm_w2inf_direct_solver": {
+      "first_call_s": 0.000320332997944206,
+      "median_s": 0.00018525001360103488,
+      "min_s": 0.00011633301619440317,
+      "max_s": 0.0006083330372348428,
+      "repeats": 9
+    },
+    "otpfm_actual_w2_gradient_only": {
+      "first_call_s": 0.00786241696914658,
+      "median_s": 0.00682462501572445,
+      "min_s": 0.006518833979498595,
+      "max_s": 0.008265167009085417,
+      "repeats": 9
+    },
+    "otpfm_validation_forward_256": {
+      "first_call_s": 0.061647041991818696,
+      "median_s": 0.040155540977139026,
+      "min_s": 0.03208620904479176,
+      "max_s": 0.07199116598349065,
+      "repeats": 7
+    }
+  },
+  "startup_alignments": [
+    {
+      "split": "train",
+      "interval_index": 0,
+      "shape": [
+        2883,
+        3034
+      ],
+      "cost_build_s": 0.025813500047661364,
+      "solve_s": 1.0587315420270897,
+      "argmax_s": 0.0024427500320598483
+    },
+    {
+      "split": "train",
+      "interval_index": 1,
+      "shape": [
+        3034,
+        3380
+      ],
+      "cost_build_s": 0.02477420895593241,
+      "solve_s": 1.1768406250048429,
+      "argmax_s": 0.0028765840106643736
+    },
+    {
+      "split": "validation",
+      "interval_index": 0,
+      "shape": [
+        320,
+        337
+      ],
+      "cost_build_s": 0.0003999170148745179,
+      "solve_s": 0.011298500001430511,
+      "argmax_s": 3.7375022657215595e-05
+    },
+    {
+      "split": "validation",
+      "interval_index": 1,
+      "shape": [
+        337,
+        376
+      ],
+      "cost_build_s": 0.0002486659795977175,
+      "solve_s": 0.014195958967320621,
+      "argmax_s": 4.333298420533538e-05
+    }
+  ],
+  "training_budget": {
+    "tuples_per_epoch": 2883,
+    "batch_size": 256,
+    "updates_per_epoch": 12,
+    "epochs": 200,
+    "total_updates": 2400,
+    "total_tuples": 576600
+  },
+  "trainable_parameters": 6129266,
+  "stage_medians_s": {
+    "forward": 0.05766649998258799,
+    "backward": 0.01687791699077934,
+    "optimizer": 0.007542166975326836,
+    "ema": 0.0014183750026859343
+  }
+}

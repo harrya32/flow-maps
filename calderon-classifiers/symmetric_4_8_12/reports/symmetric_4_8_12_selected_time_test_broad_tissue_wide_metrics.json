@@ -1,0 +1,91 @@
+{
+  "method": "wide",
+  "target": "broad_tissue",
+  "variant": "symmetric_4_8_12_selected_time_test",
+  "class_names": [
+    "Amnioserosa",
+    "Brain",
+    "Crystal cells",
+    "Ectoderm",
+    "Epidermis",
+    "Fat body",
+    "Fore & hindgut",
+    "Germ",
+    "Mesoderm",
+    "Midgut",
+    "Midline/glia",
+    "Muscle",
+    "Muscle/Ubi",
+    "Neural",
+    "Plasmatocytes",
+    "Salivary gland",
+    "Sense",
+    "Somatic muscle",
+    "Tracheal sys.",
+    "Unknown",
+    "Ventral nerve cord",
+    "Visceral muscle",
+    "Yolk"
+  ],
+  "validation": {
+    "n_cells": 16221,
+    "n_present_classes": 23,
+    "n_output_classes": 23,
+    "accuracy": 0.7590777387337402,
+    "balanced_accuracy": 0.7502412275314687,
+    "macro_f1": 0.7384151145739009,
+    "weighted_f1": 0.7586240299115967,
+    "top3_accuracy": 0.9271314962086185,
+    "log_loss": 0.7557586198027274,
+    "majority_training_class_accuracy": 0.18790456815239504,
+    "confidence_subsets": {
+      "0.8": {
+        "coverage": 0.5464521299549966,
+        "accuracy": 0.9455099277978339,
+        "n_cells": 8864
+      },
+      "0.9": {
+        "coverage": 0.4505270945071204,
+        "accuracy": 0.9701696770662288,
+        "n_cells": 7308
+      }
+    },
+    "expected_calibration_error_15bins": 0.01801479171239727,
+    "macro_average_scope": "Classes present in this evaluated split"
+  },
+  "test": {
+    "n_cells": 16221,
+    "n_present_classes": 23,
+    "n_output_classes": 23,
+    "accuracy": 0.7465014487392886,
+    "balanced_accuracy": 0.7433580507026474,
+    "macro_f1": 0.7277048203545201,
+    "weighted_f1": 0.7460511145597374,
+    "top3_accuracy": 0.9217064299365021,
+    "log_loss": 0.7810615810462023,
+    "majority_training_class_accuracy": 0.18790456815239504,
+    "confidence_subsets": {
+      "0.8": {
+        "coverage": 0.5411503606436101,
+        "accuracy": 0.9407609933925724,
+        "n_cells": 8778
+      },
+      "0.9": {
+        "coverage": 0.4478145613710622,
+        "accuracy": 0.965170704845815,
+        "n_cells": 7264
+      }
+    },
+    "expected_calibration_error_15bins": 0.01940360736791072,
+    "macro_average_scope": "Classes present in this evaluated split"
+  },
+  "selected": false,
+  "best_expressive": false,
+  "selection_sha256": "87110c9967b8732038e9da19c71f8b8424ff12511fe772e3a8203d575d73687b",
+  "cell_and_split_sha256": "59b796998413ec2d26dcaa15e065a0b382abf144b96c996aa5f3e2ab5c2a839d",
+  "selection_metric": "Selected-time validation macro-F1; ties use validation cross entropy",
+  "test_used_for_selection": false,
+  "parameter_count": 220695,
+  "temperature": 1.2441588253909581,
+  "checkpoint": "/Users/harryamad/Desktop/drive/2026/flow-maps/calderon-classifiers/symmetric_4_8_12/search/symmetric_4_8_12_broad_tissue_wide_seed0/broad_tissue.pt"
+}

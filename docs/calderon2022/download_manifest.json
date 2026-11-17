@@ -1,0 +1,32 @@
+{
+  "matrix": {
+    "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE190nnn/GSE190147/suppl/GSE190147_scirnaseq_gene_matrix.mtx.gz",
+    "bytes": 697773156,
+    "sha256": "6dc86f9fc4d467cc310eea07d09db778b5c10c242e29966498f50979771c3824"
+  },
+  "columns": {
+    "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE190nnn/GSE190147/suppl/GSE190147_scirnaseq_gene_matrix.columns.txt.gz",
+    "bytes": 19958916,
+    "sha256": "fda11b6db52daa6f8536c4e9d26071df4d3d9bb6f66876542865b2e8cb214e25"
+  },
+  "genes": {
+    "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE190nnn/GSE190147/suppl/GSE190147_scirnaseq_gene_matrix.rows.txt.gz",
+    "bytes": 88224,
+    "sha256": "032a5833bc1de5953a14e64081d801d3bd0a8bf3b43b4a77dd49a1de7d1ae547"
+  },
+  "annotations": {
+    "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/cell_to_annotations/rna_meta.rds",
+    "bytes": 24110965,
+    "sha256": "21267b5451433c966e791b1dcb50d830f31986f2ba60dc5021c6098c6a3b3b87"
+  },
+  "lineages": {
+    "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/RNA/update/rna_lineage_info/table_s1_withLineage.xlsx",
+    "bytes": 29286,
+    "sha256": "2f2df089adf0171359d4010a6c0dcee7bf80f5c0c890618c1324dfa3ec1990d0"
+  },
+  "decoder": {
+    "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/RNA/update/rna_lineage_info/celltype_list_rna.txt",
+    "bytes": 1590,
+    "sha256": "1f91468b31de264de7ed10f05c05f1219737d1316698aea6e98e61c349c29377"
+  }
+}

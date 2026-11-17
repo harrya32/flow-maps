@@ -1,0 +1,72 @@
+{
+  "records": [
+    {
+      "interval_index": 0,
+      "shape": [
+        2883,
+        3034
+      ],
+      "iteration_limit": 100000,
+      "solve_s": 1.0937182920170017,
+      "result_code": 3,
+      "warning": "numItermax reached before optimality. Try to increase numItermax.",
+      "warnings": [
+        "numItermax reached before optimality. Try to increase numItermax."
+      ],
+      "transported_mass": 1.0000000000000033,
+      "objective": 2.167851217921064,
+      "source_max_abs_residual": 2.3440450969136606e-16,
+      "target_max_abs_residual": 5.421010862427522e-20
+    },
+    {
+      "interval_index": 0,
+      "shape": [
+        2883,
+        3034
+      ],
+      "iteration_limit": 1000000,
+      "solve_s": 1.9090609169797972,
+      "result_code": 1,
+      "warning": null,
+      "warnings": [],
+      "transported_mass": 1.0000000000000049,
+      "objective": 2.154567843999031,
+      "source_max_abs_residual": 2.3440450969136606e-16,
+      "target_max_abs_residual": 5.421010862427522e-20
+    },
+    {
+      "interval_index": 1,
+      "shape": [
+        3034,
+        3380
+      ],
+      "iteration_limit": 100000,
+      "solve_s": 1.4328427919535898,
+      "result_code": 3,
+      "warning": "numItermax reached before optimality. Try to increase numItermax.",
+      "warnings": [
+        "numItermax reached before optimality. Try to increase numItermax."
+      ],
+      "transported_mass": 1.000000000000011,
+      "objective": 7.153090098705796,
+      "source_max_abs_residual": 0.0,
+      "target_max_abs_residual": 9.410874857174178e-17
+    },
+    {
+      "interval_index": 1,
+      "shape": [
+        3034,
+        3380
+      ],
+      "iteration_limit": 1000000,
+      "solve_s": 2.2523995829978958,
+      "result_code": 1,
+      "warning": null,
+      "warnings": [],
+      "transported_mass": 1.0000000000000104,
+      "objective": 7.125276667356327,
+      "source_max_abs_residual": 0.0,
+      "target_max_abs_residual": 9.410874857174178e-17
+    }
+  ]
+}

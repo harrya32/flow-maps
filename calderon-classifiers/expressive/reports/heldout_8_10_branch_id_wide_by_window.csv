@@ -1,0 +1,2 @@
+window,n_cells,n_present_classes,accuracy,balanced_accuracy,macro_f1
+8-10,58004,27,0.4564512792221226,0.46585004864069857,0.47381846637733666

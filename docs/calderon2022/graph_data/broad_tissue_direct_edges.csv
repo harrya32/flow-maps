@@ -1,0 +1,31 @@
+source,target
+Blastoderm,Ectoderm
+Blastoderm,Germ
+Blastoderm,Unknown
+Ectoderm,Epidermis
+Ectoderm,Mesoderm
+Ectoderm,Midline/glia
+Ectoderm,Tracheal sys.
+Epidermis,Fore & hindgut
+Epidermis,Neural
+Epidermis,Sense
+Fore & hindgut,Fat body
+Mesoderm,Somatic muscle
+Mesoderm,Visceral muscle
+Midgut,Salivary gland
+Somatic muscle,Brain
+Somatic muscle,Plasmatocytes
+Somatic muscle,Ventral nerve cord
+Unknown,Amnioserosa
+Unknown,Brain
+Unknown,Crystal cells
+Unknown,Ectoderm
+Unknown,Epidermis
+Unknown,Fore & hindgut
+Unknown,Midgut
+Unknown,Muscle
+Unknown,Muscle/Ubi
+Unknown,Neural
+Unknown,Somatic muscle
+Ventral nerve cord,Neural
+Visceral muscle,Brain

@@ -1,0 +1,103 @@
+branch,annotation
+Blastoderm_A,cellular blastoderm / pole cell
+Blastoderm_A,maternal
+Blastoderm_AA,germ cell
+Blastoderm_AA,ubiquitous
+Blastoderm_AB,unknown
+Blastoderm_AC,epidermis
+Blastoderm_AC,salivary gland
+Blastoderm_AC,tracheal primordium
+Blastoderm_AC,unknown
+Ubi_0,maternal
+Ubi_A,ubiquitous
+Ubi_AA,epidermis primordium
+Ubi_AA,ubiquitous
+Ubi_AAA,epidermis
+Ubi_AAAA,foregut / hindgut / anal pad
+Ubi_AAAB,epidermis
+Ubi_AAAC,epidermis
+Ubi_AAAD,spiracle (tracheal system)
+Ubi_AAAD,spiracles (tracheal system)
+Ubi_AAB,somatic muscle
+Ubi_AABA,brain
+Ubi_AABA,ventral nerve cord
+Ubi_AABAA,sensory nervous system
+Ubi_AABAA,ventral nerve cord
+Ubi_AABB,somatic muscle
+Ubi_AB,brain primordium
+Ubi_AB,ubiquitous
+Ubi_AC,brain
+Ubi_AC,brain primordium
+Ubi_AC,ubiquitous
+Ubi_B,ectoderm anlage in statu nascendi
+Ubi_BA,ectoderm primordium
+Ubi_BA,epidermis primordium
+Ubi_BA,tracheal primordium
+Ubi_BA,tracheal system
+Ubi_BAB,tracheal system
+Ubi_BB,ectoderm primordium
+Ubi_BB,epidermis primordium
+Ubi_BC,ectoderm primordium
+Ubi_BCA,epidermis
+Ubi_BCA,epidermis primordium
+Ubi_BCAA,brain
+Ubi_BCAA,brain primordium
+Ubi_BCAA,sensory nervous system
+Ubi_BCB,glia
+Ubi_BCB,midline primordium
+Ubi_BD,mesoderm primordium
+Ubi_BDA,muscle
+Ubi_BDA,visceral muscle
+Ubi_BDA,visceral muscle primordium
+Ubi_BDAB,brain
+Ubi_BDAB,visceral muscle primordium
+Ubi_BDB,somatic muscle
+Ubi_BDB,somatic muscle primordium
+Ubi_BDB,trunk mesoderm primordium
+Ubi_BDBA,brain
+Ubi_BDBA,ubiquitous
+Ubi_BDBA,ventral nerve cord
+Ubi_BDBB,plasmatocytes
+Ubi_BDBB,plasmatocytes anlage
+Ubi_C,anlage in statu nascendi
+Ubi_CA,foregut / hindgut / anal pad
+Ubi_CA,foregut / hindgut primordium
+Ubi_CA,hindgut / anal pad
+Ubi_CA,hindgut primordium
+Ubi_CAB,fat body
+Ubi_CB,Malpighian tubule
+Ubi_CB,endoderm primordium
+Ubi_CB,midgut
+Ubi_CB,midgut primordium
+Ubi_CBB,salivary gland
+Ubi_CBB,salivary gland body primordium
+Ubi_CBB,salivary gland primordium
+Ubi_CC,brain
+Ubi_CC,brain primordium
+Ubi_CC,ventral nerve cord primordium
+Ubi_CD,ubiquitous
+Ubi_CDA,muscle
+Ubi_CDA,trunk mesoderm primordium
+Ubi_CDB,ubiquitous
+Ubi_CDBA,muscle
+Ubi_CDBA,ubiquitous
+Ubi_CDBB,crystal cell
+Ubi_CDBB,procrystal cell
+Ubi_CDBC,brain
+Ubi_CDBC,ubiquitous
+Ubi_CDBD,brain
+Ubi_CDBD,ubiquitous
+Ubi_CDBDA,brain
+Ubi_CE,brain primordium
+Ubi_CE,epidermis
+Ubi_CE,peripheral nervous system primordium
+Ubi_CEB,peripheral nervous system
+Ubi_CEB,sensory nervous system
+Ubi_CEB,sensory nervous system primordium
+Ubi_CF,amnioserosa
+Ubi_D,brain primordium
+Ubi_D,ubiquitous
+Yolk_A,maternal
+Yolk_A,yolk nuclei
+Yolk_AB,yolk nuclei
+Yolk_AC,yolk nuclei

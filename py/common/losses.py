@@ -28,6 +28,9 @@ Parameters = Dict[str, Dict]
 
 def _lineage_backend(cfg: config_dict.ConfigDict):
     target = getattr(cfg.problem, "target", None)
+    if target == "calderon_pca100":
+        from . import calderon_lineage
+        return calderon_lineage
     if target == "cite_multi_pca100":
         return cite_multi
     if target == "schiebinger":
@@ -837,6 +840,8 @@ def _maizels_lineage_constraint_paths(
 
 def _setup_maizels_lineage_classifier(cfg: config_dict.ConfigDict):
     backend = _lineage_backend(cfg)
+    if getattr(cfg.problem, "target", None) == "calderon_pca100":
+        return backend.setup_lineage_classifier(cfg)
     classifier_path = getattr(
         cfg.problem,
         "classifier_path",

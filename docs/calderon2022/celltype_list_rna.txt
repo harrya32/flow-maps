@@ -1,0 +1,55 @@
+Blastoderm_AA	ExE embryo	Germ
+Blastoderm_A	Blastoderm	Blastoderm
+Blastoderm_AC	Ectoderm	Ectoderm
+Blastoderm_AB	Unknown	Unknown
+Ubi_CF	ExE embryo	Amnioserosa
+Ubi_CB	Endoderm	Midgut
+Ubi_CBB	Ectoderm	Salivary gland
+Ubi_CE	Ectoderm	Epidermis
+Ubi_CEB	Neuroectoderm	Sense
+Ubi_CC	Neuroectoderm	Brain
+Ubi_CDBD	Neuroectoderm	Brain
+Ubi_CDBDA	Neuroectoderm	Brain
+Ubi_CDBC	Neuroectoderm	Neural
+Ubi_CDB	Unknown	Unknown
+Ubi_C	Unknown	Unknown
+Ubi_CDBA	Mesoderm	Muscle/Ubi
+Ubi_CDBB	Mesoderm	Crystal cells
+Ubi_CD	Unknown	Unknown
+Ubi_CDA	Mesoderm	Muscle
+Ubi_CAB	Mesoderm	Fat body
+Ubi_CA	Ectoderm	Fore & hindgut
+Ubi_BDBB	Mesoderm	Plasmatocytes
+Ubi_BDB	Mesoderm	Somatic muscle
+Ubi_BD	Mesoderm	Mesoderm
+root	Unknown	Unknown
+Ubi_BDBA	Neuroectoderm	Brain
+Ubi_BDAB	Neuroectoderm	Brain
+Ubi_BDA	Mesoderm	Visceral muscle
+Ubi_BCB	Neuroectoderm	Midline/glia
+Ubi_BCAA	Neuroectoderm	Neural
+Ubi_B	Ectoderm	Ectoderm
+Ubi_BC	Ectoderm	Ectoderm
+Ubi_BCA	Ectoderm	Epidermis
+Ubi_BB	Ectoderm	Epidermis
+Ubi_BA	Ectoderm	Tracheal sys.
+Ubi_BAB	Ectoderm	Tracheal sys.
+Ubi_0	Unknown	Unknown
+Ubi_AAAA	Ectoderm	Fore & hindgut
+Ubi_AAA	Ectoderm	Epidermis
+Ubi_AAAB	Ectoderm	Epidermis
+Ubi_AAAB	Ectoderm	Epidermis
+Ubi_AAAC	Ectoderm	Epidermis
+Ubi_AAAD	Ectoderm	Epidermis
+Ubi_AA	Unknown	Unknown
+Ubi_A	Unknown	Unknown
+Ubi_AAB	Mesoderm	Somatic muscle
+Ubi_AABB	Mesoderm	Somatic muscle
+Ubi_AABA	Neuroectoderm	Ventral nerve cord
+Ubi_AABAA	Neuroectoderm	Neural
+Ubi_AC	Unknown	Unknown
+Ubi_AB	Unknown	Unknown
+Ubi_D	Unknown	Unknown
+Yolk_AC	ExE embryo	Yolk
+Yolk_A	ExE embryo	Yolk
+Yolk_AB	ExE embryo	Yolk

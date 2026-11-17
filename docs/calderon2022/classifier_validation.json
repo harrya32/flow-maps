@@ -1,0 +1,105 @@
+{
+  "raw_shape": [
+    314387,
+    23932
+  ],
+  "integer_counts": true,
+  "branches": 53,
+  "broad_labels": 24,
+  "protocols": {
+    "random": {
+      "shape": [
+        314387,
+        3000
+      ],
+      "pca_shape": [
+        314387,
+        100
+      ],
+      "training_indices_verified": true,
+      "label_alignment_verified": true,
+      "raw_to_pca_max_abs_error_256_cells": 2.7587268562001555e-05,
+      "split_sizes": {
+        "train": 251509,
+        "validation": 31439,
+        "test": 31439
+      },
+      "identical_branch_and_tissue_cell_split_hashes": true
+    },
+    "heldout_8_10": {
+      "shape": [
+        314387,
+        3000
+      ],
+      "pca_shape": [
+        314387,
+        100
+      ],
+      "training_indices_verified": true,
+      "label_alignment_verified": true,
+      "raw_to_pca_max_abs_error_256_cells": 2.2103897592273825e-05,
+      "split_sizes": {
+        "train": 230744,
+        "test": 58004,
+        "validation": 25639
+      },
+      "identical_branch_and_tissue_cell_split_hashes": true
+    }
+  },
+  "models": {
+    "calderon_branch_id_hvg3000_pca100_random_linear": {
+      "test_metrics_reproduced": true,
+      "accuracy": 0.5982696650656828,
+      "macro_f1": 0.5642555576310321,
+      "n_test_cells": 31439,
+      "repo_numpy_loader_max_abs_logit_error_256_cells": null,
+      "pytorch_numpy_export_max_abs_error": 0.0,
+      "cell_and_split_sha256": "b30d3ac27ca924c5ca8f5320ee8be2f1127f8b576715ff911b525aaa955051c1"
+    },
+    "calderon_branch_id_hvg3000_pca100_random_mlp": {
+      "test_metrics_reproduced": true,
+      "accuracy": 0.6351028976748624,
+      "macro_f1": 0.5980619608846857,
+      "n_test_cells": 31439,
+      "repo_numpy_loader_max_abs_logit_error_256_cells": 1.9073486328125e-06,
+      "pytorch_numpy_export_max_abs_error": 1.9073486328125e-06,
+      "cell_and_split_sha256": "b30d3ac27ca924c5ca8f5320ee8be2f1127f8b576715ff911b525aaa955051c1"
+    },
+    "calderon_broad_tissue_hvg3000_pca100_random_linear": {
+      "test_metrics_reproduced": true,
+      "accuracy": 0.6418779223257737,
+      "macro_f1": 0.6083950380313743,
+      "n_test_cells": 31439,
+      "repo_numpy_loader_max_abs_logit_error_256_cells": null,
+      "pytorch_numpy_export_max_abs_error": 0.0,
+      "cell_and_split_sha256": "b30d3ac27ca924c5ca8f5320ee8be2f1127f8b576715ff911b525aaa955051c1"
+    },
+    "calderon_broad_tissue_hvg3000_pca100_random_mlp": {
+      "test_metrics_reproduced": true,
+      "accuracy": 0.7102325137567989,
+      "macro_f1": 0.6832646350833697,
+      "n_test_cells": 31439,
+      "repo_numpy_loader_max_abs_logit_error_256_cells": 2.384185791015625e-06,
+      "pytorch_numpy_export_max_abs_error": 1.9073486328125e-06,
+      "cell_and_split_sha256": "b30d3ac27ca924c5ca8f5320ee8be2f1127f8b576715ff911b525aaa955051c1"
+    },
+    "calderon_branch_id_hvg3000_pca100_heldout_8_10_mlp": {
+      "test_metrics_reproduced": true,
+      "accuracy": 0.4668298738018068,
+      "macro_f1": 0.4804444713468943,
+      "n_test_cells": 58004,
+      "repo_numpy_loader_max_abs_logit_error_256_cells": 2.384185791015625e-06,
+      "pytorch_numpy_export_max_abs_error": 1.9073486328125e-06,
+      "cell_and_split_sha256": "b7fe252c3b815655a894c106daa21a799d4d60ce867ef4efb64e44ba4e52d34d"
+    },
+    "calderon_broad_tissue_hvg3000_pca100_heldout_8_10_mlp": {
+      "test_metrics_reproduced": true,
+      "accuracy": 0.5262395696848493,
+      "macro_f1": 0.5272367138016589,
+      "n_test_cells": 58004,
+      "repo_numpy_loader_max_abs_logit_error_256_cells": 1.9073486328125e-06,
+      "pytorch_numpy_export_max_abs_error": 1.9073486328125e-06,
+      "cell_and_split_sha256": "b7fe252c3b815655a894c106daa21a799d4d60ce867ef4efb64e44ba4e52d34d"
+    }
+  }
+}

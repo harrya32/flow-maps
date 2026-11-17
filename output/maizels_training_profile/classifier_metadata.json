@@ -1,0 +1,18 @@
+{
+  "source": "/Users/harryamad/Desktop/drive/2026/flow-maps/celltype_classifier_pca50_d3_d3p8_d8.pt",
+  "training_timepoints": [
+    "D3",
+    "D3.8",
+    "D8"
+  ],
+  "excluded_timepoints": [
+    "D3.2",
+    "D3.4",
+    "D3.6",
+    "D4",
+    "D5",
+    "D6",
+    "D7"
+  ],
+  "seed": 0
+}

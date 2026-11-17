@@ -1,0 +1,39 @@
+{
+  "date": "2026-11-16",
+  "scope": "Maizels D3/D3.8/D8, real time, shared 90/10 cell split, current presets, CPU components",
+  "native_max_updates": 50000,
+  "otpfm_updates": 2400,
+  "maximum_update_budget_ratio": 20.833333333333332,
+  "full_ot_classifier_point_evaluations": 811106900,
+  "native_median_components_s": {
+    "minibatch_pairing_ot_plain": 0.001258375000000811,
+    "minibatch_pairing_ot_endpoint": 0.0014830830000001072,
+    "minibatch_pairing_ot_endpoint_interpolant": 0.07172495899999909,
+    "global_edge_construction_ot_plain_64x64": 0.0013243749999993781,
+    "global_edge_construction_ot_endpoint_interpolant_64x64": 0.3276348339999995,
+    "native_gradient_without_lineage": 0.023049915999999726,
+    "native_gradient_with_lineage": 0.022816499999997575,
+    "native_lineage_diagnostics_current": 0.024046458000000825,
+    "native_lineage_diagnostics_jitted_comparison": 0.0012809999999987554,
+    "native_gradient_norm_logging": 0.002098791000001654,
+    "native_validation_1024_current": 0.11543800000000104,
+    "native_validation_1024_jitted_comparison": 0.02015749999999983,
+    "native_ema_two_copies": 0.010889332999997947
+  },
+  "otpfm_median_components_s": {
+    "otpfm_step_without_potential": 0.08080799999879673,
+    "otpfm_step_with_w2inf": 0.08942258299794048,
+    "otpfm_w2inf_direct_solver": 0.00018525001360103488,
+    "otpfm_actual_w2_gradient_only": 0.00682462501572445,
+    "otpfm_validation_forward_256": 0.040155540977139026
+  },
+  "converged_training_plan_solve_s": 4.161460499977693,
+  "default_cap_reached_on_both_training_intervals": true,
+  "limitations": [
+    "CPU component measurements, not an end-to-end GPU benchmark",
+    "Different networks and batch sizes",
+    "Native early stopping can reduce the maximum update budget",
+    "Full native biological global LP was not executed",
+    "Plotting, W&B, checkpoint I/O, and complete inference evaluations were not timed"
+  ]
+}

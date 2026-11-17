@@ -1,0 +1,8 @@
+{
+  "probabilities_reproduced_after_manifest_reload": true,
+  "max_abs_probability_difference": 0.0,
+  "paired_cells_improved_over_baseline": 2750,
+  "paired_cells_worsened_from_baseline": 2465,
+  "paired_net_accuracy_change": 0.00491345424453486,
+  "selection_sha256": "90cfe6e2f88798948cd11becaeb28c9f18ca8aa3d9bb90f54aff0b215eda2dd2"
+}

@@ -568,6 +568,8 @@ def _make_batched_masked_minibatch_ot_pairs(
     sample_with_replacement: bool = False,
     class_names: Sequence[str] = CLASS_NAMES,
     transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    allowed_class_mask: np.ndarray | None = None,
+    interpolant_checker=None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     """Solve many masked OT blocks while batching classifier inference."""
     class_names = tuple(str(name) for name in class_names)
@@ -588,19 +590,18 @@ def _make_batched_masked_minibatch_ot_pairs(
     unconstrained_class_names = (
         maizels.lineage_unconstrained_class_names_from_config(cfg)
     )
-    reachable = maizels.build_transition_reachable(
-        lineage_transition_mode,
-        edges=transition_edges,
-        class_names=class_names,
-        unconstrained_class_names=unconstrained_class_names,
-    )
-    class_mask = np.asarray(
-        [
-            [maizels.endpoint_valid(src, dst, reachable) for dst in class_names]
-            for src in class_names
-        ],
-        dtype=bool,
-    )
+    if allowed_class_mask is None:
+        reachable = maizels.build_transition_reachable(
+            lineage_transition_mode, edges=transition_edges, class_names=class_names,
+            unconstrained_class_names=unconstrained_class_names,
+        )
+        class_mask = np.asarray([[maizels.endpoint_valid(src, dst, reachable) for dst in class_names]
+                                 for src in class_names], dtype=bool)
+    else:
+        # This may already be a projected relation that must not receive closure.
+        class_mask = np.asarray(allowed_class_mask, dtype=bool)
+        if class_mask.shape != (len(class_names), len(class_names)):
+            raise ValueError("Explicit minibatch OT class mask has the wrong vocabulary shape.")
     fallback = str(
         getattr(
             cfg.problem,
@@ -726,31 +727,27 @@ def _make_batched_masked_minibatch_ot_pairs(
         if not pending:
             raise RuntimeError("Masked minibatch OT refinement made no progress.")
 
-        validity = maizels._check_candidate_interpolants(
+        candidate_inputs = dict(
             source_x=np.concatenate(all_check_source, axis=0),
             source_type_ids=np.concatenate(all_start_ids, axis=0),
             target_x=np.concatenate(all_check_target, axis=0),
             target_type_ids=np.concatenate(all_target_ids, axis=0),
-            classifier_path=maizels.resolve_classifier_path(
-                getattr(cfg.problem, "classifier_path", None)
-            ),
-            n_check_times=max(
-                1, int(getattr(cfg.problem, "n_interpolant_check_times", 5))
-            ),
-            prob_threshold=float(
-                getattr(cfg.problem, "classifier_prob_threshold", 0.85)
-            ),
-            margin_threshold=float(
-                getattr(cfg.problem, "classifier_margin_threshold", 1.0)
-            ),
-            classifier_batch_size=int(
-                getattr(cfg.problem, "classifier_batch_size", 8192)
-            ),
-            lineage_transition_mode=lineage_transition_mode,
-            transition_edges=transition_edges,
-            unconstrained_class_names=unconstrained_class_names,
-            path_builder=getattr(cfg.problem, "interpolant_path_builder", None),
         )
+        if interpolant_checker is not None:
+            validity = interpolant_checker(**candidate_inputs)
+        else:
+            validity = maizels._check_candidate_interpolants(
+                **candidate_inputs,
+                classifier_path=maizels.resolve_classifier_path(getattr(cfg.problem, "classifier_path", None)),
+                n_check_times=max(1, int(getattr(cfg.problem, "n_interpolant_check_times", 5))),
+                prob_threshold=float(getattr(cfg.problem, "classifier_prob_threshold", 0.85)),
+                margin_threshold=float(getattr(cfg.problem, "classifier_margin_threshold", 1.0)),
+                classifier_batch_size=int(getattr(cfg.problem, "classifier_batch_size", 8192)),
+                lineage_transition_mode=lineage_transition_mode,
+                transition_edges=transition_edges,
+                unconstrained_class_names=unconstrained_class_names,
+                path_builder=getattr(cfg.problem, "interpolant_path_builder", None),
+            )
         valid_all = np.asarray(validity["valid"], dtype=bool)
         offset = 0
         for state_index, check_source, check_target, count in pending:
@@ -857,6 +854,8 @@ def _make_minibatch_ot_pairs_from_arrays(
     sample_with_replacement: bool = False,
     class_names: Sequence[str] = CLASS_NAMES,
     transition_edges: Sequence[Tuple[str, str]] = TRANSITION_EDGES,
+    allowed_class_mask: np.ndarray | None = None,
+    interpolant_checker=None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     """Draw independent minibatches, solve OT, and sample coupled pairs."""
     pair_mode = _canonical_pair_mode(pair_mode)
@@ -882,6 +881,8 @@ def _make_minibatch_ot_pairs_from_arrays(
             sample_with_replacement=sample_with_replacement,
             class_names=class_names,
             transition_edges=transition_edges,
+            allowed_class_mask=allowed_class_mask,
+            interpolant_checker=interpolant_checker,
         )
 
     source_types = np.asarray(source_types)

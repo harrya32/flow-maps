@@ -1,0 +1,563 @@
+{
+  "backend": "native",
+  "platform": "macOS-26.3.1-arm64-arm-64bit",
+  "jax_version": "0.4.30",
+  "devices": [
+    "TFRT_CPU_0"
+  ],
+  "numpy_version": "1.26.4",
+  "config": {
+    "constraints": {
+      "classifier_temperature": 1.0,
+      "constraint_batch_fraction": 1.0,
+      "constraint_batch_size": 32,
+      "enabled": true,
+      "euler_steps": 10,
+      "lambda_final": 0.0,
+      "lambda_start": 0.0,
+      "lambda_transition": 1.0,
+      "lineage_transition_mode": "same_as_problem",
+      "loss_point_entropy_weight": 0.0,
+      "path_mode": "loss_points_nll",
+      "path_n_times": 10,
+      "stage2_only": false,
+      "type": "maizels_lineage_path",
+      "velocity_rollout_batch_size": 0,
+      "velocity_rollout_loss_scope": "endpoints",
+      "velocity_rollout_max_step": 0.01,
+      "velocity_rollout_max_steps": 0,
+      "velocity_rollout_reference_diag_fraction": 0.75,
+      "weight": 1000.0
+    },
+    "logging": {
+      "comparison_mode": "bio_prior_ot_constrained_flow_map",
+      "euler_line_steps": [
+        10,
+        25,
+        100
+      ],
+      "fid_batch_size": null,
+      "fid_ema_factor": null,
+      "fid_freq": 0,
+      "fid_n_samples": null,
+      "fid_n_steps_flow": null,
+      "fid_stats_path": null,
+      "line_plot_bs": 128,
+      "line_plot_n_times": 50,
+      "maizels": {
+        "check_n_times": 50,
+        "classifier_batch_size": 8192,
+        "distribution_eval_enabled": true,
+        "distribution_eval_euler_n_steps": 50,
+        "distribution_eval_flowmap_n_steps": 50,
+        "distribution_eval_interval_local": true,
+        "distribution_eval_max_timepoints": 0,
+        "distribution_eval_mmd_bandwidth_multipliers": [
+          0.25,
+          0.5,
+          1.0,
+          2.0,
+          4.0
+        ],
+        "distribution_eval_mmd_bandwidths": [],
+        "distribution_eval_points_per_time": 0,
+        "distribution_eval_source_max_points": 0,
+        "distribution_eval_source_pool": "all",
+        "distribution_eval_timepoints": [
+          "D3.2",
+          "D3.4",
+          "D3.6",
+          "D4",
+          "D5",
+          "D6",
+          "D7"
+        ],
+        "enabled": true,
+        "euler_n_steps": 50,
+        "flowmap_n_steps": 50,
+        "full_data_classifier_path": "/Users/harryamad/Desktop/drive/2026/flow-maps/celltype_classifier_pca50.pt",
+        "lineage_transition_mode": "same_as_problem",
+        "margin_threshold": 0,
+        "observed_distribution_eval_enabled": true,
+        "pair_mode": "same_as_training",
+        "path_n_times": 50,
+        "plot_bs": 512,
+        "plot_seed": 997,
+        "prob_threshold": 0,
+        "trajectory_diagnostics_enabled": true,
+        "trajectory_eval_seed": 2698,
+        "trajectory_eval_source_max_points": 512,
+        "trajectory_eval_source_pool": "heldout",
+        "validation_bs": 1024,
+        "validation_enabled": true,
+        "validation_pair_mode": "same_as_training",
+        "validation_seed": 2701
+      },
+      "multi_step_line_plot_bs": 128,
+      "multi_step_line_steps": [
+        10,
+        25,
+        100
+      ],
+      "output_folder": "",
+      "output_name": "maizels_pca50_bio_prior_ot_constrained_flow_map_seed0",
+      "plot_bs": 1024,
+      "progress_freq": 1,
+      "save_freq": 5000,
+      "scalar_freq": 1,
+      "traj_plot_bs": 512,
+      "visual_ema_factor": null,
+      "visual_freq": 5000,
+      "wandb_entity": "harryamad-university-of-cambridge",
+      "wandb_name": "maizels_pca50_bio_prior_ot_constrained_flow_map_seed0",
+      "wandb_project": "self-distill-flow-maps"
+    },
+    "network": {
+      "act": "gelu",
+      "img_channels": null,
+      "img_resolution": null,
+      "input_dims": [
+        50
+      ],
+      "label_dim": null,
+      "load_ema_fac": null,
+      "load_path": "",
+      "logvar_channels": null,
+      "n_hidden": 2,
+      "n_neurons": 1024,
+      "network_type": "mlp",
+      "output_dim": 50,
+      "rescale": 2.0891224073965673,
+      "reset_optimizer": true,
+      "unet_kwargs": null,
+      "use_bfloat16": false,
+      "use_residual": false,
+      "use_weight": false
+    },
+    "optimization": {
+      "bs": 128,
+      "clip": 10.0,
+      "decay_steps": 50000,
+      "diag_fraction": 0.75,
+      "early_stopping": {
+        "check_freq": 100,
+        "metric": "validation_loss",
+        "min_delta": 0.0,
+        "mode": "min",
+        "patience": 10,
+        "save_best": true,
+        "warmup_steps": 0
+      },
+      "learning_rate": 0.0003,
+      "schedule_type": "sqrt",
+      "total_samples": 6400000,
+      "total_steps": 50000
+    },
+    "problem": {
+      "base": "maizels_d3",
+      "classifier_batch_size": 8192,
+      "classifier_margin_threshold": 0,
+      "classifier_path": "/Users/harryamad/Desktop/drive/2026/flow-maps/output/maizels_training_profile/selected_days_classifier.npz",
+      "classifier_prob_threshold": 0,
+      "d": 50,
+      "dataset_location": "/Users/harryamad/Desktop/drive/2026/flow-maps/celltype_classification_pca50_dataset.csv.gz",
+      "device_batching": true,
+      "evaluation_timepoints": [
+        "D3.2",
+        "D3.4",
+        "D3.6",
+        "D4",
+        "D5",
+        "D6",
+        "D7"
+      ],
+      "gaussian_scale": "adaptive",
+      "hparam_val_times": [
+        "D3.4",
+        "D6"
+      ],
+      "image_dims": null,
+      "interp_type": "time_rescaled_linear",
+      "interp_uses_labels": true,
+      "lineage_transition_mode": "descendant",
+      "maizels_holdout_fraction": 0.1,
+      "maizels_holdout_n": 0,
+      "maizels_holdout_seed": 701,
+      "maizels_ot_coupling": "minibatch_ot",
+      "maizels_pair_mode": "ot_endpoint_interpolant",
+      "maizels_schedule": "d3_d3p8_d8",
+      "maizels_time_mode": "real_time",
+      "n": 500000,
+      "n_interpolant_check_times": 50,
+      "num_classes": null,
+      "ot_cache_dir": "",
+      "ot_cache_enabled": false,
+      "ot_cache_version": "v1",
+      "ot_candidate_chunk_size": 50000,
+      "ot_drop_orphan_cells": true,
+      "ot_mass_tolerance": 1e-12,
+      "ot_minibatch_infeasible_fallback": "partial",
+      "ot_minibatch_max_resamples": 20,
+      "ot_minibatch_size": 128,
+      "ot_progress_enabled": false,
+      "ot_verbose": false,
+      "pair_time_bounds_in_label": true,
+      "rejection_chunk_size": 50000,
+      "rejection_max_candidates": 5000000,
+      "retained_timepoints": [
+        "D3",
+        "D3.8",
+        "D8"
+      ],
+      "source_time": "D3",
+      "target": "maizels_pca50",
+      "target_time": "D8",
+      "timepoint_order": [
+        "D3",
+        "D3.2",
+        "D3.4",
+        "D3.6",
+        "D3.8",
+        "D4",
+        "D5",
+        "D6",
+        "D7",
+        "D8"
+      ],
+      "timepoint_values": [
+        0.0,
+        0.040000000000000036,
+        0.07999999999999999,
+        0.12000000000000002,
+        0.15999999999999998,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0
+      ]
+    },
+    "training": {
+      "class_dropout": 0.0,
+      "conditional": false,
+      "ema_facs": [
+        0.999,
+        0.9999
+      ],
+      "loss_type": "lsd",
+      "ndevices": 1,
+      "psd_type": null,
+      "seed": 0,
+      "shuffle": true,
+      "stopgrad_type": "convex",
+      "tmax": 1.0,
+      "tmin": 0.0
+    }
+  },
+  "components": {
+    "minibatch_pairing_ot_plain": {
+      "first_call_s": 1.0136382079999997,
+      "median_s": 0.001258375000000811,
+      "min_s": 0.00103412500000033,
+      "max_s": 0.0015892500000003196,
+      "repeats": 9,
+      "last_stats": {
+        "pair_mode": "ot_plain",
+        "coupling": "dynamic_minibatch_ot",
+        "pair_pool_mode": "direct_timepoint_pools",
+        "sampled_pairs": 128,
+        "ot_minibatch_size": 128,
+        "ot_cost": "raw_sqeuclidean",
+        "intervals": [
+          {
+            "pair_mode": "ot_plain",
+            "coupling": "minibatch_ot",
+            "ot_minibatch_size": 64,
+            "ot_configured_minibatch_size": 128,
+            "ot_minibatches": 1,
+            "sampled_pairs": 64,
+            "candidate_pairs": 4096,
+            "endpoint_rejected": 0,
+            "interpolant_checked": 0,
+            "interpolant_rejected": 0,
+            "accepted_pairs": 64,
+            "collected_accepted_pairs": 64,
+            "ot_refinements": 0,
+            "ot_mean_retained_valid_mass": 1.0,
+            "candidate_acceptance_rate": 0.015625,
+            "ot_cost": "raw_sqeuclidean",
+            "source_time": "D3",
+            "target_time": "D3.8",
+            "t_start": 0.0,
+            "t_end": 0.15999999999999998
+          },
+          {
+            "pair_mode": "ot_plain",
+            "coupling": "minibatch_ot",
+            "ot_minibatch_size": 64,
+            "ot_configured_minibatch_size": 128,
+            "ot_minibatches": 1,
+            "sampled_pairs": 64,
+            "candidate_pairs": 4096,
+            "endpoint_rejected": 0,
+            "interpolant_checked": 0,
+            "interpolant_rejected": 0,
+            "accepted_pairs": 64,
+            "collected_accepted_pairs": 64,
+            "ot_refinements": 0,
+            "ot_mean_retained_valid_mass": 1.0,
+            "candidate_acceptance_rate": 0.015625,
+            "ot_cost": "raw_sqeuclidean",
+            "source_time": "D3.8",
+            "target_time": "D8",
+            "t_start": 0.15999999999999998,
+            "t_end": 1.0
+          }
+        ]
+      }
+    },
+    "minibatch_pairing_ot_endpoint": {
+      "first_call_s": 0.0017580830000003544,
+      "median_s": 0.0014830830000001072,
+      "min_s": 0.0014212920000016283,
+      "max_s": 0.0018546249999999986,
+      "repeats": 9,
+      "last_stats": {
+        "pair_mode": "ot_endpoint",
+        "coupling": "dynamic_minibatch_ot",
+        "pair_pool_mode": "direct_timepoint_pools",
+        "sampled_pairs": 128,
+        "ot_minibatch_size": 128,
+        "ot_cost": "raw_sqeuclidean",
+        "intervals": [
+          {
+            "pair_mode": "ot_endpoint",
+            "coupling": "minibatch_ot",
+            "ot_minibatch_size": 64,
+            "ot_configured_minibatch_size": 128,
+            "ot_minibatches": 1,
+            "sampled_pairs": 64,
+            "candidate_pairs": 4096,
+            "endpoint_rejected": 285,
+            "interpolant_checked": 0,
+            "interpolant_rejected": 0,
+            "accepted_pairs": 64,
+            "collected_accepted_pairs": 64,
+            "ot_refinements": 0,
+            "ot_mean_retained_valid_mass": 1.0,
+            "candidate_acceptance_rate": 0.015625,
+            "ot_cost": "raw_sqeuclidean",
+            "source_time": "D3",
+            "target_time": "D3.8",
+            "t_start": 0.0,
+            "t_end": 0.15999999999999998
+          },
+          {
+            "pair_mode": "ot_endpoint",
+            "coupling": "minibatch_ot",
+            "ot_minibatch_size": 64,
+            "ot_configured_minibatch_size": 128,
+            "ot_minibatches": 1,
+            "sampled_pairs": 64,
+            "candidate_pairs": 4096,
+            "endpoint_rejected": 949,
+            "interpolant_checked": 0,
+            "interpolant_rejected": 0,
+            "accepted_pairs": 64,
+            "collected_accepted_pairs": 64,
+            "ot_refinements": 0,
+            "ot_mean_retained_valid_mass": 0.9375,
+            "candidate_acceptance_rate": 0.015625,
+            "ot_cost": "raw_sqeuclidean",
+            "source_time": "D3.8",
+            "target_time": "D8",
+            "t_start": 0.15999999999999998,
+            "t_end": 1.0
+          }
+        ]
+      }
+    },
+    "minibatch_pairing_ot_endpoint_interpolant": {
+      "first_call_s": 0.09373425000000069,
+      "median_s": 0.07172495899999909,
+      "min_s": 0.018139500000000197,
+      "max_s": 0.13476008299999975,
+      "repeats": 9,
+      "last_stats": {
+        "pair_mode": "ot_endpoint_interpolant",
+        "coupling": "dynamic_minibatch_ot",
+        "pair_pool_mode": "direct_timepoint_pools",
+        "sampled_pairs": 128,
+        "ot_minibatch_size": 128,
+        "ot_cost": "raw_sqeuclidean",
+        "intervals": [
+          {
+            "pair_mode": "ot_endpoint_interpolant",
+            "coupling": "minibatch_ot",
+            "ot_minibatch_size": 64,
+            "ot_configured_minibatch_size": 128,
+            "ot_minibatches": 1,
+            "sampled_pairs": 64,
+            "candidate_pairs": 4096,
+            "endpoint_rejected": 300,
+            "interpolant_checked": 64,
+            "interpolant_rejected": 0,
+            "accepted_pairs": 64,
+            "collected_accepted_pairs": 64,
+            "ot_refinements": 1,
+            "ot_mean_retained_valid_mass": 1.0,
+            "candidate_acceptance_rate": 0.015625,
+            "ot_cost": "raw_sqeuclidean",
+            "source_time": "D3",
+            "target_time": "D3.8",
+            "t_start": 0.0,
+            "t_end": 0.15999999999999998
+          },
+          {
+            "pair_mode": "ot_endpoint_interpolant",
+            "coupling": "minibatch_ot",
+            "ot_minibatch_size": 64,
+            "ot_configured_minibatch_size": 128,
+            "ot_minibatches": 1,
+            "sampled_pairs": 64,
+            "candidate_pairs": 4096,
+            "endpoint_rejected": 862,
+            "interpolant_checked": 94,
+            "interpolant_rejected": 11,
+            "accepted_pairs": 64,
+            "collected_accepted_pairs": 64,
+            "ot_refinements": 8,
+            "ot_mean_retained_valid_mass": 0.9375,
+            "candidate_acceptance_rate": 0.015625,
+            "ot_cost": "raw_sqeuclidean",
+            "source_time": "D3.8",
+            "target_time": "D8",
+            "t_start": 0.15999999999999998,
+            "t_end": 1.0
+          }
+        ]
+      }
+    },
+    "global_edge_construction_ot_plain_64x64": {
+      "first_call_s": 0.0032538750000004057,
+      "median_s": 0.0013243749999993781,
+      "min_s": 0.0012447499999996836,
+      "max_s": 0.0014954999999989838,
+      "repeats": 3,
+      "source_cells": 64,
+      "target_cells": 64,
+      "last_stats": {
+        "candidate_pairs": 4096,
+        "endpoint_rejected": 0,
+        "interpolant_rejected": 0,
+        "accepted_pairs": 4096,
+        "ot_edge_mode": "full_support"
+      }
+    },
+    "global_edge_construction_ot_endpoint_interpolant_64x64": {
+      "first_call_s": 0.35231308299999853,
+      "median_s": 0.3276348339999995,
+      "min_s": 0.32718883299999924,
+      "max_s": 0.39952087500000033,
+      "repeats": 3,
+      "source_cells": 64,
+      "target_cells": 64,
+      "last_stats": {
+        "candidate_pairs": 4096,
+        "endpoint_rejected": 106,
+        "interpolant_rejected": 210,
+        "accepted_pairs": 3780,
+        "ot_edge_mode": "hard_mask"
+      }
+    },
+    "native_gradient_without_lineage": {
+      "first_call_s": 0.8729490000000002,
+      "median_s": 0.023049915999999726,
+      "min_s": 0.017212833999998622,
+      "max_s": 0.02935850000000073,
+      "repeats": 15,
+      "last_loss": 1329.3646240234375
+    },
+    "native_gradient_with_lineage": {
+      "first_call_s": 1.0639437920000017,
+      "median_s": 0.022816499999997575,
+      "min_s": 0.019521125000000694,
+      "max_s": 0.025922541999999993,
+      "repeats": 15,
+      "last_loss": 1369.9644775390625
+    },
+    "native_lineage_diagnostics_current": {
+      "first_call_s": 1.1747868340000025,
+      "median_s": 0.024046458000000825,
+      "min_s": 0.022485040999999484,
+      "max_s": 0.028305499999998318,
+      "repeats": 9
+    },
+    "native_lineage_diagnostics_jitted_comparison": {
+      "first_call_s": 0.17213279100000278,
+      "median_s": 0.0012809999999987554,
+      "min_s": 0.0010348340000021494,
+      "max_s": 0.001879125000002091,
+      "repeats": 9
+    },
+    "native_gradient_norm_logging": {
+      "first_call_s": 0.03261858300000142,
+      "median_s": 0.002098791000001654,
+      "min_s": 0.002046582999998492,
+      "max_s": 0.0022578340000016794,
+      "repeats": 9
+    },
+    "native_validation_1024_current": {
+      "first_call_s": 2.0928510829999993,
+      "median_s": 0.11543800000000104,
+      "min_s": 0.11074500000000143,
+      "max_s": 0.11801716699999787,
+      "repeats": 5
+    },
+    "native_validation_1024_jitted_comparison": {
+      "first_call_s": 0.3206873339999987,
+      "median_s": 0.02015749999999983,
+      "min_s": 0.019600582999999006,
+      "max_s": 0.020417291999997644,
+      "repeats": 5
+    },
+    "native_ema_two_copies": {
+      "first_call_s": 0.09105716699999888,
+      "median_s": 0.010889332999997947,
+      "min_s": 0.005107417000001391,
+      "max_s": 0.019636250000001354,
+      "repeats": 9
+    }
+  },
+  "data_load_s": 0.9871599580000012,
+  "cells": {
+    "D3": {
+      "train": 2883,
+      "validation": 320
+    },
+    "D3.8": {
+      "train": 3034,
+      "validation": 337
+    },
+    "D8": {
+      "train": 3380,
+      "validation": 376
+    }
+  },
+  "full_support_counts": [
+    {
+      "interval": "D3->D3.8",
+      "all_edges": 8747022,
+      "endpoint_allowed_edges": 8129624,
+      "classifier_point_checks_before_interpolant_filter": 406481200
+    },
+    {
+      "interval": "D3.8->D8",
+      "all_edges": 10254920,
+      "endpoint_allowed_edges": 8092514,
+      "classifier_point_checks_before_interpolant_filter": 404625700
+    }
+  ],
+  "native_rescale": 2.0891224073965673,
+  "trainable_parameters": 2204722
+}

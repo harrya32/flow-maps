@@ -1,0 +1,1538 @@
+{
+  "inspected_on": "2026-11-16",
+  "scope": "Read-only feasibility assessment; no expression matrix download beyond the first 65536 compressed bytes and no flow-model training.",
+  "paper": {
+    "doi": "10.1126/science.abn5800",
+    "pmcid": "PMC9371440",
+    "rna_nuclei": 547805,
+    "atac_nuclei": 976460,
+    "rna_median_umis": 399,
+    "rna_median_detected_genes": 274,
+    "paper_reported_rna_states_0_to_18": 268,
+    "paper_reported_rna_annotation_labels": 54
+  },
+  "expression_matrix": {
+    "orientation": "feature_by_cell",
+    "matrix_market_type": "coordinate integer general",
+    "n_features": 23932,
+    "n_cells": 547805,
+    "n_nonzero_entries": 212703167,
+    "density": 0.016224412150817272,
+    "unique_feature_names": 23932,
+    "compressed_bytes": 697773156,
+    "reported_entry_count_matches_sum_of_metadata_detected_features": true,
+    "total_umis_from_column_metadata": 347601285
+  },
+  "joins": {
+    "matrix_columns_rows": 547805,
+    "annotation_metadata_rows": 547805,
+    "unique_cell_ids_in_each": 547805,
+    "cell_id_sets_identical": true,
+    "row_orders_identical": false,
+    "collection_time_values_identical_by_cell": true,
+    "n_count_values_identical_by_cell": true,
+    "n_feature_values_identical_by_cell": true,
+    "maximum_age_discrepancy_by_cell": 5.3290705182007514e-14,
+    "state_table_matched_cells": 547805,
+    "annotation_mismatches_after_whitespace_normalization": 0
+  },
+  "annotations": {
+    "metadata_columns": [
+      "inferred_time_window",
+      "seurat_clusters",
+      "experiment",
+      "nCount_RNA",
+      "nFeature_RNA",
+      "cell",
+      "time",
+      "percent.mt",
+      "percent.ribo",
+      "doublet_score",
+      "lasso_age",
+      "NNv1_age",
+      "NNv2_age",
+      "lasso_shift",
+      "NNv1_shift",
+      "NNv2_shift",
+      "manual_annot",
+      "germ_layer",
+      "hex",
+      "hex2"
+    ],
+    "released_metadata_distinct_manual_labels": 51,
+    "raw_lineage_table_distinct_manual_labels": 54,
+    "normalized_lineage_table_distinct_manual_labels": 51,
+    "table_states_all_0_to_20": 287,
+    "table_states_0_to_18": 268,
+    "all_cells_0_to_18": 532059,
+    "lineage_assigned_states_0_to_18": 184,
+    "lineage_unassigned_states_0_to_18": 84,
+    "lineage_assigned_cells_0_to_18": 314387,
+    "lineage_unassigned_cells_0_to_18": 217672,
+    "lineage_assignment_fraction_0_to_18": 0.5908874767647949,
+    "lineage_ids_excluding_NA": 53,
+    "cells_by_lineage_family": {
+      "Ubi": 253182,
+      "Yolk": 30786,
+      "Blastoderm": 30419
+    }
+  },
+  "collection_window_counts": {
+    "hrs_16_20": 79685,
+    "hrs_00_02": 78890,
+    "hrs_08_12": 66230,
+    "hrs_03_07": 62789,
+    "hrs_01_03": 56028,
+    "hrs_06_10": 42942,
+    "hrs_04_08": 41484,
+    "hrs_12_16": 37139,
+    "hrs_10_14": 33843,
+    "hrs_14_18": 29824,
+    "hrs_02_04": 18951
+  },
+  "inferred_window_counts": [
+    {
+      "inferred_time_window": "0-2",
+      "all_cells": 122331,
+      "table_states": 16,
+      "lineage_assigned_cells_0_to_18": 24844,
+      "unassigned_cells_0_to_18": 97487
+    },
+    {
+      "inferred_time_window": "2-4",
+      "all_cells": 29508,
+      "table_states": 17,
+      "lineage_assigned_cells_0_to_18": 10025,
+      "unassigned_cells_0_to_18": 19483
+    },
+    {
+      "inferred_time_window": "4-6",
+      "all_cells": 84626,
+      "table_states": 32,
+      "lineage_assigned_cells_0_to_18": 52746,
+      "unassigned_cells_0_to_18": 31880
+    },
+    {
+      "inferred_time_window": "6-8",
+      "all_cells": 33412,
+      "table_states": 28,
+      "lineage_assigned_cells_0_to_18": 30876,
+      "unassigned_cells_0_to_18": 2536
+    },
+    {
+      "inferred_time_window": "8-10",
+      "all_cells": 77035,
+      "table_states": 36,
+      "lineage_assigned_cells_0_to_18": 58004,
+      "unassigned_cells_0_to_18": 19031
+    },
+    {
+      "inferred_time_window": "10-12",
+      "all_cells": 24073,
+      "table_states": 31,
+      "lineage_assigned_cells_0_to_18": 21448,
+      "unassigned_cells_0_to_18": 2625
+    },
+    {
+      "inferred_time_window": "12-14",
+      "all_cells": 58550,
+      "table_states": 37,
+      "lineage_assigned_cells_0_to_18": 51456,
+      "unassigned_cells_0_to_18": 7094
+    },
+    {
+      "inferred_time_window": "14-16",
+      "all_cells": 45411,
+      "table_states": 36,
+      "lineage_assigned_cells_0_to_18": 40919,
+      "unassigned_cells_0_to_18": 4492
+    },
+    {
+      "inferred_time_window": "16-18",
+      "all_cells": 57113,
+      "table_states": 35,
+      "lineage_assigned_cells_0_to_18": 24069,
+      "unassigned_cells_0_to_18": 33044
+    },
+    {
+      "inferred_time_window": "18-20",
+      "all_cells": 15746,
+      "table_states": 19,
+      "lineage_assigned_cells_0_to_18": 0,
+      "unassigned_cells_0_to_18": null
+    }
+  ],
+  "candidate_prefix_hierarchy": {
+    "status": "Our reconstruction of a candidate branch-ID hierarchy from the released lineage strings, not a verified export of the complete Fig. 3C weighted state graph.",
+    "rule": "Ubi_0 is the parent of Ubi_A/B/C/D. For longer letter codes, remove the final letter to obtain the parent within the same prefix family. Blastoderm_A and Yolk_A are separate roots. Include self-transitions and transitive descendants when building a transition mask.",
+    "node_count": 53,
+    "edge_count": 50,
+    "root_ids": [
+      "Blastoderm_A",
+      "Ubi_0",
+      "Yolk_A"
+    ],
+    "branch_points": 14,
+    "leaves": 31,
+    "max_children": 6,
+    "max_depth_edges": 5,
+    "example_longest_path": [
+      "Ubi_0",
+      "Ubi_A",
+      "Ubi_AA",
+      "Ubi_AAB",
+      "Ubi_AABA",
+      "Ubi_AABAA"
+    ],
+    "nodes": [
+      "Blastoderm_A",
+      "Blastoderm_AA",
+      "Blastoderm_AB",
+      "Blastoderm_AC",
+      "Ubi_0",
+      "Ubi_A",
+      "Ubi_AA",
+      "Ubi_AAA",
+      "Ubi_AAAA",
+      "Ubi_AAAB",
+      "Ubi_AAAC",
+      "Ubi_AAAD",
+      "Ubi_AAB",
+      "Ubi_AABA",
+      "Ubi_AABAA",
+      "Ubi_AABB",
+      "Ubi_AB",
+      "Ubi_AC",
+      "Ubi_B",
+      "Ubi_BA",
+      "Ubi_BAB",
+      "Ubi_BB",
+      "Ubi_BC",
+      "Ubi_BCA",
+      "Ubi_BCAA",
+      "Ubi_BCB",
+      "Ubi_BD",
+      "Ubi_BDA",
+      "Ubi_BDAB",
+      "Ubi_BDB",
+      "Ubi_BDBA",
+      "Ubi_BDBB",
+      "Ubi_C",
+      "Ubi_CA",
+      "Ubi_CAB",
+      "Ubi_CB",
+      "Ubi_CBB",
+      "Ubi_CC",
+      "Ubi_CD",
+      "Ubi_CDA",
+      "Ubi_CDB",
+      "Ubi_CDBA",
+      "Ubi_CDBB",
+      "Ubi_CDBC",
+      "Ubi_CDBD",
+      "Ubi_CDBDA",
+      "Ubi_CE",
+      "Ubi_CEB",
+      "Ubi_CF",
+      "Ubi_D",
+      "Yolk_A",
+      "Yolk_AB",
+      "Yolk_AC"
+    ],
+    "edges": [
+      [
+        "Blastoderm_A",
+        "Blastoderm_AA"
+      ],
+      [
+        "Blastoderm_A",
+        "Blastoderm_AB"
+      ],
+      [
+        "Blastoderm_A",
+        "Blastoderm_AC"
+      ],
+      [
+        "Ubi_0",
+        "Ubi_A"
+      ],
+      [
+        "Ubi_A",
+        "Ubi_AA"
+      ],
+      [
+        "Ubi_AA",
+        "Ubi_AAA"
+      ],
+      [
+        "Ubi_AAA",
+        "Ubi_AAAA"
+      ],
+      [
+        "Ubi_AAA",
+        "Ubi_AAAB"
+      ],
+      [
+        "Ubi_AAA",
+        "Ubi_AAAC"
+      ],
+      [
+        "Ubi_AAA",
+        "Ubi_AAAD"
+      ],
+      [
+        "Ubi_AA",
+        "Ubi_AAB"
+      ],
+      [
+        "Ubi_AAB",
+        "Ubi_AABA"
+      ],
+      [
+        "Ubi_AABA",
+        "Ubi_AABAA"
+      ],
+      [
+        "Ubi_AAB",
+        "Ubi_AABB"
+      ],
+      [
+        "Ubi_A",
+        "Ubi_AB"
+      ],
+      [
+        "Ubi_A",
+        "Ubi_AC"
+      ],
+      [
+        "Ubi_0",
+        "Ubi_B"
+      ],
+      [
+        "Ubi_B",
+        "Ubi_BA"
+      ],
+      [
+        "Ubi_BA",
+        "Ubi_BAB"
+      ],
+      [
+        "Ubi_B",
+        "Ubi_BB"
+      ],
+      [
+        "Ubi_B",
+        "Ubi_BC"
+      ],
+      [
+        "Ubi_BC",
+        "Ubi_BCA"
+      ],
+      [
+        "Ubi_BCA",
+        "Ubi_BCAA"
+      ],
+      [
+        "Ubi_BC",
+        "Ubi_BCB"
+      ],
+      [
+        "Ubi_B",
+        "Ubi_BD"
+      ],
+      [
+        "Ubi_BD",
+        "Ubi_BDA"
+      ],
+      [
+        "Ubi_BDA",
+        "Ubi_BDAB"
+      ],
+      [
+        "Ubi_BD",
+        "Ubi_BDB"
+      ],
+      [
+        "Ubi_BDB",
+        "Ubi_BDBA"
+      ],
+      [
+        "Ubi_BDB",
+        "Ubi_BDBB"
+      ],
+      [
+        "Ubi_0",
+        "Ubi_C"
+      ],
+      [
+        "Ubi_C",
+        "Ubi_CA"
+      ],
+      [
+        "Ubi_CA",
+        "Ubi_CAB"
+      ],
+      [
+        "Ubi_C",
+        "Ubi_CB"
+      ],
+      [
+        "Ubi_CB",
+        "Ubi_CBB"
+      ],
+      [
+        "Ubi_C",
+        "Ubi_CC"
+      ],
+      [
+        "Ubi_C",
+        "Ubi_CD"
+      ],
+      [
+        "Ubi_CD",
+        "Ubi_CDA"
+      ],
+      [
+        "Ubi_CD",
+        "Ubi_CDB"
+      ],
+      [
+        "Ubi_CDB",
+        "Ubi_CDBA"
+      ],
+      [
+        "Ubi_CDB",
+        "Ubi_CDBB"
+      ],
+      [
+        "Ubi_CDB",
+        "Ubi_CDBC"
+      ],
+      [
+        "Ubi_CDB",
+        "Ubi_CDBD"
+      ],
+      [
+        "Ubi_CDBD",
+        "Ubi_CDBDA"
+      ],
+      [
+        "Ubi_C",
+        "Ubi_CE"
+      ],
+      [
+        "Ubi_CE",
+        "Ubi_CEB"
+      ],
+      [
+        "Ubi_C",
+        "Ubi_CF"
+      ],
+      [
+        "Ubi_0",
+        "Ubi_D"
+      ],
+      [
+        "Yolk_A",
+        "Yolk_AB"
+      ],
+      [
+        "Yolk_A",
+        "Yolk_AC"
+      ]
+    ]
+  },
+  "transport_compatibility_audit": {
+    "assumptions": "Normalize cells equally within each selected snapshot and dataset subset. Allow only self and descendant transitions under the candidate prefix hierarchy. Maximize total supported transported mass subject to source and target capacity inequalities. This is a label-support audit, not model performance or a biological-validation result.",
+    "intervals": [
+      {
+        "scope": "all_lineage_assigned",
+        "start": "0-2",
+        "end": "2-4",
+        "maximum_matched_mass": 0.4866900571787405,
+        "source_mass_without_any_observed_descendant": 0,
+        "source_branches_without_descendants": {},
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "all_lineage_assigned",
+        "start": "2-4",
+        "end": "4-6",
+        "maximum_matched_mass": 0.7724061135978164,
+        "source_mass_without_any_observed_descendant": 0,
+        "source_branches_without_descendants": {},
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "all_lineage_assigned",
+        "start": "4-6",
+        "end": "6-8",
+        "maximum_matched_mass": 0.7783611429141698,
+        "source_mass_without_any_observed_descendant": 0,
+        "source_branches_without_descendants": {},
+        "target_mass_without_observed_ancestor": 0.00829122943386449
+      },
+      {
+        "scope": "all_lineage_assigned",
+        "start": "6-8",
+        "end": "8-10",
+        "maximum_matched_mass": 0.6926185313226809,
+        "source_mass_without_any_observed_descendant": 0.16274776525456663,
+        "source_branches_without_descendants": {
+          "Ubi_AB": 0.06639461070086798,
+          "Ubi_D": 0.06344733773804898,
+          "Ubi_BB": 0.0329058168156497
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "all_lineage_assigned",
+        "start": "8-10",
+        "end": "10-12",
+        "maximum_matched_mass": 0.846069941387983,
+        "source_mass_without_any_observed_descendant": 0.002637749120750293,
+        "source_branches_without_descendants": {
+          "Blastoderm_AB": 0.002637749120750293
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "all_lineage_assigned",
+        "start": "10-12",
+        "end": "12-14",
+        "maximum_matched_mass": 0.6251129945665185,
+        "source_mass_without_any_observed_descendant": 0.17843155538977995,
+        "source_branches_without_descendants": {
+          "Ubi_AC": 0.07795598657217456,
+          "Ubi_BDAB": 0.05697500932487878,
+          "Ubi_CDBC": 0.0293733681462141,
+          "Ubi_CDBB": 0.011049981350242447,
+          "Ubi_CDA": 0.0030772099962700487
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "all_lineage_assigned",
+        "start": "12-14",
+        "end": "14-16",
+        "maximum_matched_mass": 0.8312958420866721,
+        "source_mass_without_any_observed_descendant": 0.026721859452736318,
+        "source_branches_without_descendants": {
+          "Ubi_BDA": 0.01558613184079602,
+          "Ubi_BCB": 0.011135727611940299
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "all_lineage_assigned",
+        "start": "14-16",
+        "end": "16-18",
+        "maximum_matched_mass": 0.5858472037852359,
+        "source_mass_without_any_observed_descendant": 0.315599110437694,
+        "source_branches_without_descendants": {
+          "Ubi_CDBD": 0.08888291502724896,
+          "Ubi_AAAB": 0.04589554974461742,
+          "Blastoderm_AA": 0.030523717588406364,
+          "Ubi_CBB": 0.025196119162247368,
+          "Ubi_AAAD": 0.024487401940418877,
+          "Ubi_CF": 0.02221461912558958,
+          "Ubi_CC": 0.01977076663652582,
+          "Blastoderm_AC": 0.01588504117891444,
+          "Ubi_CEB": 0.01446760673525746,
+          "Ubi_CDBDA": 0.010850705051443095,
+          "Ubi_BAB": 0.010581881277646081,
+          "Ubi_AAAA": 0.006842786969378528
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "all_lineage_assigned_holdout_8_10",
+        "start": "6-8",
+        "end": "10-12",
+        "maximum_matched_mass": 0.7178989870275099,
+        "source_mass_without_any_observed_descendant": 0.17103899468843112,
+        "source_branches_without_descendants": {
+          "Ubi_AB": 0.06639461070086798,
+          "Ubi_D": 0.06344733773804898,
+          "Ubi_BB": 0.0329058168156497,
+          "Blastoderm_AB": 0.00829122943386449
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "0-2",
+        "end": "2-4",
+        "maximum_matched_mass": 1.0,
+        "source_mass_without_any_observed_descendant": 0,
+        "source_branches_without_descendants": {},
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "2-4",
+        "end": "4-6",
+        "maximum_matched_mass": 0.788879913867919,
+        "source_mass_without_any_observed_descendant": 0,
+        "source_branches_without_descendants": {},
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "4-6",
+        "end": "6-8",
+        "maximum_matched_mass": 0.7670628947587224,
+        "source_mass_without_any_observed_descendant": 0,
+        "source_branches_without_descendants": {},
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "6-8",
+        "end": "8-10",
+        "maximum_matched_mass": 0.6682823221314,
+        "source_mass_without_any_observed_descendant": 0.19781906936461696,
+        "source_branches_without_descendants": {
+          "Ubi_AB": 0.08070230690496812,
+          "Ubi_D": 0.07711991181796708,
+          "Ubi_BB": 0.03999685064168176
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "8-10",
+        "end": "10-12",
+        "maximum_matched_mass": 0.8376976718313829,
+        "source_mass_without_any_observed_descendant": 0,
+        "source_branches_without_descendants": {},
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "10-12",
+        "end": "12-14",
+        "maximum_matched_mass": 0.5877146317937683,
+        "source_mass_without_any_observed_descendant": 0.21573933141665258,
+        "source_branches_without_descendants": {
+          "Ubi_AC": 0.09425559501663003,
+          "Ubi_BDAB": 0.06888776142961836,
+          "Ubi_CDBC": 0.035514967021816335,
+          "Ubi_CDBB": 0.013360392355826145,
+          "Ubi_CDA": 0.0037206155927617113
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "12-14",
+        "end": "14-16",
+        "maximum_matched_mass": 0.835658462580616,
+        "source_mass_without_any_observed_descendant": 0.03106151309101588,
+        "source_branches_without_descendants": {
+          "Ubi_BDA": 0.018117333453814354,
+          "Ubi_BCB": 0.012944179637201528
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only",
+        "start": "14-16",
+        "end": "16-18",
+        "maximum_matched_mass": 0.579975934632246,
+        "source_mass_without_any_observed_descendant": 0.3051415590891462,
+        "source_branches_without_descendants": {
+          "Ubi_CDBD": 0.10075350434927142,
+          "Ubi_AAAB": 0.052025042938666964,
+          "Ubi_CBB": 0.028561139121280957,
+          "Ubi_AAAD": 0.02775777051360186,
+          "Ubi_CF": 0.025181450495872348,
+          "Ubi_CC": 0.02241121391766857,
+          "Ubi_CEB": 0.01639980054296637,
+          "Ubi_CDBDA": 0.012299850407224778,
+          "Ubi_BAB": 0.01199512438362236,
+          "Ubi_AAAA": 0.00775666241897058
+        },
+        "target_mass_without_observed_ancestor": 0
+      },
+      {
+        "scope": "Ubi_only_holdout_8_10",
+        "start": "6-8",
+        "end": "10-12",
+        "maximum_matched_mass": 0.6981804337756844,
+        "source_mass_without_any_observed_descendant": 0.19781906936461696,
+        "source_branches_without_descendants": {
+          "Ubi_AB": 0.08070230690496812,
+          "Ubi_D": 0.07711991181796708,
+          "Ubi_BB": 0.03999685064168176
+        },
+        "target_mass_without_observed_ancestor": 0
+      }
+    ]
+  },
+  "exploratory_root_endpoint_pilot": {
+    "scope": "Ubi-only computational pilot, subject to branch-label curation and classifier validation. Intermediate reference cells are used to train the classifier and must be disclosed.",
+    "source_bin": "0-2",
+    "source_lineage": "Ubi_0",
+    "source_cells": 5477,
+    "target_bin": "14-16",
+    "target_cells": 36098,
+    "evaluation_bin": "8-10",
+    "evaluation_cells": 48630,
+    "total_Ubi_cells_0_to_18": 253182,
+    "Ubi_branch_ids": 46,
+    "maximum_supported_root_to_endpoint_mass": 1.0
+  },
+  "singleton_holdout_support": [
+    {
+      "window": "6-8",
+      "manual_annotation_classes_absent_from_other_bins": [
+        "salivary gland primordium",
+        "trunk mesoderm primordium"
+      ],
+      "lineage_ids_absent_from_other_bins": [
+        "Ubi_CDB"
+      ]
+    },
+    {
+      "window": "8-10",
+      "manual_annotation_classes_absent_from_other_bins": [
+        "hindgut primordium",
+        "peripheral nervous system",
+        "plasmatocytes anlage",
+        "procrystal cell",
+        "salivary gland body primordium",
+        "somatic muscle primordium"
+      ],
+      "lineage_ids_absent_from_other_bins": []
+    },
+    {
+      "window": "10-12",
+      "manual_annotation_classes_absent_from_other_bins": [
+        "crystal cell"
+      ],
+      "lineage_ids_absent_from_other_bins": []
+    },
+    {
+      "window": "12-14",
+      "manual_annotation_classes_absent_from_other_bins": [
+        "spiracles (tracheal system)",
+        "visceral muscle"
+      ],
+      "lineage_ids_absent_from_other_bins": []
+    },
+    {
+      "window": "14-16",
+      "manual_annotation_classes_absent_from_other_bins": [
+        "spiracle (tracheal system)"
+      ],
+      "lineage_ids_absent_from_other_bins": []
+    }
+  ],
+  "lineage_support": [
+    {
+      "lineage_id": "Blastoderm_A",
+      "n_cells": 11792,
+      "windows": [
+        "0-2",
+        "2-4"
+      ],
+      "manual_annotations": [
+        "cellular blastoderm / pole cell",
+        "maternal"
+      ]
+    },
+    {
+      "lineage_id": "Blastoderm_AA",
+      "n_cells": 15075,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "germ cell",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Blastoderm_AB",
+      "n_cells": 409,
+      "windows": [
+        "6-8",
+        "8-10"
+      ],
+      "manual_annotations": [
+        "unknown"
+      ]
+    },
+    {
+      "lineage_id": "Blastoderm_AC",
+      "n_cells": 3143,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "epidermis",
+        "salivary gland",
+        "tracheal primordium",
+        "unknown"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_0",
+      "n_cells": 5477,
+      "windows": [
+        "0-2"
+      ],
+      "manual_annotations": [
+        "maternal"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_A",
+      "n_cells": 1677,
+      "windows": [
+        "2-4"
+      ],
+      "manual_annotations": [
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AA",
+      "n_cells": 7946,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10"
+      ],
+      "manual_annotations": [
+        "epidermis primordium",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AAA",
+      "n_cells": 5931,
+      "windows": [
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "epidermis"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AAAA",
+      "n_cells": 1437,
+      "windows": [
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "foregut / hindgut / anal pad"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AAAB",
+      "n_cells": 3513,
+      "windows": [
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "epidermis"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AAAC",
+      "n_cells": 7480,
+      "windows": [
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "epidermis"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AAAD",
+      "n_cells": 1757,
+      "windows": [
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "spiracle (tracheal system)",
+        "spiracles (tracheal system)"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AAB",
+      "n_cells": 8565,
+      "windows": [
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "somatic muscle"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AABA",
+      "n_cells": 7761,
+      "windows": [
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "brain",
+        "ventral nerve cord"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AABAA",
+      "n_cells": 2483,
+      "windows": [
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "sensory nervous system",
+        "ventral nerve cord"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AABB",
+      "n_cells": 4086,
+      "windows": [
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "somatic muscle"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AB",
+      "n_cells": 4671,
+      "windows": [
+        "4-6",
+        "6-8"
+      ],
+      "manual_annotations": [
+        "brain primordium",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_AC",
+      "n_cells": 9869,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12"
+      ],
+      "manual_annotations": [
+        "brain",
+        "brain primordium",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_B",
+      "n_cells": 3264,
+      "windows": [
+        "2-4"
+      ],
+      "manual_annotations": [
+        "ectoderm anlage in statu nascendi"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BA",
+      "n_cells": 11205,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "ectoderm primordium",
+        "epidermis primordium",
+        "tracheal primordium",
+        "tracheal system"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BAB",
+      "n_cells": 2107,
+      "windows": [
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "tracheal system"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BB",
+      "n_cells": 3792,
+      "windows": [
+        "4-6",
+        "6-8"
+      ],
+      "manual_annotations": [
+        "ectoderm primordium",
+        "epidermis primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BC",
+      "n_cells": 4329,
+      "windows": [
+        "4-6"
+      ],
+      "manual_annotations": [
+        "ectoderm primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BCA",
+      "n_cells": 12164,
+      "windows": [
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "epidermis",
+        "epidermis primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BCAA",
+      "n_cells": 9869,
+      "windows": [
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "brain",
+        "brain primordium",
+        "sensory nervous system"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BCB",
+      "n_cells": 2205,
+      "windows": [
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14"
+      ],
+      "manual_annotations": [
+        "glia",
+        "midline primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BD",
+      "n_cells": 3199,
+      "windows": [
+        "4-6"
+      ],
+      "manual_annotations": [
+        "mesoderm primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BDA",
+      "n_cells": 4205,
+      "windows": [
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14"
+      ],
+      "manual_annotations": [
+        "muscle",
+        "visceral muscle",
+        "visceral muscle primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BDAB",
+      "n_cells": 4241,
+      "windows": [
+        "8-10",
+        "10-12"
+      ],
+      "manual_annotations": [
+        "brain",
+        "visceral muscle primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BDB",
+      "n_cells": 5902,
+      "windows": [
+        "6-8",
+        "8-10",
+        "10-12"
+      ],
+      "manual_annotations": [
+        "somatic muscle",
+        "somatic muscle primordium",
+        "trunk mesoderm primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BDBA",
+      "n_cells": 2344,
+      "windows": [
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "brain",
+        "ubiquitous",
+        "ventral nerve cord"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_BDBB",
+      "n_cells": 7504,
+      "windows": [
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "plasmatocytes",
+        "plasmatocytes anlage"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_C",
+      "n_cells": 1833,
+      "windows": [
+        "2-4"
+      ],
+      "manual_annotations": [
+        "anlage in statu nascendi"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CA",
+      "n_cells": 8060,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "foregut / hindgut / anal pad",
+        "foregut / hindgut primordium",
+        "hindgut / anal pad",
+        "hindgut primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CAB",
+      "n_cells": 5569,
+      "windows": [
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "fat body"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CB",
+      "n_cells": 11038,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "Malpighian tubule",
+        "endoderm primordium",
+        "midgut",
+        "midgut primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CBB",
+      "n_cells": 5061,
+      "windows": [
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "salivary gland",
+        "salivary gland body primordium",
+        "salivary gland primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CC",
+      "n_cells": 7519,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "brain",
+        "brain primordium",
+        "ventral nerve cord primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CD",
+      "n_cells": 1744,
+      "windows": [
+        "4-6"
+      ],
+      "manual_annotations": [
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CDA",
+      "n_cells": 547,
+      "windows": [
+        "6-8",
+        "8-10",
+        "10-12"
+      ],
+      "manual_annotations": [
+        "muscle",
+        "trunk mesoderm primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CDB",
+      "n_cells": 864,
+      "windows": [
+        "6-8"
+      ],
+      "manual_annotations": [
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CDBA",
+      "n_cells": 9154,
+      "windows": [
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "muscle",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CDBB",
+      "n_cells": 2146,
+      "windows": [
+        "8-10",
+        "10-12"
+      ],
+      "manual_annotations": [
+        "crystal cell",
+        "procrystal cell"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CDBC",
+      "n_cells": 3032,
+      "windows": [
+        "8-10",
+        "10-12"
+      ],
+      "manual_annotations": [
+        "brain",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CDBD",
+      "n_cells": 9109,
+      "windows": [
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "brain",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CDBDA",
+      "n_cells": 877,
+      "windows": [
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "brain"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CE",
+      "n_cells": 7176,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14"
+      ],
+      "manual_annotations": [
+        "brain primordium",
+        "epidermis",
+        "peripheral nervous system primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CEB",
+      "n_cells": 5988,
+      "windows": [
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "peripheral nervous system",
+        "sensory nervous system",
+        "sensory nervous system primordium"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_CF",
+      "n_cells": 8471,
+      "windows": [
+        "4-6",
+        "6-8",
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16"
+      ],
+      "manual_annotations": [
+        "amnioserosa"
+      ]
+    },
+    {
+      "lineage_id": "Ubi_D",
+      "n_cells": 16011,
+      "windows": [
+        "2-4",
+        "4-6",
+        "6-8"
+      ],
+      "manual_annotations": [
+        "brain primordium",
+        "ubiquitous"
+      ]
+    },
+    {
+      "lineage_id": "Yolk_A",
+      "n_cells": 14673,
+      "windows": [
+        "0-2",
+        "2-4",
+        "4-6",
+        "6-8"
+      ],
+      "manual_annotations": [
+        "maternal",
+        "yolk nuclei"
+      ]
+    },
+    {
+      "lineage_id": "Yolk_AB",
+      "n_cells": 9108,
+      "windows": [
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "yolk nuclei"
+      ]
+    },
+    {
+      "lineage_id": "Yolk_AC",
+      "n_cells": 7005,
+      "windows": [
+        "8-10",
+        "10-12",
+        "12-14",
+        "14-16",
+        "16-18"
+      ],
+      "manual_annotations": [
+        "yolk nuclei"
+      ]
+    }
+  ],
+  "local_benchmark_exports": {
+    "maizels_flow_cells": 44713,
+    "maizels_flow_pcs": 50,
+    "maizels_flow_types": 9,
+    "maizels_observed_times": [
+      "D3",
+      "D3.2",
+      "D3.4",
+      "D3.6",
+      "D3.8",
+      "D4",
+      "D5",
+      "D6",
+      "D7",
+      "D8"
+    ],
+    "maizels_active_graph_longest_path_edges": 4,
+    "cite_cells": 31240,
+    "cite_features": 22050,
+    "cite_pcs": 100,
+    "multi_cells": 33701,
+    "multi_features": 23418,
+    "multi_pcs": 100,
+    "cite_multi_times": [
+      "2",
+      "3",
+      "4",
+      "7"
+    ],
+    "cite_multi_types": 7,
+    "cite_multi_graph_longest_path_edges": 1
+  },
+  "sources": [
+    {
+      "id": "geo_rna_series",
+      "url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE190147&targ=self&form=text&view=full",
+      "downloaded_in_full": true,
+      "bytes": 63978,
+      "sha256": "6a0ac10ebb24f1496f44118d0b2e924bbf0a0002a7594c42ef15ee12571c0b32"
+    },
+    {
+      "id": "matrix_columns",
+      "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE190nnn/GSE190147/suppl/GSE190147_scirnaseq_gene_matrix.columns.txt.gz",
+      "downloaded_in_full": true,
+      "bytes": 19958916,
+      "sha256": "fda11b6db52daa6f8536c4e9d26071df4d3d9bb6f66876542865b2e8cb214e25"
+    },
+    {
+      "id": "matrix_rows",
+      "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE190nnn/GSE190147/suppl/GSE190147_scirnaseq_gene_matrix.rows.txt.gz",
+      "downloaded_in_full": true,
+      "bytes": 88224,
+      "sha256": "032a5833bc1de5953a14e64081d801d3bd0a8bf3b43b4a77dd49a1de7d1ae547"
+    },
+    {
+      "id": "rna_cell_annotations",
+      "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/cell_to_annotations/rna_meta.rds",
+      "downloaded_in_full": true,
+      "bytes": 24110965,
+      "sha256": "21267b5451433c966e791b1dcb50d830f31986f2ba60dc5021c6098c6a3b3b87"
+    },
+    {
+      "id": "rna_lineage_table",
+      "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/RNA/update/rna_lineage_info/table_s1_withLineage.xlsx",
+      "downloaded_in_full": true,
+      "bytes": 29286,
+      "sha256": "2f2df089adf0171359d4010a6c0dcee7bf80f5c0c890618c1324dfa3ec1990d0"
+    },
+    {
+      "id": "rna_lineage_decoder",
+      "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/RNA/update/rna_lineage_info/celltype_list_rna.txt",
+      "downloaded_in_full": true,
+      "bytes": 1590,
+      "sha256": "1f91468b31de264de7ed10f05c05f1219737d1316698aea6e98e61c349c29377"
+    },
+    {
+      "id": "rna_inferred_age_pipeline",
+      "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/scripts/RNA/data_processing/pipeline_inferred_ages.R",
+      "downloaded_in_full": true,
+      "bytes": 11125,
+      "sha256": "decc7f5b9c611b23926d0e7534b082d44d7bcc84bc1ce5849285f4792ad1d008"
+    },
+    {
+      "id": "rna_processing_pipeline",
+      "url": "https://shendure-web.gs.washington.edu/content/members/DEAP_website/public/scripts/RNA/data_processing/pipeline.R",
+      "downloaded_in_full": true,
+      "bytes": 15015,
+      "sha256": "57b40aa0ebb9fbb7bc5fe9a03b049fb16f1b3cde70d413009ffa453224640a42"
+    },
+    {
+      "id": "rna_expression_matrix_prefix",
+      "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE190nnn/GSE190147/suppl/GSE190147_scirnaseq_gene_matrix.mtx.gz",
+      "downloaded_in_full": false,
+      "bytes": 65536,
+      "http_status": 206,
+      "byte_range": "0-65535",
+      "full_compressed_bytes": 697773156,
+      "sha256_prefix": "316796337767af2d0c54cea6dba741bebb021edf65a251832652269e59bb46d8"
+    }
+  ]
+}
