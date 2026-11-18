@@ -17,11 +17,13 @@ def get_config(dataset_location="", output_folder="", classifier_path="", classi
     cfg.problem.classifier_prob_threshold = reference.problem.classifier_prob_threshold
     cfg.problem.classifier_margin_threshold = reference.problem.classifier_margin_threshold
     cfg.problem.classifier_batch_size = reference.problem.classifier_batch_size
+    cfg.problem.interpolant_filter_backend = "jax"
+    cfg.problem.batch_interpolant_checks_across_intervals = True
+    cfg.problem.gpu_filter_decision_tolerance = 1e-4
     cfg.problem.ot_minibatch_infeasible_fallback = reference.problem.ot_minibatch_infeasible_fallback
-    # Same fixed unfiltered adjacent-interval validation as the baseline.
-    # Intermediate marginals and test trajectories do not select a model.
-    cfg.evaluation.validation_pair_mode = "ot_plain"
+    cfg.logging.comparison_mode = reference.logging.comparison_mode
     cfg.logging.output_folder = str(Path(output_folder).expanduser().resolve()) if output_folder else str(
-        ROOT / "outputs" / f"calderon_symmetric_4_8_12_filtered_ot_flow_map_seed{seed}")
-    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_pca100_filtered_ot_flow_map_seed{seed}"
+        ROOT / "outputs" / f"calderon_symmetric_4_8_12_maizels_filtered_ot_flow_map_seed{seed}")
+    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_maizels_pca100_filtered_ot_flow_map_seed{seed}"
+    cfg.logging.output_name = cfg.logging.wandb_name
     return cfg

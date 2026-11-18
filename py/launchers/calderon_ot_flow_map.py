@@ -44,23 +44,32 @@ def parse_args():
     parser.add_argument("--dataset-location")
     parser.add_argument("--classifier-manifest", help="Training tissue classifier for filtering/constraints")
     parser.add_argument("--classifier-export", help="Frozen JAX export of the training classifier")
+    parser.add_argument("--interpolant-filter-backend", choices=("jax", "reference"),
+                        help="Training filter implementation; filtered/constrained defaults use fused JAX")
     parser.add_argument("--evaluation-classifier-manifest", help="All-times reference classifier for violation evaluation")
+    parser.add_argument("--evaluation-classifier-export", help="Frozen JAX export for the all-times logging classifier")
     parser.add_argument("--classifier-python", help="Python with the existing PyTorch classifier dependencies")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--steps", type=int)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--learning-rate", type=float)
-    parser.add_argument("--flowmap-steps", type=int, help="Composed steps that include every classifier check (default 100)")
+    parser.add_argument("--constraint-weight", type=float,
+                        help="Override the training/validation constraint weight in a constrained config")
+    parser.add_argument("--flowmap-steps", type=int, help="Composed steps per W1 query/observed interval (default 50)")
     parser.add_argument("--checking-points", type=int,
                         help="Evenly spaced violation checks after t=0 through t=1; even count (default 50)")
-    parser.add_argument("--eval-source-cap", type=int, help="Zero uses every flow-test source cell")
-    parser.add_argument("--marginal-cap", type=int, help="W1 samples per population (default 2048)")
+    parser.add_argument("--eval-source-cap", type=int, help="Violation source cap (default 512); zero uses every held-out source")
+    parser.add_argument("--marginal-cap", type=int, help="W1 samples per source/reference population (default 2048); zero means uncapped")
+    parser.add_argument("--reduced-evaluation", action="store_true",
+                        help="For a saved run: flowmap/Euler only, no MMD, and 2048 W1 cells per population")
+    parser.add_argument("--validation-bs", type=int, help="Fixed Maizels validation-pair batch size (default 1024)")
     parser.add_argument("--validation-batches", type=int)
     parser.add_argument("--prob-threshold", type=float)
     parser.add_argument("--margin-threshold", type=float)
     parser.add_argument("--checkpoint", type=Path, help="Evaluate a saved native checkpoint; defaults to best.msgpack")
     parser.add_argument("--smoke", action="store_true", help="Two steps, small network, and capped evaluation")
-    parser.add_argument("--wandb", choices=("disabled", "offline", "online"), default="disabled")
+    parser.add_argument("--wandb", choices=("disabled", "offline", "online"),
+                        help="W&B mode; new defaults use Maizels's normal online logging")
     return parser.parse_args()
 
 
@@ -71,6 +80,8 @@ def configure(args):
         raise ValueError("--checkpoint applies to --stage evaluate.")
     if args.evaluation_output_dir is not None and args.stage != "evaluate":
         raise ValueError("--evaluation-output-dir applies to --stage evaluate.")
+    if getattr(args, "reduced_evaluation", False) and args.stage != "evaluate":
+        raise ValueError("--reduced-evaluation applies to --stage evaluate; new runs already use these defaults.")
     if args.stage == "evaluate":
         if args.output_dir is None:
             raise ValueError("--stage evaluate requires --output-dir from a saved run.")
@@ -79,7 +90,9 @@ def configure(args):
         if args.smoke or any(value is not None for value in
                              (args.dataset_location, args.classifier_manifest, args.classifier_export,
                               args.evaluation_classifier_manifest, args.seed,
-                              args.steps, args.batch_size, args.learning_rate)):
+                              args.steps, args.batch_size, args.learning_rate,
+                              getattr(args, "interpolant_filter_backend", None),
+                              getattr(args, "constraint_weight", None))):
             raise ValueError("Evaluation reloads the saved training config; training/data overrides are unavailable.")
         cfg = ConfigDict(json.loads((args.output_dir / "config.json").read_text()))
         cfg.logging.output_folder = str(args.output_dir.resolve())
@@ -91,8 +104,14 @@ def configure(args):
                                 classifier_python=args.classifier_python or "",
                                 seed=0 if args.seed is None else args.seed,
                                 evaluation_classifier_path=args.evaluation_classifier_manifest or "")
+        if getattr(args, "constraint_weight", None) is not None:
+            if not cfg.constraints.enabled:
+                raise ValueError("--constraint-weight requires a constrained config, such as configs.calderon_constrained_pca100.")
+            cfg.constraints.weight = args.constraint_weight
         if args.classifier_export:
             cfg.classifier.jax_export_path = str(Path(args.classifier_export).expanduser().resolve())
+        if getattr(args, "interpolant_filter_backend", None) is not None:
+            cfg.problem.interpolant_filter_backend = args.interpolant_filter_backend
         if args.smoke:
             cfg.optimization.total_steps = 2
             cfg.optimization.bs = 32
@@ -102,6 +121,9 @@ def configure(args):
             cfg.network.n_neurons = 64
             cfg.logging.scalar_freq = 1
             cfg.evaluation.validation_batches = 1
+            cfg.evaluation.validation_batch_size = 32
+            cfg.logging.maizels.validation_bs = 32
+            cfg.logging.visual_freq = 0
             cfg.evaluation.flowmap_n_steps = 8
             cfg.evaluation.checkpoint_times = [.25, .5, .75, 1.]
             cfg.evaluation.flow_batch_size = 32
@@ -115,8 +137,15 @@ def configure(args):
         cfg.problem.ot_minibatch_size = cfg.optimization.bs
         cfg.optimization.total_samples = cfg.optimization.bs * cfg.optimization.total_steps
         cfg.optimization.decay_steps = cfg.optimization.total_steps
+    if getattr(args, "reduced_evaluation", False):
+        if not calderon.uses_maizels_protocol(cfg):
+            raise ValueError("--reduced-evaluation requires a saved Maizels-protocol Calderon run.")
+        from configs.calderon_pca100 import use_reduced_evaluation
+        use_reduced_evaluation(cfg)
     if args.classifier_python:
         cfg.classifier.python = args.classifier_python
+    if args.evaluation_classifier_export:
+        cfg.classifier.evaluation_jax_export_path = str(Path(args.evaluation_classifier_export).expanduser().resolve())
     for name, value in (("flowmap_n_steps", args.flowmap_steps), ("source_max_points", args.eval_source_cap),
                         ("marginal_max_points", args.marginal_cap), ("validation_batches", args.validation_batches)):
         if value is not None:
@@ -128,6 +157,20 @@ def configure(args):
     for name, value in (("prob_threshold", args.prob_threshold), ("margin_threshold", args.margin_threshold)):
         if value is not None:
             cfg.classifier[name] = value
+    if calderon.uses_maizels_protocol(cfg):
+        if args.validation_bs is not None:
+            cfg.evaluation.validation_batch_size = args.validation_bs
+        cfg.logging.maizels.validation_bs = cfg.evaluation.validation_batch_size
+        cfg.logging.maizels.flowmap_n_steps = cfg.evaluation.flowmap_n_steps
+        cfg.logging.maizels.distribution_eval_flowmap_n_steps = cfg.evaluation.flowmap_n_steps
+        cfg.logging.maizels.check_n_times = len(cfg.evaluation.checkpoint_times)
+        cfg.logging.maizels.trajectory_eval_source_max_points = cfg.evaluation.source_max_points
+        cfg.logging.maizels.distribution_eval_points_per_time = cfg.evaluation.marginal_max_points
+        cfg.logging.maizels.distribution_eval_source_max_points = cfg.evaluation.marginal_max_points
+        del cfg.logging.maizels.prob_threshold
+        del cfg.logging.maizels.margin_threshold
+        cfg.logging.maizels.prob_threshold = cfg.classifier.prob_threshold
+        cfg.logging.maizels.margin_threshold = cfg.classifier.margin_threshold
     cfg.training.ndevices = jax.device_count()
     validate_config(cfg)
     return cfg
@@ -146,9 +189,11 @@ def validate_config(cfg):
             raise ValueError("Expected the native Maizels loss-point transition NLL constraint.")
         if not cfg.problem.interp_uses_labels or cfg.problem.maizels_pair_mode != "ot_endpoint_interpolant":
             raise ValueError("The constrained variant requires endpoint IDs and interpolant-filtered OT.")
-        if cfg.constraints.weight < 0 or cfg.constraints.classifier_temperature != 1.:
-            raise ValueError("Use nonnegative constraint weight and the frozen ensemble's calibrated probabilities.")
-        if cfg.evaluation.get("validation_objective", "") != "plain_ot_lsd_without_constraint":
+        if (not math.isfinite(cfg.constraints.weight) or cfg.constraints.weight < 0
+                or cfg.constraints.classifier_temperature != 1.):
+            raise ValueError("Use a finite nonnegative constraint weight and the frozen ensemble's calibrated probabilities.")
+        if (not calderon.uses_maizels_protocol(cfg)
+                and cfg.evaluation.get("validation_objective", "") != "plain_ot_lsd_without_constraint"):
             raise ValueError("Select constrained checkpoints with the shared plain-OT LSD validation objective.")
     elif cfg.problem.interp_uses_labels and not time_aware:
         raise ValueError("Endpoint loss labels are enabled only for the constrained variant.")
@@ -162,10 +207,19 @@ def validate_config(cfg):
         chunk = cfg.problem.get("interpolant_check_chunk_size", cfg.problem.n_interpolant_check_times)
         if not 1 <= chunk <= cfg.problem.n_interpolant_check_times:
             raise ValueError("Interpolant check chunk size must lie between one and the full check count.")
+        backend = cfg.problem.get("interpolant_filter_backend", "reference")
+        if backend not in ("jax", "reference"):
+            raise ValueError("Interpolant filter backend must be jax or reference.")
+        if backend == "jax":
+            if chunk != cfg.problem.n_interpolant_check_times:
+                raise ValueError("The JAX filter uses the full check grid; use the reference backend for early rejection.")
+            if not 0 < cfg.problem.get("gpu_filter_decision_tolerance", 1e-4) <= 1:
+                raise ValueError("GPU filter decision tolerance must be positive and at most one.")
         for name in ("classifier_prob_threshold", "classifier_margin_threshold"):
             if not 0 <= cfg.problem[name] <= 1:
                 raise ValueError("Training classifier thresholds must lie in [0,1].")
-        if cfg.evaluation.get("validation_pair_mode", "ot_plain") != "ot_plain":
+        if (not calderon.uses_maizels_protocol(cfg)
+                and cfg.evaluation.get("validation_pair_mode", "ot_plain") != "ot_plain"):
             raise ValueError("Use the fixed plain-OT endpoint validation objective shared with the baseline.")
     if cfg.problem.d != 100 or cfg.network.output_dim != 100 or cfg.network.network_type != "mlp":
         raise ValueError("Expected the native PCA100 MLP flow map.")
@@ -177,23 +231,36 @@ def validate_config(cfg):
         raise ValueError("Batch size must be divisible by the JAX device count.")
     if cfg.evaluation.validation_batches <= 0 or cfg.evaluation.flow_batch_size <= 0:
         raise ValueError("Validation batches and flow batch size must be positive.")
-    if cfg.evaluation.source_max_points < 0 or cfg.evaluation.marginal_max_points <= 0:
-        raise ValueError("Source cap must be nonnegative and the W1 marginal cap positive.")
+    if cfg.evaluation.source_max_points < 0 or cfg.evaluation.marginal_max_points < 0:
+        raise ValueError("Population caps must be nonnegative; zero means all cells.")
     times = np.asarray(cfg.evaluation.checkpoint_times, dtype=float)
     if times.ndim != 1 or len(times) < 2 or not np.isfinite(times).all() or (np.diff(times) <= 0).any() or times[0] <= 0 or times[-1] > 1:
         raise ValueError("Classifier checks must be finite, strictly increasing times in (0,1].")
     if not np.isclose(times[-1], 1, atol=1e-12, rtol=0) or np.isclose(times, .5, atol=1e-12, rtol=0).sum() != 1:
         raise ValueError("Classifier checks must include t=0.5 and end at t=1 for both W1 evaluations.")
-    indices = times * cfg.evaluation.flowmap_n_steps
-    if cfg.evaluation.flowmap_n_steps <= 0 or not np.allclose(indices, np.round(indices)):
-        raise ValueError("Composed step grid must include every classifier checkpoint exactly.")
+    if cfg.evaluation.flowmap_n_steps <= 0:
+        raise ValueError("Composed step count must be positive.")
     marginal_times = np.array([calderon.normalized_window_time(window, cfg)
                                for window in (*calderon.training_windows(cfg)[1:], *calderon.heldout_windows(cfg))])
     marginal_indices = marginal_times * cfg.evaluation.flowmap_n_steps
-    if ((marginal_times <= 0).any() or (marginal_times > 1).any()
-            or not np.allclose(marginal_indices, np.round(marginal_indices))):
-        raise ValueError("Composed step grid must include all selected-time test and intermediate W1 marginals exactly.")
-    if cfg.evaluation.ema_factor not in cfg.training.ema_facs:
+    if calderon.uses_maizels_protocol(cfg):
+        if cfg.evaluation.validation_pair_mode != "same_as_training" or cfg.evaluation.validation_objective != "same_as_training":
+            raise ValueError("Maizels validation must retain the training pairs and objective.")
+        if cfg.evaluation.validation_batches != 1 or cfg.evaluation.validation_batch_size < 2:
+            raise ValueError("Use one fixed Maizels validation batch of at least two pairs.")
+        if cfg.evaluation.ema_factor is not None:
+            raise ValueError("The Maizels protocol evaluates instantaneous parameters.")
+        if cfg.classifier.prob_threshold != 0 or cfg.classifier.margin_threshold != 0:
+            raise ValueError("Maizels result reporting uses raw classifier argmax predictions with zero thresholds.")
+        if not np.allclose(times, np.arange(1, len(times) + 1) / len(times)):
+            raise ValueError("Maizels violation checks must be uniformly spaced across the full trajectory.")
+    else:
+        if not np.allclose(times * cfg.evaluation.flowmap_n_steps, np.round(times * cfg.evaluation.flowmap_n_steps)):
+            raise ValueError("Composed step grid must include every classifier checkpoint exactly.")
+        if ((marginal_times <= 0).any() or (marginal_times > 1).any()
+                or not np.allclose(marginal_indices, np.round(marginal_indices))):
+            raise ValueError("Composed step grid must include all selected-time test and intermediate W1 marginals exactly.")
+    if cfg.evaluation.ema_factor is not None and cfg.evaluation.ema_factor not in cfg.training.ema_facs:
         raise ValueError("Evaluation EMA must be one of the trained EMA factors.")
     early = cfg.optimization.early_stopping
     if early.check_freq <= 0 or early.patience < 0 or early.warmup_steps < 0 or early.min_delta < 0:
@@ -238,13 +305,24 @@ def setup_state(cfg, data):
 
 def evaluation_params(cfg, state):
     from common import dist_utils
-    return dist_utils.safe_unreplicate(cfg, state).ema_params[cfg.evaluation.ema_factor]
+    state = dist_utils.safe_unreplicate(cfg, state)
+    return state.params if cfg.evaluation.ema_factor is None else state.ema_params[cfg.evaluation.ema_factor]
 
 
 def make_validation_evaluator(cfg, statics, data):
     import jax
     from ml_collections import ConfigDict, FrozenConfigDict
     from common import dist_utils, losses
+    if calderon.uses_maizels_protocol(cfg):
+        from common import calderon_logging, logging
+        calderon_logging.register(cfg, data)
+        def evaluate(state):
+            step = dist_utils.safe_unreplicate(cfg, state).step
+            value = float(jax.device_get(logging.compute_maizels_validation_metrics(cfg, statics, state, step)["validation_loss"]))
+            if not math.isfinite(value):
+                raise RuntimeError("Nonfinite Maizels validation loss.")
+            return value
+        return evaluate
     single = ConfigDict(cfg.to_dict())
     single.training.ndevices = 1
     single.problem.maizels_pair_mode = cfg.evaluation.get("validation_pair_mode", cfg.problem.maizels_pair_mode)
@@ -293,6 +371,7 @@ def load_checkpoint(path, cfg, state):
 
 def train(cfg, statics, state, key, data, output, tracker=None):
     import jax
+    from common import logging as native_logging
     validate = make_validation_evaluator(cfg, statics, data)
     early = cfg.optimization.early_stopping
     best_loss = math.inf
@@ -302,22 +381,31 @@ def train(cfg, statics, state, key, data, output, tracker=None):
     filtered = cfg.problem.maizels_pair_mode == "ot_endpoint_interpolant"
     pair_fields = ("endpoint_rejected", "interpolant_checked", "interpolant_rejected", "ot_refinements", "ot_mean_retained_valid_mass") if filtered else ()
     fields = ("step", "training_loss", "validation_loss", "learning_rate", "seconds", *pair_fields)
+    maizels_protocol = calderon.uses_maizels_protocol(cfg)
     with (output / "training_history.csv").open("w", newline="") as handle:
         history = csv.DictWriter(handle, fieldnames=fields)
         history.writeheader()
         for step in range(1, cfg.optimization.total_steps + 1):
+            step_started = time.monotonic()
             arguments, key = statics.get_loss_fn_args(cfg, statics, state, key)
-            state, loss, _ = statics.train_step(state, statics.loss, arguments)
+            state, loss, grads = statics.train_step(state, statics.loss, arguments)
             state = statics.update_ema_params(state)
             value = float(np.mean(jax.device_get(loss)))
             if not math.isfinite(value):
                 raise RuntimeError(f"Nonfinite training loss at step {step}.")
             check = (step >= early.warmup_steps and step % early.check_freq == 0) or step == cfg.optimization.total_steps
-            validation_loss = validate(state) if check else None
+            if maizels_protocol:
+                key, logged = native_logging.log_metrics(cfg, statics, state, grads, loss, arguments, key,
+                    time.monotonic() - step_started, compute_validation=check)
+                validation_loss = float(jax.device_get(logged["validation_loss"])) if check else None
+            else:
+                validation_loss = validate(state) if check else None
             if check:
                 if validation_loss < best_loss - early.min_delta:
                     best_loss, best_step, failures = validation_loss, step, 0
                     save_checkpoint(output / "best.msgpack", cfg, state)
+                    if maizels_protocol:
+                        native_logging.save_state(state, cfg, checkpoint_label="best")
                 else:
                     failures += 1
             if step == 1 or check or step % cfg.logging.scalar_freq == 0:
@@ -329,7 +417,7 @@ def train(cfg, statics, state, key, data, output, tracker=None):
                 history.writerow(row)
                 handle.flush()
                 print(json.dumps(row, allow_nan=False), flush=True)
-                if tracker:
+                if tracker and not maizels_protocol:
                     tracker.log({name: item for name, item in row.items() if item is not None}, step=step)
             if cfg.logging.save_freq > 0 and step % cfg.logging.save_freq == 0:
                 save_checkpoint(output / "last.msgpack", cfg, state)
@@ -339,13 +427,15 @@ def train(cfg, statics, state, key, data, output, tracker=None):
     save_checkpoint(output / "last.msgpack", cfg, state)
     write_json(output / "training_summary.json", {
         "completed_steps": step, "best_step": best_step, "best_validation_loss": best_loss,
-        "selection": "Fixed validation OT batches over adjacent training intervals, evaluated with the final sampling EMA",
+        "selection": ("One fixed Maizels validation batch with the training pairing/objective and instantaneous parameters"
+                      if maizels_protocol else "Fixed validation OT batches over adjacent training intervals, evaluated with the final sampling EMA"),
         "reference_window_used_for_selection": False, "test_endpoints_used_for_selection": False,
         "intermediate_windows_used_for_selection": False, "test_cells_used_for_selection": False,
         "training_windows": list(data.training_times), "intermediate_windows": list(data.heldout_times),
         "seconds": time.monotonic() - started,
         "validation_pair_mode": cfg.evaluation.get("validation_pair_mode", cfg.problem.maizels_pair_mode),
-        "validation_objective": "plain_ot_lsd_without_constraint" if cfg.constraints.enabled else "plain_ot_lsd",
+        "validation_objective": ("same_as_training" if maizels_protocol else
+                                 "plain_ot_lsd_without_constraint" if cfg.constraints.enabled else "plain_ot_lsd"),
     })
     if filtered:
         write_json(output / "pair_filtering_summary.json", statics.ds.pair_filter_summary())
@@ -394,7 +484,26 @@ def check_classifier_python(cfg):
         ) from error
 
 
+def prepare_logging_classifiers(cfg):
+    """Copy frozen oracle weights for the native Maizels diagnostics."""
+    if not calderon.uses_maizels_protocol(cfg):
+        return
+    export = Path(cfg.classifier.evaluation_jax_export_path)
+    if export.exists():
+        with np.load(export, allow_pickle=False) as stored:
+            metadata = json.loads(stored["metadata"].item())
+        if metadata["manifest_sha256"] != calderon.sha256_file(calderon.evaluation_manifest_path(cfg)):
+            raise ValueError("Logging oracle export differs from the selected evaluation classifier.")
+        return
+    subprocess.run([cfg.classifier.python, str(ROOT / "scripts/export_calderon_tissue_ensemble.py"),
+                    "--manifest", calderon.evaluation_manifest_path(cfg), "--output", str(export),
+                    "--weights-only"], check=True, cwd=ROOT)
+
+
 def evaluate_run(cfg, statics, state, data, output, checkpoint, evaluation_output=None):
+    if calderon.uses_maizels_protocol(cfg):
+        from common.calderon_evaluation import evaluate
+        return evaluate(cfg, statics, state, data, output, checkpoint, evaluation_output)
     import jax
     from common import dist_utils, wasserstein
     evaluation = cfg.evaluation
@@ -529,6 +638,8 @@ def evaluate_run(cfg, statics, state, data, output, checkpoint, evaluation_outpu
             "ot_infeasible_fallback": cfg.problem.ot_minibatch_infeasible_fallback,
             "classifier_export_sha256": calderon.sha256_file(cfg.classifier.jax_export_path),
             "early_rejection_chunk_size": cfg.problem.get("interpolant_check_chunk_size", cfg.problem.n_interpolant_check_times),
+            "backend": cfg.problem.get("interpolant_filter_backend", "reference"),
+            "decision_tolerance": cfg.problem.get("gpu_filter_decision_tolerance", None),
         }
     if cfg.constraints.enabled:
         metrics["training_lineage_constraint"] = cfg.constraints.to_dict()
@@ -570,12 +681,14 @@ def main():
     if args.stage == "prepare":
         return
     check_classifier_python(cfg)
+    prepare_logging_classifiers(cfg)
     cfg, statics, state, key = setup_state(cfg, data)
     tracker = None
-    if args.wandb != "disabled":
+    if calderon.uses_maizels_protocol(cfg) or args.wandb not in (None, "disabled"):
         import wandb
-        tracker = wandb.init(project=cfg.logging.wandb_project, name=cfg.logging.wandb_name,
-                             config=cfg.to_dict(), mode=args.wandb, dir=str(output))
+        tracker = wandb.init(project=cfg.logging.wandb_project, entity=cfg.logging.get("wandb_entity"),
+                             name=cfg.logging.wandb_name, config=cfg.to_dict(),
+                             mode=args.wandb, dir=str(output))
     try:
         if args.stage == "train":
             state = train(cfg, statics, state, key, data, output, tracker)

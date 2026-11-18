@@ -1,8 +1,8 @@
 """Differentiable Calderon adapter for the native Maizels lineage loss.
 
-The filter and final evaluator retain their existing frozen inference paths.
-This adapter uses the same frozen weights with float32 JAX preprocessing and
-calibration so gradients can pass from the lineage loss to the flow map.
+Filtering and the final oracle use separate frozen inference paths. This
+adapter uses the same selected-times weights with float32 JAX preprocessing
+and calibration so gradients pass from the lineage loss to the flow map.
 """
 
 from __future__ import annotations

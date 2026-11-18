@@ -340,8 +340,8 @@ def rbf_mmd2(x: np.ndarray, y: np.ndarray, seed: int = 0) -> float:
     return float(max(value, 0.0))
 
 
-def _interval_source(cfg, timepoint: str) -> Tuple[str, str]:
-    return maizels.retained_interval_for_timepoint(cfg, timepoint)
+def _interval_source(cfg, timepoint: str, data_backend=maizels) -> Tuple[str, str]:
+    return data_backend.retained_interval_for_timepoint(cfg, timepoint)
 
 
 def _heldout_timepoints(cfg) -> Sequence[str]:
@@ -364,13 +364,17 @@ def distribution_metrics(
     max_target_points: Optional[int] = None,
     timepoints: Optional[Sequence[str]] = None,
     n_noise_draws: Optional[int] = None,
+    data_backend=maizels,
+    include_direct: bool = True,
+    include_mmd: bool = True,
 ) -> Tuple[
     Dict[str, float],
     Dict[str, Tuple[np.ndarray, ...]],
 ]:
     """Compare valid model samples with omitted-day populations.
 
-    Full SSFMs are evaluated both directly and by map composition.  A model
+    Full SSFMs default to direct and composed evaluation; either direct
+    sampling or MMD calculation can be disabled. A model
     trained with ``local_fraction == 1`` is evaluated only by rolling its
     local Euler--Maruyama update; it has no trained non-local flow map.
     """
@@ -396,13 +400,14 @@ def distribution_metrics(
         raise ValueError("evaluation.flowmap_n_steps must be positive.")
     em_n_steps = euler_maruyama_n_steps(cfg) if use_euler_maruyama else None
 
-    pools = maizels.timepoint_pool_splits(
+    pools = data_backend.timepoint_pool_splits(
         cfg, dataset_location=cfg.problem.dataset_location
     )
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
     val_times = set(str(value) for value in cfg.problem.hparam_val_times)
-    samplers = ("euler_maruyama",) if use_euler_maruyama else ("direct", "flowmap")
+    samplers = (("euler_maruyama",) if use_euler_maruyama else
+                ("direct", "flowmap") if include_direct else ("flowmap",))
     all_emd = {name: [] for name in samplers}
     val_emd = {name: [] for name in samplers}
     test_emd = {name: [] for name in samplers}
@@ -420,7 +425,7 @@ def distribution_metrics(
             f"Requested stochastic evaluation times are not held out: {unavailable}."
         )
     for timepoint in selected_timepoints:
-        source_time, _ = _interval_source(cfg, timepoint)
+        source_time, _ = _interval_source(cfg, timepoint, data_backend)
         source_all = np.asarray(pools[source_time]["x"], dtype=np.float32)
         target_all = np.asarray(pools[timepoint]["x"], dtype=np.float32)
         source = source_all[
@@ -429,8 +434,8 @@ def distribution_metrics(
         target = target_all[
             _sample_indices(rng, target_all.shape[0], max_target_points)
         ]
-        start = maizels.normalized_time(source_time, cfg)
-        end = maizels.normalized_time(timepoint, cfg)
+        start = data_backend.normalized_time(source_time, cfg)
+        end = data_backend.normalized_time(timepoint, cfg)
         draw_emd = {name: [] for name in samplers}
         draw_mmd = {name: [] for name in samplers}
         first_prediction = {}
@@ -450,9 +455,12 @@ def distribution_metrics(
                     )
                 }
             else:
+                # Reserve both keys so disabling direct evaluation preserves
+                # the composed noise draws used by existing checkpoints.
                 key, direct_key, flowmap_key = jax.random.split(key, 3)
-                predictions = {
-                    "direct": sample_pushforward(
+                predictions = {}
+                if include_direct:
+                    predictions["direct"] = sample_pushforward(
                         model,
                         params,
                         source,
@@ -460,8 +468,8 @@ def distribution_metrics(
                         end,
                         direct_key,
                         n_coefficients=int(cfg.ssfm.n_coefficients),
-                    ),
-                    "flowmap": sample_composed_pushforward(
+                    )
+                predictions["flowmap"] = sample_composed_pushforward(
                         model,
                         params,
                         source,
@@ -470,13 +478,13 @@ def distribution_metrics(
                         flowmap_key,
                         n_coefficients=int(cfg.ssfm.n_coefficients),
                         n_steps=flowmap_n_steps,
-                    ),
-                }
+                    )
             for sampler, prediction in predictions.items():
                 if sampler not in first_prediction:
                     first_prediction[sampler] = prediction
                 draw_emd[sampler].append(wasserstein.exact_emd(prediction, target))
-                draw_mmd[sampler].append(rbf_mmd2(prediction, target, seed=seed + draw))
+                if include_mmd:
+                    draw_mmd[sampler].append(rbf_mmd2(prediction, target, seed=seed + draw))
 
         tag = _time_tag(timepoint)
         for sampler in samplers:
@@ -485,31 +493,26 @@ def distribution_metrics(
             metrics[f"final_eval/{tag}_{sampler}_emd_std_over_noise"] = float(
                 np.std(draw_emd[sampler])
             )
-            metrics[f"final_eval/{tag}_{sampler}_rbf_mmd2"] = float(
-                np.mean(draw_mmd[sampler])
-            )
+            if include_mmd:
+                metrics[f"final_eval/{tag}_{sampler}_rbf_mmd2"] = float(
+                    np.mean(draw_mmd[sampler])
+                )
             all_emd[sampler].append(emd)
             (val_emd if timepoint in val_times else test_emd)[sampler].append(emd)
 
         # Sampler-neutral aliases keep sweep/multiseed consumers stable.
-        primary_sampler = "euler_maruyama" if use_euler_maruyama else "direct"
+        primary_sampler = samplers[0]
         metrics[f"final_eval/{tag}_ssfm_emd"] = metrics[
             f"final_eval/{tag}_{primary_sampler}_emd"
         ]
         metrics[f"final_eval/{tag}_ssfm_emd_std_over_noise"] = metrics[
             f"final_eval/{tag}_{primary_sampler}_emd_std_over_noise"
         ]
-        metrics[f"final_eval/{tag}_ssfm_rbf_mmd2"] = metrics[
-            f"final_eval/{tag}_{primary_sampler}_rbf_mmd2"
-        ]
-        if use_euler_maruyama:
-            plot_data[timepoint] = (target, first_prediction["euler_maruyama"])
-        else:
-            plot_data[timepoint] = (
-                target,
-                first_prediction["direct"],
-                first_prediction["flowmap"],
-            )
+        if include_mmd:
+            metrics[f"final_eval/{tag}_ssfm_rbf_mmd2"] = metrics[
+                f"final_eval/{tag}_{primary_sampler}_rbf_mmd2"
+            ]
+        plot_data[timepoint] = (target,) + tuple(first_prediction[name] for name in samplers)
 
     for sampler in samplers:
         _mean_or_absent(metrics, f"final_eval/{sampler}_mean_emd", all_emd[sampler])
@@ -525,7 +528,7 @@ def distribution_metrics(
         )
 
     # Preserve the sampler-neutral aggregate keys used by sweep scripts.
-    primary_sampler = "euler_maruyama" if use_euler_maruyama else "direct"
+    primary_sampler = samplers[0]
     for suffix in ("mean_emd", "mean_emd_hparam_val_times", "mean_emd_test_times"):
         sampler_key = f"final_eval/{primary_sampler}_{suffix}"
         if sampler_key in metrics:
@@ -750,6 +753,8 @@ def pushforward_plot_data(
     *,
     seed: Optional[int] = None,
     max_points: Optional[int] = None,
+    data_backend=maizels,
+    include_direct: bool = True,
 ) -> Dict[str, Tuple[np.ndarray, ...]]:
     """Sample plotting populations without running EMD or MMD calculations."""
     seed = int(cfg.evaluation.seed if seed is None else seed)
@@ -761,20 +766,20 @@ def pushforward_plot_data(
     if not use_euler_maruyama and flowmap_n_steps <= 0:
         raise ValueError("evaluation.flowmap_n_steps must be positive.")
 
-    pools = maizels.timepoint_pool_splits(
+    pools = data_backend.timepoint_pool_splits(
         cfg, dataset_location=cfg.problem.dataset_location
     )
     rng = np.random.default_rng(seed)
     key = jax.random.PRNGKey(seed)
     plot_data = {}
     for timepoint in _heldout_timepoints(cfg):
-        source_time, _ = _interval_source(cfg, timepoint)
+        source_time, _ = _interval_source(cfg, timepoint, data_backend)
         source_all = np.asarray(pools[source_time]["x"], dtype=np.float32)
         target_all = np.asarray(pools[timepoint]["x"], dtype=np.float32)
         source = source_all[_sample_indices(rng, source_all.shape[0], max_points)]
         target = target_all[_sample_indices(rng, target_all.shape[0], max_points)]
-        start = maizels.normalized_time(source_time, cfg)
-        end = maizels.normalized_time(timepoint, cfg)
+        start = data_backend.normalized_time(source_time, cfg)
+        end = data_backend.normalized_time(timepoint, cfg)
         if use_euler_maruyama:
             key, rollout_key = jax.random.split(key)
             rollout = sample_euler_maruyama_pushforward(
@@ -790,15 +795,16 @@ def pushforward_plot_data(
             plot_data[timepoint] = (target, rollout)
         else:
             key, direct_key, flowmap_key = jax.random.split(key, 3)
-            direct = sample_pushforward(
-                model,
-                params,
-                source,
-                start,
-                end,
-                direct_key,
-                n_coefficients=int(cfg.ssfm.n_coefficients),
-            )
+            if include_direct:
+                direct = sample_pushforward(
+                    model,
+                    params,
+                    source,
+                    start,
+                    end,
+                    direct_key,
+                    n_coefficients=int(cfg.ssfm.n_coefficients),
+                )
             flowmap = sample_composed_pushforward(
                 model,
                 params,
@@ -809,16 +815,31 @@ def pushforward_plot_data(
                 n_coefficients=int(cfg.ssfm.n_coefficients),
                 n_steps=flowmap_n_steps,
             )
-            plot_data[timepoint] = (target, direct, flowmap)
+            plot_data[timepoint] = (target, direct, flowmap) if include_direct else (target, flowmap)
     return plot_data
 
 
+def _stochastic_classifier_path(data_backend, configured):
+    resolver = getattr(data_backend, "stochastic_classifier_path", None)
+    if resolver is not None:
+        return resolver(configured)
+    path = Path(configured)
+    return path if path.suffix == ".npz" else path.with_suffix(".npz")
+
+
+def _source_type_ids(data_backend, cfg, cell_types):
+    names = (data_backend.class_names(cfg) if hasattr(data_backend, "class_names")
+             else data_backend.CLASS_NAMES)
+    lookup = {str(name): i for i, name in enumerate(names)}
+    return np.asarray([lookup[str(value)] for value in cell_types], dtype=np.int32)
+
+
 def lineage_metrics(
-    model, params, cfg, *, seed: Optional[int] = None
+    model, params, cfg, *, seed: Optional[int] = None, data_backend=maizels,
 ) -> Dict[str, float]:
-    """Score valid sampled paths from held-out D3 cells with both classifiers."""
+    """Score sampled paths from held-out source cells with both classifiers."""
     seed = int(cfg.evaluation.seed + 211 if seed is None else seed)
-    pools = maizels.timepoint_pool_splits(
+    pools = data_backend.timepoint_pool_splits(
         cfg, dataset_location=cfg.problem.dataset_location
     )
     source = pools[str(cfg.problem.source_time)]
@@ -833,19 +854,11 @@ def lineage_metrics(
     source_x = source_x_all[indices]
     if source_x.shape[0] == 0:
         return {}
-    type_to_id = maizels.class_to_id_map(maizels.CLASS_NAMES)
-    source_ids = np.asarray(
-        [type_to_id[str(value)] for value in source_types_all[indices]],
-        dtype=np.int32,
-    )
+    source_ids = _source_type_ids(data_backend, cfg, source_types_all[indices])
     key = jax.random.PRNGKey(seed)
     classifiers = {
-        "schedule_classifier": Path(cfg.problem.classifier_path),
-        "full_data_classifier": Path(cfg.logging.maizels.full_data_classifier_path),
-    }
-    classifiers = {
-        name: path if path.suffix == ".npz" else path.with_suffix(".npz")
-        for name, path in classifiers.items()
+        "schedule_classifier": _stochastic_classifier_path(data_backend, cfg.problem.classifier_path),
+        "full_data_classifier": _stochastic_classifier_path(data_backend, cfg.logging.maizels.full_data_classifier_path),
     }
     available_classifiers = {}
     for name, path in classifiers.items():
@@ -871,21 +884,21 @@ def lineage_metrics(
             model,
             params,
             source_x,
-            maizels.normalized_time(cfg.problem.source_time, cfg),
-            maizels.normalized_time(cfg.problem.target_time, cfg),
+            data_backend.normalized_time(cfg.problem.source_time, cfg),
+            data_backend.normalized_time(cfg.problem.target_time, cfg),
             draw_key,
             cfg,
             n_steps=n_steps,
         )
         for name, classifier_path in available_classifiers.items():
-            validity = maizels.check_paths_with_classifier(
+            validity = data_backend.check_paths_with_classifier(
                 path,
                 source_ids,
                 classifier_path,
                 prob_threshold=float(cfg.problem.classifier_prob_threshold),
                 margin_threshold=float(cfg.problem.classifier_margin_threshold),
                 classifier_batch_size=int(cfg.problem.classifier_batch_size),
-                lineage_transition_mode=maizels.lineage_transition_mode_from_config(
+                lineage_transition_mode=data_backend.lineage_transition_mode_from_config(
                     cfg
                 ),
             )
@@ -928,12 +941,10 @@ def full_data_trajectory_plot_data(
     cfg,
     *,
     seed: Optional[int] = None,
+    data_backend=maizels,
 ):
     """Generate held-out D3 trajectories and full-classifier validity labels."""
-    configured = Path(cfg.logging.maizels.full_data_classifier_path)
-    classifier_path = (
-        configured if configured.suffix == ".npz" else configured.with_suffix(".npz")
-    )
+    classifier_path = _stochastic_classifier_path(data_backend, cfg.logging.maizels.full_data_classifier_path)
     if not classifier_path.is_file():
         print(
             "Skipping stochastic validity trajectory plot because the full-data "
@@ -942,7 +953,7 @@ def full_data_trajectory_plot_data(
         return None
 
     seed = int(cfg.evaluation.seed + 503 if seed is None else seed)
-    pools = maizels.timepoint_pool_splits(
+    pools = data_backend.timepoint_pool_splits(
         cfg, dataset_location=cfg.problem.dataset_location
     )
     source_pool = pools[str(cfg.problem.source_time)]
@@ -959,30 +970,26 @@ def full_data_trajectory_plot_data(
     if source.shape[0] == 0:
         return None
     target = np.asarray(target_pool["holdout_x"], dtype=np.float32)
-    type_to_id = maizels.class_to_id_map(maizels.CLASS_NAMES)
-    source_ids = np.asarray(
-        [type_to_id[str(value)] for value in source_types_all[indices]],
-        dtype=np.int32,
-    )
+    source_ids = _source_type_ids(data_backend, cfg, source_types_all[indices])
     use_euler_maruyama = uses_euler_maruyama_evaluation(cfg)
     generated = sample_evaluation_path(
         model,
         params,
         source,
-        maizels.normalized_time(cfg.problem.source_time, cfg),
-        maizels.normalized_time(cfg.problem.target_time, cfg),
+        data_backend.normalized_time(cfg.problem.source_time, cfg),
+        data_backend.normalized_time(cfg.problem.target_time, cfg),
         jax.random.PRNGKey(seed),
         cfg,
         n_steps=int(cfg.evaluation.lineage_n_steps),
     )
-    validity = maizels.check_paths_with_classifier(
+    validity = data_backend.check_paths_with_classifier(
         generated,
         source_ids,
         classifier_path,
         prob_threshold=float(cfg.problem.classifier_prob_threshold),
         margin_threshold=float(cfg.problem.classifier_margin_threshold),
         classifier_batch_size=int(cfg.problem.classifier_batch_size),
-        lineage_transition_mode=maizels.lineage_transition_mode_from_config(cfg),
+        lineage_transition_mode=data_backend.lineage_transition_mode_from_config(cfg),
     )
     paths = np.concatenate([source[:, None, :], generated], axis=1)
     return {
@@ -1079,6 +1086,7 @@ def save_pushforward_plot(
     flowmap_n_steps: int,
     euler_maruyama: Optional[bool] = None,
     euler_maruyama_n_steps: int = 50,
+    composed_only: bool = False,
 ) -> None:
     """Save held-out populations with only samplers valid for the model."""
     if not plot_data:
@@ -1091,7 +1099,9 @@ def save_pushforward_plot(
         raise ValueError(f"Expected two or three plot populations, got {n_columns}.")
     if any(len(plot_data[timepoint]) != n_columns for timepoint in timepoints):
         raise ValueError("Every held-out timepoint must use the same plot samplers.")
-    if euler_maruyama is not None and bool(euler_maruyama) != (n_columns == 2):
+    if composed_only and n_columns != 2:
+        raise ValueError("Composed-only plots require actual and composed populations.")
+    if euler_maruyama is not None and bool(euler_maruyama) != (n_columns == 2 and not composed_only):
         raise ValueError("Plot populations do not match the configured sampler mode.")
     figure, axes = plt.subplots(
         len(timepoints),
@@ -1111,7 +1121,8 @@ def save_pushforward_plot(
         axes[row, 0].set_title("Actual" if row == 0 else "")
         if n_columns == 2:
             axes[row, 1].set_title(
-                f"Euler--Maruyama rollout ({int(euler_maruyama_n_steps)} steps)"
+                (f"Composed SSFM ({flowmap_n_steps} steps)" if composed_only else
+                 f"Euler--Maruyama rollout ({int(euler_maruyama_n_steps)} steps)")
                 if row == 0
                 else ""
             )
@@ -1128,12 +1139,14 @@ def save_pushforward_plot(
     plt.close(figure)
 
 
-def final_evaluation(model, params, cfg, output_dir: Path) -> Dict[str, float]:
+def final_evaluation(model, params, cfg, output_dir: Path, *, data_backend=maizels,
+                     trajectory_tag="heldout_d3", include_direct=True, include_mmd=True) -> Dict[str, float]:
     """Run distribution and lineage evaluation for one checkpoint."""
-    distribution, plot_data = distribution_metrics(model, params, cfg)
+    distribution, plot_data = distribution_metrics(model, params, cfg, data_backend=data_backend,
+                                                    include_direct=include_direct, include_mmd=include_mmd)
     metrics = dict(distribution)
-    metrics.update(observed_distribution_metrics(model, params, cfg))
-    metrics.update(lineage_metrics(model, params, cfg))
+    metrics.update(observed_distribution_metrics(model, params, cfg, data_backend=data_backend))
+    metrics.update(lineage_metrics(model, params, cfg, data_backend=data_backend))
     if bool(cfg.evaluation.save_plot):
         save_pushforward_plot(
             plot_data,
@@ -1141,11 +1154,12 @@ def final_evaluation(model, params, cfg, output_dir: Path) -> Dict[str, float]:
             flowmap_n_steps=int(cfg.evaluation.flowmap_n_steps),
             euler_maruyama=uses_euler_maruyama_evaluation(cfg),
             euler_maruyama_n_steps=euler_maruyama_n_steps(cfg),
+            composed_only=not include_direct and not uses_euler_maruyama_evaluation(cfg),
         )
-        trajectory_data = full_data_trajectory_plot_data(model, params, cfg)
+        trajectory_data = full_data_trajectory_plot_data(model, params, cfg, data_backend=data_backend)
         if trajectory_data is not None:
             save_full_data_trajectory_plot(
                 trajectory_data,
-                Path(output_dir) / "heldout_d3_trajectory_validity.png",
+                Path(output_dir) / f"{trajectory_tag}_trajectory_validity.png",
             )
     return metrics

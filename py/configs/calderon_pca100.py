@@ -15,11 +15,22 @@ from ml_collections import ConfigDict
 from . import maizels_pca50
 from common.calderon import (
     DEFAULT_DATASET, DEFAULT_TRAINING_MANIFEST, DEFAULT_EVALUATION_MANIFEST,
-    DEFAULT_SPLIT_MANIFEST, DEFAULT_TRAINING_EXPORT,
+    DEFAULT_SPLIT_MANIFEST, DEFAULT_TRAINING_EXPORT, DEFAULT_EVALUATION_EXPORT,
 )
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def use_reduced_evaluation(cfg):
+    """Select the current Calderon reporting protocol, including saved runs."""
+    cfg.logging.maizels.distribution_eval_samplers = ["flowmap", "euler"]
+    cfg.logging.maizels.trajectory_eval_samplers = ["flowmap", "euler"]
+    cfg.logging.maizels.distribution_eval_metrics = ["emd"]
+    cfg.logging.maizels.distribution_eval_points_per_time = 2048
+    cfg.logging.maizels.distribution_eval_source_max_points = 2048
+    cfg.logging.direct_plots_enabled = False
+    cfg.evaluation.marginal_max_points = 2048
 
 
 def get_config(
@@ -70,37 +81,50 @@ def get_config(
     cfg.problem.source_hours = 5.0
     cfg.problem.target_hours = 13.0
     cfg.problem.validation_fraction = 0.1
-    cfg.problem.test_fraction = 0.1
-    cfg.problem.split_seed = 0
+    cfg.problem.test_fraction = 0.0
+    cfg.problem.split_protocol = "maizels_train_holdout"
+    cfg.problem.split_seed = base.problem.maizels_holdout_seed
+    cfg.problem.maizels_holdout_seed = base.problem.maizels_holdout_seed
+    cfg.problem.maizels_holdout_fraction = base.problem.maizels_holdout_fraction
+    cfg.problem.maizels_holdout_n = base.problem.maizels_holdout_n
+    cfg.problem.timepoint_order = ["4-6", "6-8", "8-10", "10-12", "12-14"]
+    cfg.problem.timepoint_values = [0., .25, .5, .75, 1.]
     cfg.problem.gaussian_scale = "adaptive"
     cfg.problem.maizels_pair_mode = "ot_plain"
     cfg.problem.maizels_ot_coupling = "minibatch_ot"
     cfg.problem.ot_minibatch_size = cfg.optimization.get_ref("bs")
     cfg.problem.ot_minibatch_max_resamples = 20
-    cfg.problem.ot_minibatch_infeasible_fallback = "error"
+    cfg.problem.ot_minibatch_infeasible_fallback = base.problem.ot_minibatch_infeasible_fallback
+    cfg.problem.classifier_path = str(Path(classifier_path).expanduser().resolve()) if classifier_path else str(DEFAULT_TRAINING_MANIFEST)
+    cfg.problem.lineage_transition_mode = base.problem.lineage_transition_mode
 
-    cfg.logging = ConfigDict()
+    cfg.logging = ConfigDict(base.logging.to_dict())
+    cfg.logging.constraint_metrics_enabled = False
     cfg.logging.output_folder = str(Path(output_folder).expanduser().resolve()) if output_folder else str(
-        ROOT / "outputs" / f"calderon_symmetric_4_8_12_ot_flow_map_seed{seed}"
+        ROOT / "outputs" / f"calderon_symmetric_4_8_12_maizels_ot_flow_map_seed{seed}"
     )
-    cfg.logging.scalar_freq = 100
-    cfg.logging.save_freq = 5000
-    cfg.logging.wandb_project = "self-distill-flow-maps"
-    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_pca100_ot_flow_map_seed{seed}"
+    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_maizels_pca100_ot_flow_map_seed{seed}"
+    cfg.logging.output_name = cfg.logging.wandb_name
+    cfg.logging.maizels.full_data_classifier_path = (
+        str(Path(evaluation_classifier_path).expanduser().resolve()) if evaluation_classifier_path else str(DEFAULT_EVALUATION_MANIFEST))
+    cfg.logging.maizels.distribution_eval_timepoints = list(cfg.problem.evaluation_timepoints)
+    cfg.logging.maizels.distribution_eval_interval_local = True
 
     cfg.evaluation = ConfigDict()
-    cfg.evaluation.ema_factor = 0.999
-    cfg.evaluation.validation_batches = 8
+    cfg.evaluation.protocol = "maizels"
+    cfg.evaluation.ema_factor = None
+    cfg.evaluation.validation_batches = 1
+    cfg.evaluation.validation_batch_size = cfg.logging.maizels.validation_bs
     cfg.evaluation.validation_seed = 2701
-    # W1 snapshots are extracted independently at .25/.5/.75/1.0. The 50
-    # violation checks use .02/.04/.../1.0 on the same composed rollout.
-    cfg.evaluation.flowmap_n_steps = 100
+    # W1 takes 50 equal composed steps from the appropriate observed source
+    # to each queried time. Violations separately follow the full trajectory.
+    cfg.evaluation.flowmap_n_steps = cfg.logging.maizels.flowmap_n_steps
     cfg.evaluation.checkpoint_times = [i / 50 for i in range(1, 51)]
-    cfg.evaluation.validation_pair_mode = "ot_plain"
+    cfg.evaluation.validation_pair_mode = "same_as_training"
+    cfg.evaluation.validation_objective = "same_as_training"
     cfg.evaluation.flow_batch_size = 256
-    # Zero means every test source cell, pushed forward once.
-    cfg.evaluation.source_max_points = 0
-    cfg.evaluation.marginal_max_points = 2048
+    cfg.evaluation.source_max_points = cfg.logging.maizels.trajectory_eval_source_max_points
+    cfg.evaluation.marginal_max_points = cfg.logging.maizels.distribution_eval_points_per_time
     cfg.evaluation.seed = 2698
 
     cfg.classifier = ConfigDict()
@@ -112,11 +136,12 @@ def get_config(
         if evaluation_classifier_path else str(DEFAULT_EVALUATION_MANIFEST)
     )
     cfg.classifier.jax_export_path = str(DEFAULT_TRAINING_EXPORT)
+    cfg.classifier.evaluation_jax_export_path = str(DEFAULT_EVALUATION_EXPORT)
     cfg.classifier.python = classifier_python or os.getenv("CALDERON_CLASSIFIER_PYTHON", sys.executable)
     cfg.classifier.allowed_pairs_path = str(ROOT / "docs/calderon2022/graph_data/broad_tissue_allowed_pairs.csv")
-    cfg.classifier.batch_size = 4096
+    cfg.classifier.batch_size = cfg.logging.maizels.classifier_batch_size
     cfg.classifier.threads = 4
-    # Always report raw argmax violations as well as this confidence filter.
-    cfg.classifier.prob_threshold = 0.9
+    cfg.classifier.prob_threshold = float(cfg.logging.maizels.prob_threshold)
     cfg.classifier.margin_threshold = 0.0
+    use_reduced_evaluation(cfg)
     return cfg

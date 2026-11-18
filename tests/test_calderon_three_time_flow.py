@@ -107,7 +107,7 @@ class CalderonThreeTimeFlowTests(unittest.TestCase):
             validate_config(cfg)
         self.assertEqual(constrained2000_config().constraints.weight, 2000.)
 
-    def test_loader_reuses_folds_and_excludes_outside_times(self):
+    def test_loader_uses_independent_holdouts_and_excludes_outside_times(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg, expected, pca = fixture(Path(directory))
             data = calderon.load_endpoint_experiment(cfg)
@@ -117,14 +117,22 @@ class CalderonThreeTimeFlowTests(unittest.TestCase):
             self.assertEqual(set(table.loc[table.flow_split.eq("train"), "day"]), {"4-6", "8-10", "12-14"})
             middle = table.day.isin(("6-8", "10-12"))
             self.assertTrue(table.loc[middle, "flow_split"].eq("heldout_reference").all())
-            self.assertTrue((table.loc[~middle, "flow_split"] == table.loc[~middle, "classifier_split"]).all())
+            self.assertTrue((table.loc[~middle, "flow_split"] != table.loc[~middle, "classifier_split"]).any())
+            for window in data.training_times:
+                self.assertEqual(set(data.splits[window]), {"train", "validation"})
+                self.assertEqual([len(data.splits[window][name]) for name in ("train", "validation")], [27, 3])
+                combined = np.concatenate(list(data.splits[window].values()))
+                np.testing.assert_array_equal(np.sort(combined), np.arange(30))
+            recreated = calderon.load_endpoint_experiment(cfg)
+            for window in data.training_times:
+                np.testing.assert_array_equal(data.splits[window]["validation"], recreated.splits[window]["validation"])
             for marginal in data.marginals.values():
                 np.testing.assert_array_equal(marginal.x, pca[marginal.metadata.pca_row.to_numpy()])
             self.assertEqual(data.provenance["evaluation_classifier_manifest"], cfg.classifier.evaluation_manifest_path)
             self.assertNotEqual(data.provenance["classifier_manifest"], data.provenance["evaluation_classifier_manifest"])
             populations = list(data.evaluation_populations())
             self.assertEqual([window for _, window, _, _ in populations], ["6-8", "8-10", "10-12", "12-14"])
-            self.assertEqual([len(indices) for _, _, indices, _ in populations], [30, 3, 30, 3])
+            self.assertEqual([len(indices) for _, _, indices, _ in populations], [30, 30, 30, 30])
 
     def test_intermediate_training_assignment_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -216,10 +224,15 @@ class CalderonThreeTimeFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cover all saved"):
             validate_input_vocabulary(data, ("A", "B"))
 
-    def test_w1_snapshot_grid_is_validated_separately_from_fifty_checks(self):
+    def test_fifty_step_w1_queries_need_no_quarter_snapshot_grid(self):
         cfg = get_config()
         cfg.training.ndevices = 1
         cfg.evaluation.flowmap_n_steps = 50
+        validate_config(cfg)
+        cfg.evaluation.protocol = "legacy"
+        cfg.evaluation.validation_pair_mode = "ot_plain"
+        cfg.evaluation.validation_objective = "plain_ot_lsd_without_constraint"
+        cfg.evaluation.ema_factor = .999
         with self.assertRaisesRegex(ValueError, "W1 marginals"):
             validate_config(cfg)
 

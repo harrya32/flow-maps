@@ -2,7 +2,40 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import tempfile
+
 import numpy as np
+
+
+@contextmanager
+def _emd_cost_matrix(x, y, *, max_in_memory_pairs=20_000_000, row_block_size=256):
+    """Preserve the Euclidean cost while keeping large matrices on disk."""
+    x_norm = np.sum(x * x, axis=1, keepdims=True)
+    y_norm = np.sum(y * y, axis=1, keepdims=True).T
+
+    def fill(block, norms):
+        block *= np.float32(-2.)
+        block += norms
+        block += y_norm
+        np.maximum(block, np.float32(0.), out=block)
+        np.sqrt(block, out=block)
+        return block
+
+    if len(x) * len(y) <= max_in_memory_pairs:
+        yield fill(x @ y.T, x_norm)
+        return
+    # POT expects a contiguous float64 matrix. Building it by rows avoids
+    # holding both a full float32 matrix and its float64 conversion in RAM.
+    with tempfile.TemporaryFile() as scratch:
+        cost = np.memmap(scratch, dtype=np.float64, mode="w+", shape=(len(x), len(y)))
+        try:
+            for start in range(0, len(x), row_block_size):
+                end = start + row_block_size
+                cost[start:end] = fill(x[start:end] @ y.T, x_norm[start:end])
+            yield cost
+        finally:
+            cost._mmap.close()
 
 
 def exact_emd(
@@ -35,20 +68,12 @@ def exact_emd(
             f"{x.shape[1]} and {y.shape[1]}."
         )
 
-    x_norm = np.sum(x * x, axis=1, keepdims=True)
-    y_norm = np.sum(y * y, axis=1, keepdims=True).T
-    cost = x @ y.T
-    cost *= np.float32(-2.0)
-    cost += x_norm
-    cost += y_norm
-    np.maximum(cost, np.float32(0.0), out=cost)
-    np.sqrt(cost, out=cost)
-
-    return float(
-        pot.emd2(
-            pot.unif(x.shape[0]),
-            pot.unif(y.shape[0]),
-            cost,
-            numItermax=int(num_iter_max),
+    with _emd_cost_matrix(x, y) as cost:
+        return float(
+            pot.emd2(
+                pot.unif(x.shape[0]),
+                pot.unif(y.shape[0]),
+                cost,
+                numItermax=int(num_iter_max),
+            )
         )
-    )

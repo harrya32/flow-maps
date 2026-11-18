@@ -30,6 +30,8 @@ def main():
         if stored["export_sha256"].item() != sha256_file(args.export):
             raise ValueError("Verification inputs belong to a different frozen export.")
         x, expected = stored["x_pca"], stored["torch_probabilities"]
+        training_only = bool(stored["endpoint_training_cells_only"].item()) if "endpoint_training_cells_only" in stored else True
+        scope = str(stored["verification_scope"].item()) if "verification_scope" in stored else "selected_training_cells_and_interpolants"
     model = FrozenTissueEnsemble(args.export, args.manifest)
     started = time.monotonic()
     actual = model.predict_proba(x)
@@ -40,7 +42,8 @@ def main():
               "export_sha256": model.export_sha256, "manifest_sha256": model.manifest_sha256,
               "gelu_implementation": model.gelu_implementation,
               "implementation_sha256": sha256_file(ROOT / "py/common/calderon_classifier.py"),
-              "verification_inputs_sha256": sha256_file(check), "endpoint_training_cells_only": True,
+              "verification_inputs_sha256": sha256_file(check), "endpoint_training_cells_only": training_only,
+              "verification_scope": scope,
               "max_absolute_probability_difference": float(np.max(np.abs(actual - expected))),
               "argmax_agreement_pct": float(100 * np.mean(actual.argmax(1) == expected.argmax(1))),
               "confidence_0p9_agreement_pct": float(100 * np.mean((actual.max(1) >= .9) == (expected.max(1) >= .9))),

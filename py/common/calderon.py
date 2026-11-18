@@ -21,6 +21,11 @@ DEFAULT_TRAINING_MANIFEST = ROOT / "calderon-classifiers/symmetric_4_8_12/models
 DEFAULT_EVALUATION_MANIFEST = ROOT / "calderon-classifiers/all_times/models/all_times_broad_tissue_selected.json"
 DEFAULT_SPLIT_MANIFEST = ROOT / "datasets/calderon2022/symmetric_4_8_12/cell_splits.csv.gz"
 DEFAULT_TRAINING_EXPORT = ROOT / ".cache/calderon2022/symmetric_4_8_12_tissue_ensemble_jax.npz"
+DEFAULT_EVALUATION_EXPORT = ROOT / ".cache/calderon2022/all_times_tissue_ensemble_jax.npz"
+
+
+def uses_maizels_protocol(cfg):
+    return cfg.evaluation.get("protocol") == "maizels"
 
 
 def evaluation_manifest_path(cfg):
@@ -168,14 +173,23 @@ class EndpointExperiment:
                 indices = np.arange(len(self.marginals[window].x))
                 kind = "entire_heldout_marginal"
             else:
-                key = "target_test" if window == self.target_time else f"training_time_test_{window.replace('-', '_')}"
-                indices = self.splits[window]["test"]
-                kind = "selected_time_test_cells"
+                if "test" in self.splits[window]:
+                    key = "target_test" if window == self.target_time else f"training_time_test_{window.replace('-', '_')}"
+                    indices = self.splits[window]["test"]
+                    kind = "selected_time_test_cells"
+                else:
+                    key = "target_observed" if window == self.target_time else f"observed_time_{window.replace('-', '_')}"
+                    indices = np.arange(len(self.marginals[window].x))
+                    kind = "entire_observed_marginal"
             yield key, window, indices, kind
 
     def pool(self, window, split):
         marginal = self.marginals[window]
-        indices = self.splits[window][split]
+        if split == "all":
+            indices = np.arange(len(marginal.x))
+        else:
+            split = "validation" if split in ("holdout", "heldout") else split
+            indices = self.splits[window][split]
         return {"x": marginal.x[indices], "type_ids": marginal.type_ids[indices]}
 
     def split_table(self):
@@ -293,7 +307,7 @@ def load_endpoint_experiment(cfg):
 
 
 def load_multitime_experiment(cfg):
-    """Load all-times PCs and reuse the selected classifier's supervised folds."""
+    """Load all-times PCs, classifier metadata, and the configured flow folds."""
     import h5py
     dataset = Path(cfg.problem.dataset_location)
     selected = training_windows(cfg)
@@ -367,7 +381,7 @@ def load_multitime_experiment(cfg):
     if cache.index.duplicated().any() or set(cache.index) != set(supervised.cell_id):
         raise ValueError("The split table and classifier cache contain different selected-time cells.")
     if not np.array_equal(cache.loc[supervised.cell_id].to_numpy(), supervised.classifier_split.to_numpy()):
-        raise ValueError("Flow cell folds must match the fitted training classifier's folds.")
+        raise ValueError("Classifier metadata folds must match the fitted classifier cache.")
     lookup = {name: i for i, name in enumerate(classes)}
     marginals, splits = {}, {}
     for window in windows:
@@ -378,8 +392,16 @@ def load_multitime_experiment(cfg):
         marginals[window] = Marginal(window, pca[frame.pca_row.to_numpy()], frame,
                                      frame.broad_tissue.map(lookup).to_numpy(dtype=np.int32))
         if window in selected:
-            splits[window] = {fold: np.flatnonzero(frame.classifier_split.eq(fold).to_numpy())
-                              for fold in ("train", "validation", "test")}
+            if cfg.problem.get("split_protocol") == "maizels_train_holdout":
+                from .maizels import _split_train_holdout_indices
+                offset = 11 if window == selected[0] else 29 if window == selected[-1] else 101 * (windows.index(window) + 1)
+                train, heldout = _split_train_holdout_indices(
+                    len(frame), holdout_fraction=cfg.problem.maizels_holdout_fraction,
+                    holdout_n=cfg.problem.maizels_holdout_n, seed=cfg.problem.maizels_holdout_seed + offset)
+                splits[window] = {"train": train, "validation": heldout}
+            else:
+                splits[window] = {fold: np.flatnonzero(frame.classifier_split.eq(fold).to_numpy())
+                                  for fold in ("train", "validation", "test")}
             if any(len(rows) == 0 for rows in splits[window].values()):
                 raise ValueError(f"Empty supervised cell fold at {window}.")
     provenance = {
@@ -402,6 +424,13 @@ def load_multitime_experiment(cfg):
         "heldout_scope": "Shared flow/classifier validation and test cells; full intermediate marginals excluded from fitting and selection; global PCA includes all expression profiles",
         "classifier_label_alignment": "Training and evaluation vocabularies aligned by tissue name",
     }
+    if cfg.problem.get("split_protocol") == "maizels_train_holdout":
+        provenance.update({
+            "flow_split_protocol": "Independent Maizels 90/10 train/heldout split at each retained time; heldout used for validation and violations",
+            "flow_split_seed": cfg.problem.maizels_holdout_seed,
+            "flow_holdout_fraction": cfg.problem.maizels_holdout_fraction,
+            "heldout_scope": "Independent flow validation cells; both full intermediate marginals excluded from flow fitting/selection; classifiers retain their original splits and global PCA",
+        })
     if cfg.problem.maizels_pair_mode == "ot_endpoint_interpolant":
         export = Path(cfg.classifier.jax_export_path)
         with np.load(export, allow_pickle=False) as stored:
@@ -413,7 +442,10 @@ def load_multitime_experiment(cfg):
             "training_classifier_forward_sha256": sha256_file(Path(__file__).with_name("calderon_classifier.py")),
             "training_classifier_checkpoint_sha256": [m["checkpoint_sha256"] for m in export_metadata["members"]],
             "training_pair_prior": "Projected tissue relation restricted by name, plus selected-times classified interpolants and observed final labels",
+            "training_interpolant_filter_backend": cfg.problem.get("interpolant_filter_backend", "reference"),
         })
+        if cfg.problem.get("interpolant_filter_backend", "reference") == "jax":
+            provenance["training_interpolant_filter_sha256"] = sha256_file(Path(__file__).with_name("calderon_filter.py"))
     if cfg.constraints.enabled:
         provenance.update({"lineage_loss_backend": "Native Maizels loss-point transition NLL with the frozen selected-times ensemble",
                            "lineage_loss_forward_sha256": sha256_file(Path(__file__).with_name("calderon_lineage.py"))})
@@ -435,6 +467,9 @@ class EndpointOTDataset:
         self.last_pair_stats = None
         self.allowed = None
         self.interpolant_checker = None
+        self.jax_interpolant_filter = None
+        self.interpolant_reference_fallback_pairs = 0
+        self.interpolant_reference_fallback_points = 0
         self.cumulative_stats = {name: 0 for name in ("batches", "candidate_pairs", "endpoint_rejected", "interpolant_checked",
                                                     "interpolant_rejected", "ot_refinements", "sampled_pairs", "resampled_empty_blocks")}
         self.retained_mass_sum = 0.
@@ -449,11 +484,26 @@ class EndpointOTDataset:
                     cfg.classifier.jax_export_path, cfg.classifier.manifest_path, cfg.problem.classifier_batch_size)
                 if tuple(self.classifier.class_names) != tuple(class_names):
                     raise ValueError("Training decoder vocabulary differs from the endpoint labels.")
+                if cfg.problem.get("interpolant_filter_backend", "reference") == "jax":
+                    from .calderon_filter import get_jax_interpolant_filter
+                    n_times = int(cfg.problem.n_interpolant_check_times)
+                    if cfg.problem.get("interpolant_check_chunk_size", n_times) != n_times:
+                        raise ValueError("The JAX filter uses the full check grid; use the reference backend for early rejection.")
+                    self.jax_interpolant_filter = get_jax_interpolant_filter(
+                        self.classifier, self.allowed, n_times, cfg.problem.classifier_prob_threshold,
+                        cfg.problem.classifier_margin_threshold, cfg.problem.get("gpu_filter_decision_tolerance", 1e-4),
+                    )
                 self.interpolant_checker = self.check_interpolants
             else:
                 self.interpolant_checker = interpolant_checker
 
     def check_interpolants(self, source_x, source_type_ids, target_x, target_type_ids):
+        if self.jax_interpolant_filter is not None:
+            result = self.jax_interpolant_filter(source_x, source_type_ids, target_x, target_type_ids)
+            self.interpolant_classifier_points += result["n_points"]
+            self.interpolant_reference_fallback_pairs += result["reference_fallback_pairs"]
+            self.interpolant_reference_fallback_points += result["reference_fallback_points"]
+            return result
         n_times = int(self.cfg.problem.n_interpolant_check_times)
         taus = np.linspace(0., 1., n_times + 2, dtype=np.float32)[1:-1]
         chunk = int(self.cfg.problem.get("interpolant_check_chunk_size", n_times))
@@ -538,6 +588,9 @@ class EndpointOTDataset:
         counts["sampled_source_tissues"] = dict(zip(self.class_names, self.sampled_source_tissues.tolist()))
         counts["sampled_target_tissues"] = dict(zip(self.class_names, self.sampled_target_tissues.tolist()))
         counts["interpolant_classifier_points"] = self.interpolant_classifier_points
+        counts["interpolant_filter_backend"] = self.cfg.problem.get("interpolant_filter_backend", "reference")
+        counts["interpolant_reference_fallback_pairs"] = self.interpolant_reference_fallback_pairs
+        counts["interpolant_reference_fallback_points"] = self.interpolant_reference_fallback_points
         return counts
 
 
@@ -545,6 +598,7 @@ class MultiMarginalOTDataset:
     """Equal pair counts per adjacent training interval, then shuffled together."""
 
     def __init__(self, cfg, data, split, interpolant_checker=None):
+        self.cfg = cfg
         self.intervals = tuple(zip(data.training_times[:-1], data.training_times[1:]))
         if len(self.intervals) < 2 or not cfg.problem.pair_time_bounds_in_label:
             raise ValueError("Multi-marginal OT requires multiple intervals and absolute-time pair labels.")
@@ -560,6 +614,8 @@ class MultiMarginalOTDataset:
             self.datasets.append(ds)
         self.last_pair_stats = None
         self.batches = 0
+        self.last_filter_dispatch_stats = None
+        self.filter_dispatches = 0
 
     @property
     def interpolant_classifier_points(self):
@@ -572,8 +628,18 @@ class MultiMarginalOTDataset:
             raise ValueError("A training batch must supply a pair for every retained interval.")
         keys = jax.random.split(key, len(self.datasets) + 1)
         counts = [bs // len(self.datasets) + (i < bs % len(self.datasets)) for i in range(len(self.datasets))]
-        parts = [ds.sample_device_batch(count, interval_key)
-                 for ds, count, interval_key in zip(self.datasets, counts, keys[:-1])]
+        shared_filter = self.datasets[0].jax_interpolant_filter
+        batch_checks = (self.cfg.problem.get("batch_interpolant_checks_across_intervals", False)
+                        and shared_filter is not None
+                        and all(ds.jax_interpolant_filter is shared_filter for ds in self.datasets))
+        if batch_checks:
+            from .calderon_filter import sample_intervals_with_batched_filter
+            parts, self.last_filter_dispatch_stats = sample_intervals_with_batched_filter(self.datasets, counts, keys[:-1])
+            self.filter_dispatches += self.last_filter_dispatch_stats["dispatches"]
+        else:
+            parts = [ds.sample_device_batch(count, interval_key)
+                     for ds, count, interval_key in zip(self.datasets, counts, keys[:-1])]
+            self.last_filter_dispatch_stats = None
         batch = {name: jnp.concatenate([part[name] for part in parts], axis=0) for name in ("x0", "x1", "label")}
         permutation = jax.random.permutation(keys[-1], bs)
         batch = {name: value[permutation] for name, value in batch.items()}
@@ -603,6 +669,11 @@ class MultiMarginalOTDataset:
         for name in ("sampled_source_tissues", "sampled_target_tissues"):
             combined[name] = {tissue: sum(row[name][tissue] for row in summaries) for tissue in self.datasets[0].class_names}
         combined["interpolant_classifier_points"] = self.interpolant_classifier_points
+        combined["interpolant_filter_backend"] = summaries[0]["interpolant_filter_backend"]
+        if self.filter_dispatches:
+            combined["gpu_filter_dispatches"] = self.filter_dispatches
+        for name in ("interpolant_reference_fallback_pairs", "interpolant_reference_fallback_points"):
+            combined[name] = sum(row[name] for row in summaries)
         combined["intervals"] = [
             {"source_window": source, "target_window": target, "time_bounds": list(ds.time_bounds), **summary}
             for (source, target), ds, summary in zip(self.intervals, self.datasets, summaries)

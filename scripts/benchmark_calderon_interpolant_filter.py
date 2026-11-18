@@ -32,6 +32,7 @@ def main():
     datasets = []
     for chunk in (50, 10):
         config = ConfigDict(cfg.to_dict())
+        config.problem.interpolant_filter_backend = "reference"
         config.problem.interpolant_check_chunk_size = chunk
         ds = training_dataset(config, data, "train")
         datasets.append(ds)

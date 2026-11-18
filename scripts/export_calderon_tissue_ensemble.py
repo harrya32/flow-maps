@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--output", type=Path, default=DEFAULT_TRAINING_EXPORT)
     parser.add_argument("--split-manifest", type=Path, default=DEFAULT_SPLIT_MANIFEST)
     parser.add_argument("--dataset-location", type=Path)
+    parser.add_argument("--weights-only", action="store_true", help="Export frozen weights without constructing a training-window probe")
     parser.add_argument("--baseline-run", type=Path,
                         help="Optional saved flow run supplying its training folds (for an older classifier export)")
     args = parser.parse_args()
@@ -70,6 +71,10 @@ def main():
     metadata = {"manifest": spec, "manifest_sha256": sha256_file(args.manifest), "members": members,
                 "construction": "Frozen checkpoint export, no fitting; exact GELU and eval-mode normalization"}
     arrays["metadata"] = np.asarray(json.dumps(metadata))
+    if args.weights_only:
+        updated = save_npz_if_changed(args.output, arrays, immutable=True)
+        print(f"{'Exported' if updated else 'Reused'} frozen weights: {args.output}")
+        return
     if args.baseline_run:
         table_path = args.baseline_run / "cell_splits.csv.gz"
         table = pd.read_csv(table_path)

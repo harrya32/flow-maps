@@ -36,6 +36,12 @@ def endpoint_fixture_config(factory=get_config, **kwargs):
     cfg.problem.pair_time_bounds_in_label = False
     cfg.problem.interp_type = "linear"
     cfg.problem.interp_uses_labels = bool(cfg.constraints.enabled)
+    cfg.problem.test_fraction = .1
+    cfg.evaluation.protocol = "legacy"
+    cfg.evaluation.flowmap_n_steps = 100
+    cfg.evaluation.ema_factor = .999
+    cfg.evaluation.validation_pair_mode = "ot_plain"
+    cfg.evaluation.validation_objective = "plain_ot_lsd_without_constraint"
     return cfg
 
 
@@ -199,8 +205,8 @@ class CalderonNativeFlowTests(unittest.TestCase):
         self.assertEqual(cfg.constraints.to_dict(), reference.constraints.to_dict())
         self.assertTrue(cfg.problem.interp_uses_labels)
         self.assertFalse(cfg.training.conditional)
-        self.assertEqual(cfg.evaluation.validation_pair_mode, "ot_plain")
-        self.assertEqual(cfg.evaluation.validation_objective, "plain_ot_lsd_without_constraint")
+        self.assertEqual(cfg.evaluation.validation_pair_mode, "same_as_training")
+        self.assertEqual(cfg.evaluation.validation_objective, "same_as_training")
         validate_config(cfg)
 
     def test_loss_labels_do_not_change_filtered_ot_pairs(self):
@@ -271,13 +277,13 @@ class CalderonNativeFlowTests(unittest.TestCase):
             self.assertTrue(outputs[1]["confident"][0].all())
             self.assertLess(counts[1], counts[0])
 
-    def test_filtered_config_matches_id5_and_preserves_shared_validation(self):
+    def test_filtered_config_matches_id5_and_training_validation(self):
         cfg = filtered_config()
         reference = maizels_config(5, hparam_val_times=(), maizels_ot_coupling="minibatch_ot")
         for name in ("maizels_pair_mode", "n_interpolant_check_times", "classifier_prob_threshold", "classifier_margin_threshold",
                      "ot_minibatch_infeasible_fallback"):
             self.assertEqual(cfg.problem[name], reference.problem[name])
-        self.assertEqual(cfg.evaluation.validation_pair_mode, "ot_plain")
+        self.assertEqual(cfg.evaluation.validation_pair_mode, "same_as_training")
         self.assertEqual(len(cfg.evaluation.checkpoint_times), 50)
         self.assertFalse(cfg.constraints.enabled)
         self.assertEqual(cfg.network.n_neurons, get_config().network.n_neurons)

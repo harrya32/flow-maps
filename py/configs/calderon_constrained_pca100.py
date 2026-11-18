@@ -20,8 +20,9 @@ def get_config(dataset_location="", output_folder="", classifier_path="", classi
     # Full-grid inference is faster on this GPU than early rejection; preserve
     # the exact filtering execution used by the existing filtered baseline.
     cfg.problem.interpolant_check_chunk_size = 50
-    cfg.evaluation.validation_objective = "plain_ot_lsd_without_constraint"
+    cfg.logging.comparison_mode = reference.logging.comparison_mode
     cfg.logging.output_folder = str(Path(output_folder).expanduser().resolve()) if output_folder else str(
-        ROOT / "outputs" / f"calderon_symmetric_4_8_12_constrained_filtered_ot_flow_map_seed{seed}")
-    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_pca100_constrained_filtered_ot_flow_map_seed{seed}"
+        ROOT / "outputs" / f"calderon_symmetric_4_8_12_maizels_constrained_filtered_ot_flow_map_seed{seed}")
+    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_maizels_pca100_constrained_filtered_ot_flow_map_seed{seed}"
+    cfg.logging.output_name = cfg.logging.wandb_name
     return cfg

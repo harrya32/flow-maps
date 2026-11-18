@@ -46,6 +46,7 @@ _MAIZELS_VALIDATION_CACHE = {}
 
 def _is_lineage_trajectory_target(cfg: config_dict.ConfigDict) -> bool:
     return getattr(cfg.problem, "target", None) in {
+        "calderon_pca100",
         "maizels_pca50",
         "cite_multi_pca100",
         "larry_pca50",
@@ -56,6 +57,9 @@ def _is_lineage_trajectory_target(cfg: config_dict.ConfigDict) -> bool:
 
 def _lineage_backend(cfg: config_dict.ConfigDict):
     target = getattr(cfg.problem, "target", None)
+    if target == "calderon_pca100":
+        from . import calderon_logging
+        return calderon_logging
     if target == "cite_multi_pca100":
         return cite_multi
     if target == "schiebinger":
@@ -63,6 +67,10 @@ def _lineage_backend(cfg: config_dict.ConfigDict):
     if larry.is_larry_target(target):
         return larry
     return maizels
+
+
+def _lineage_class_names(cfg, backend):
+    return backend.class_names(cfg) if hasattr(backend, "class_names") else backend.CLASS_NAMES
 
 
 def _violation_metrics_unavailable(
@@ -1838,20 +1846,21 @@ def _maizels_intermediate_timepoints(
     target_time: str,
     max_times: int,
     requested_timepoints=None,
+    timepoint_parser=maizels.parse_timepoint,
 ) -> list:
-    source_value = maizels.parse_timepoint(source_time)
-    target_value = maizels.parse_timepoint(target_time)
+    source_value = timepoint_parser(source_time)
+    target_value = timepoint_parser(target_time)
     unique = sorted(
         {
             str(tp)
             for tp, value in zip(data["timepoints"], data["time_values"])
             if source_value < float(value) < target_value
         },
-        key=maizels.parse_timepoint,
+        key=timepoint_parser,
     )
     if requested_timepoints is not None:
         requested = {str(value) for value in requested_timepoints}
-        unknown = sorted(requested - set(unique), key=maizels.parse_timepoint)
+        unknown = sorted(requested - set(unique), key=timepoint_parser)
         if unknown:
             raise ValueError(
                 "Requested distribution-evaluation timepoints are not available "
@@ -1925,6 +1934,12 @@ def _rbf_mmd2_np(
         bws = np.asarray(bandwidths, dtype=np.float64)
     bws = np.maximum(bws, 1e-6)
 
+    if max(len(x) ** 2, len(y) ** 2, len(x) * len(y)) > 4_000_000:
+        xx = _rbf_kernel_means_blockwise(x, x, bws)
+        yy = _rbf_kernel_means_blockwise(y, y, bws)
+        xy = _rbf_kernel_means_blockwise(x, y, bws)
+        return max(float(np.mean(xx + yy - 2.0 * xy)), 0.0)
+
     xx = _np_sqdist(x, x)
     yy = _np_sqdist(y, y)
     xy = _np_sqdist(x, y)
@@ -1937,6 +1952,17 @@ def _rbf_mmd2_np(
             - 2.0 * float(np.exp(-xy / scale).mean())
         )
     return max(float(mmd2 / len(bws)), 0.0)
+
+
+def _rbf_kernel_means_blockwise(x, y, bandwidths, *, block_size=1024):
+    """Exact population kernel means without retaining dense pair matrices."""
+    totals = np.zeros(len(bandwidths), dtype=np.float64)
+    for start in range(0, len(x), block_size):
+        for end in range(0, len(y), block_size):
+            distances = _np_sqdist(x[start:start + block_size], y[end:end + block_size])
+            for index, bw in enumerate(bandwidths):
+                totals[index] += np.exp(-distances / (2.0 * bw * bw)).sum(dtype=np.float64)
+    return totals / (len(x) * len(y))
 
 
 def _euler_terminal_at_time(
@@ -2287,6 +2313,7 @@ def _log_maizels_distribution_eval(
     params_for_visual: Dict,
     *,
     force: bool = False,
+    population_callback=None,
 ) -> Dict[str, float]:
     """Log distributional metrics against unseen intermediate-day populations."""
     maizels_cfg = getattr(cfg.logging, "maizels", None)
@@ -2306,8 +2333,13 @@ def _log_maizels_distribution_eval(
     )
     source_time = getattr(cfg.problem, "source_time", "D3")
     target_time = getattr(cfg.problem, "target_time", "D8")
-    source_value = maizels.parse_timepoint(source_time)
-    target_value = maizels.parse_timepoint(target_time)
+    if cfg.problem.target == "calderon_pca100":
+        from .calderon import window_midpoint
+        timepoint_parser = window_midpoint
+    else:
+        timepoint_parser = maizels.parse_timepoint
+    source_value = timepoint_parser(source_time)
+    target_value = timepoint_parser(target_time)
     denom = max(target_value - source_value, 1e-12)
 
     max_times = int(getattr(maizels_cfg, "distribution_eval_max_timepoints", 0))
@@ -2320,6 +2352,7 @@ def _log_maizels_distribution_eval(
         target_time,
         max_times,
         requested_timepoints=requested_timepoints,
+        timepoint_parser=timepoint_parser,
     )
     if not timepoints:
         return {}
@@ -2383,7 +2416,24 @@ def _log_maizels_distribution_eval(
         )
     labels_eval_all = None
 
-    if not interval_local:
+    sampler_names = tuple(
+        str(value).lower()
+        for value in getattr(
+            maizels_cfg,
+            "distribution_eval_samplers",
+            ("direct", "flowmap", "euler", "linear"),
+        )
+    )
+    unknown_samplers = sorted(
+        set(sampler_names) - {"direct", "flowmap", "euler", "linear"}
+    )
+    if unknown_samplers:
+        raise ValueError(
+            "Unknown lineage distribution-evaluation samplers: "
+            f"{unknown_samplers}."
+        )
+
+    if not interval_local and "linear" in sampler_names:
         linear_n = min(x0_eval_all.shape[0], target_all.shape[0])
         linear_source_idx = _population_indices_without_replacement(
             x0_eval_all.shape[0],
@@ -2423,22 +2473,6 @@ def _log_maizels_distribution_eval(
             [0.25, 0.5, 1.0, 2.0, 4.0],
         )
     )
-    sampler_names = tuple(
-        str(value).lower()
-        for value in getattr(
-            maizels_cfg,
-            "distribution_eval_samplers",
-            ("direct", "flowmap", "euler", "linear"),
-        )
-    )
-    unknown_samplers = sorted(
-        set(sampler_names) - {"direct", "flowmap", "euler", "linear"}
-    )
-    if unknown_samplers:
-        raise ValueError(
-            "Unknown lineage distribution-evaluation samplers: "
-            f"{unknown_samplers}."
-        )
     metric_names = tuple(
         str(value).lower()
         for value in getattr(
@@ -2526,15 +2560,16 @@ def _log_maizels_distribution_eval(
             interval_end_tau = float(backend.normalized_time(interval_target, cfg))
             tau = float(backend.normalized_time(timepoint, cfg))
             local_tau = (tau - start_tau) / (interval_end_tau - start_tau)
-            linear_n = min(x0_eval.shape[0], interval_target_all.shape[0])
-            linear_source_idx = _population_indices_without_replacement(
-                x0_eval.shape[0], linear_n, rng
-            )
-            linear_target_idx = _population_indices_without_replacement(
-                interval_target_all.shape[0], linear_n, rng
-            )
-            linear_x0 = x0_eval[linear_source_idx]
-            linear_x1 = interval_target_all[linear_target_idx].astype(np.float32)
+            if "linear" in sampler_names:
+                linear_n = min(x0_eval.shape[0], interval_target_all.shape[0])
+                linear_source_idx = _population_indices_without_replacement(
+                    x0_eval.shape[0], linear_n, rng
+                )
+                linear_target_idx = _population_indices_without_replacement(
+                    interval_target_all.shape[0], linear_n, rng
+                )
+                linear_x0 = x0_eval[linear_source_idx]
+                linear_x1 = interval_target_all[linear_target_idx].astype(np.float32)
         else:
             x0_eval = x0_eval_all
             start_tau = 0.0
@@ -2609,6 +2644,11 @@ def _log_maizels_distribution_eval(
                 emd = _mfm_exact_emd(pred, actual)
                 metrics[f"distribution_eval/{tag}_{name}_emd"] = emd
                 aggregate[f"{name}_emd"].append(emd)
+                if population_callback is not None and name == "flowmap":
+                    population_callback(kind="intermediate", window=timepoint,
+                        source_window=interval_source if interval_local else source_time,
+                        source_x=x0_eval, prediction=pred, reference_x=actual,
+                        start_time=start_tau, end_time=tau, n_steps=flowmap_n_steps, w1=emd)
                 if hparam_val_values is not None:
                     if maizels.parse_timepoint(timepoint) in hparam_val_values:
                         hparam_val_time_emd[name].append(emd)
@@ -2645,6 +2685,7 @@ def _compute_observed_marginal_emd_metrics(
     cfg: config_dict.ConfigDict,
     train_state: state_utils.EMATrainState,
     params_for_evaluation: Dict,
+    *, population_callback=None,
 ) -> Dict[str, float]:
     """Evaluate observed intervals and the complete source-to-target rollout.
 
@@ -2655,6 +2696,7 @@ def _compute_observed_marginal_emd_metrics(
     composed learned flow map.
     """
     if getattr(cfg.problem, "target", None) not in {
+        "calderon_pca100",
         "maizels_pca50",
         "cite_multi_pca100",
     }:
@@ -2805,6 +2847,11 @@ def _compute_observed_marginal_emd_metrics(
             f"final_eval/observed_{transition_tag}_evaluation_emd"
         ] = emd
         observed_emd.append(emd)
+        if population_callback is not None:
+            population_callback(kind="observed", window=target_time, source_window=source_time,
+                source_x=sources[source_time], prediction=prediction, reference_x=targets[target_time],
+                start_time=float(backend.normalized_time(source_time, cfg)),
+                end_time=float(backend.normalized_time(target_time, cfg)), n_steps=n_steps, w1=emd)
 
         if interval_index == 0:
             rollout = prediction
@@ -2834,6 +2881,12 @@ def _compute_observed_marginal_emd_metrics(
     )
     metrics[f"final_eval/{rollout_tag}_rollout_{sampler}_emd"] = rollout_emd
     metrics[f"final_eval/{rollout_tag}_rollout_evaluation_emd"] = rollout_emd
+    if population_callback is not None:
+        population_callback(kind="rollout", window=retained[-1], source_window=retained[0],
+            source_x=sources[retained[0]], prediction=rollout, reference_x=targets[retained[-1]],
+            start_time=float(backend.normalized_time(retained[0], cfg)),
+            end_time=float(backend.normalized_time(retained[-1], cfg)),
+            n_steps=n_steps * (len(retained) - 1), w1=rollout_emd)
     print(
         "Source-to-final empirical EMD evaluation: "
         f"{retained[0]}->{retained[-1]}, sampler={sampler}, "
@@ -2874,7 +2927,7 @@ def _compute_maizels_population_trajectory_metrics(
 
     x0_eval = jnp.asarray(source_eval, dtype=jnp.float32)
     class_to_id = {
-        str(class_name): idx for idx, class_name in enumerate(backend.CLASS_NAMES)
+        str(class_name): idx for idx, class_name in enumerate(_lineage_class_names(cfg, backend))
     }
     start_type_ids = np.asarray(
         [class_to_id[str(cell_type)] for cell_type in source_types_eval],
@@ -3081,7 +3134,7 @@ def _log_maizels_trajectory_diagnostics(
         return {}
     x0_model = jnp.asarray(model_source_x, dtype=jnp.float32)
     class_to_id = {
-        str(class_name): idx for idx, class_name in enumerate(backend.CLASS_NAMES)
+        str(class_name): idx for idx, class_name in enumerate(_lineage_class_names(cfg, backend))
     }
     model_start_type_ids = np.asarray(
         [class_to_id[str(cell_type)] for cell_type in model_source_types],
@@ -3589,6 +3642,7 @@ def log_maizels_final_evaluation(
     *,
     best_step: int,
     best_metric: Optional[float] = None,
+    population_callback=None,
 ) -> Dict[str, float]:
     """Evaluate and log the selected best lineage model after training."""
     if not _is_lineage_trajectory_target(cfg):
@@ -3599,11 +3653,13 @@ def log_maizels_final_evaluation(
         train_state,
         params_for_evaluation,
         force=True,
+        population_callback=population_callback,
     )
     observed_distribution_metrics = _compute_observed_marginal_emd_metrics(
         cfg,
         train_state,
         params_for_evaluation,
+        population_callback=population_callback,
     )
     trajectory_metrics = _compute_maizels_population_trajectory_metrics(
         cfg,
@@ -4907,13 +4963,14 @@ def log_metrics(
         f"step_time": step_time,
     }
 
-    # Log constraint errors if configured.
-    try:
-        metrics.update(
-            compute_constraint_metrics(cfg, train_state, loss_fn_args, statics=statics)
-        )
-    except Exception as e:
-        print(f"Warning: Constraint metric computation failed: {e}")
+    # This is an additional post-update forward pass, separate from the loss.
+    if bool(getattr(cfg.logging, "constraint_metrics_enabled", True)):
+        try:
+            metrics.update(
+                compute_constraint_metrics(cfg, train_state, loss_fn_args, statics=statics)
+            )
+        except Exception as e:
+            print(f"Warning: Constraint metric computation failed: {e}")
 
     # Keep the relatively expensive held-out objective on its configured
     # validation cadence, independently of per-step training scalar logging.
@@ -5013,6 +5070,7 @@ def make_lowd_plot(
     # Get parameters for visualization
     params_for_visual = get_params_for_sampling(cfg, train_state, param_type="visual")
     diagonal_only = is_diagonal_only_training(cfg)
+    direct_plots_enabled = bool(getattr(cfg.logging, "direct_plots_enabled", True))
 
     ## common plot parameters
     plt.close("all")
@@ -5022,6 +5080,8 @@ def make_lowd_plot(
 
     ## set up plot array
     steps = [1, 2, 5, 10, 25]
+    if not diagonal_only and not direct_plots_enabled:
+        steps = [step for step in steps if step > 1]
     titles = ["base and target"] + [rf"${step}$-step" for step in steps]
 
     ## extract target samples
@@ -5150,18 +5210,21 @@ def make_lowd_plot(
         x0_line = x0s[:line_bs]
         x1_line = plot_x1s[:line_bs]
         labels_line = sample_labels[:line_bs]
-        one_step_line_paths = _one_step_paths(
-            train_state.apply_fn,
-            params_for_visual,
-            x0_line,
-            labels_line,
-            line_times,
-        )
+        if direct_plots_enabled:
+            one_step_line_paths = _one_step_paths(
+                train_state.apply_fn,
+                params_for_visual,
+                x0_line,
+                labels_line,
+                line_times,
+            )
 
         multi_step_counts = getattr(cfg.logging, "multi_step_line_steps", steps)
         if isinstance(multi_step_counts, int):
             multi_step_counts = [multi_step_counts]
         multi_step_counts = [max(1, int(step)) for step in multi_step_counts]
+        if not direct_plots_enabled:
+            multi_step_counts = [step for step in multi_step_counts if step > 1] or [2]
 
     multi_line_bs = min(
         line_bs,
@@ -5291,7 +5354,7 @@ def make_lowd_plot(
             }
         )
 
-    if not diagonal_only:
+    if not diagonal_only and direct_plots_enabled:
         # Visualize direct trajectory slices X_{0,t}(x0) for fixed times.
         traj_bs = min(cfg.logging.plot_bs, getattr(cfg.logging, "traj_plot_bs", 2000))
         x0_traj = x0s[:traj_bs]
@@ -5373,6 +5436,7 @@ def make_lowd_plot(
             }
         )
 
+    if not diagonal_only:
         multi_fig, multi_axs = plt.subplots(
             nrows=1,
             ncols=len(multi_step_line_paths),

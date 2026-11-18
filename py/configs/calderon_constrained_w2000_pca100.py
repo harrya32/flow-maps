@@ -15,6 +15,7 @@ def get_config(dataset_location="", output_folder="", classifier_path="", classi
     cfg.constraints.weight = 2000.0
     if not output_folder:
         cfg.logging.output_folder = str(
-            ROOT / "outputs" / f"calderon_symmetric_4_8_12_constrained_filtered_ot_flow_map_w2000_seed{seed}")
-    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_pca100_constrained_filtered_ot_flow_map_w2000_seed{seed}"
+            ROOT / "outputs" / f"calderon_symmetric_4_8_12_maizels_constrained_filtered_ot_flow_map_w2000_seed{seed}")
+    cfg.logging.wandb_name = f"calderon_symmetric_4_8_12_maizels_pca100_constrained_filtered_ot_flow_map_w2000_seed{seed}"
+    cfg.logging.output_name = cfg.logging.wandb_name
     return cfg
